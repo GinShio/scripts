@@ -137,6 +137,23 @@ class BuildEngineTests(unittest.TestCase):
         self.assertIn("DEMO_NAME:STRING=demo-name", configure_str)
         self.assertIn("DEMO_THREADS:NUMBER=4", configure_str)
 
+    def test_auto_skips_cmake_config_when_already_configured(self) -> None:
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            operation=BuildMode.AUTO,
+        )
+        cmake_source = self.workspace / "examples" / "demo"
+        cmake_build = cmake_source / "_build" / "main_Release"
+        cmake_build.mkdir(parents=True, exist_ok=True)
+        (cmake_build / "CMakeCache.txt").write_text("# configured")
+
+        plan = self.engine.plan(options)
+
+        descriptions = [step.description for step in plan.steps]
+        self.assertIn("Build project", descriptions)
+        self.assertNotIn("Configure project", descriptions)
+
     def test_cli_build_type_overrides_presets(self) -> None:
         options = BuildOptions(
             project_name="demo",
@@ -279,6 +296,23 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(plan.steps[0].env.get("CFLAGS"), "-fcolor-diagnostics")
         self.assertEqual(plan.steps[0].env.get("CXXFLAGS"), "-fcolor-diagnostics")
         self.assertEqual(build_cmd[:3], ["meson", "compile", "-C"])
+
+    def test_auto_skips_meson_config_when_already_configured(self) -> None:
+        options = BuildOptions(
+            project_name="meson-app",
+            presets=["dev"],
+            operation=BuildMode.AUTO,
+        )
+        meson_source = self.workspace / "examples" / "meson-app"
+        meson_build = meson_source / "_build"
+        coredata = meson_build / "meson-private" / "coredata.dat"
+        coredata.parent.mkdir(parents=True, exist_ok=True)
+        coredata.write_text("configured")
+
+        plan = self.engine.plan(options)
+
+        descriptions = [step.description for step in plan.steps]
+        self.assertEqual(descriptions, ["Build project"])
 
     def test_bazel_plan(self) -> None:
         options = BuildOptions(

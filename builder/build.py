@@ -279,16 +279,7 @@ class BuildEngine:
         options: BuildOptions,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
-        mode = options.operation
-        build_dir_exists = build_dir.exists()
         env = environment
-
-        if mode is BuildMode.BUILD_ONLY and not build_dir_exists:
-            raise ValueError("Build directory does not exist; run configuration first or use auto mode")
-
-        if mode is BuildMode.RECONFIG and build_dir_exists:
-            shutil.rmtree(build_dir)
-            build_dir_exists = False
 
         if project.build_system == "cmake":
             steps.extend(
@@ -300,7 +291,6 @@ class BuildEngine:
                     definitions=definitions,
                     extra_args=extra_args,
                     options=options,
-                    build_dir_exists=build_dir_exists,
                 )
             )
         elif project.build_system == "meson":
@@ -313,7 +303,6 @@ class BuildEngine:
                     definitions=definitions,
                     extra_args=extra_args,
                     options=options,
-                    build_dir_exists=build_dir_exists,
                 )
             )
         elif project.build_system == "bazel":
@@ -375,12 +364,24 @@ class BuildEngine:
         definitions: Dict[str, Any],
         extra_args: List[str],
         options: BuildOptions,
-        build_dir_exists: bool,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
         mode = options.operation
+        build_dir_exists = build_dir.exists()
+        configured = build_dir_exists and self._cmake_is_configured(build_dir)
 
-        should_configure = mode in {BuildMode.AUTO, BuildMode.CONFIG_ONLY, BuildMode.RECONFIG} or not build_dir_exists
+        if mode is BuildMode.BUILD_ONLY and (not build_dir_exists or not configured):
+            raise ValueError("Build directory is not configured; run configuration first or use auto mode")
+
+        if mode is BuildMode.RECONFIG and build_dir_exists:
+            shutil.rmtree(build_dir)
+            build_dir_exists = False
+            configured = False
+
+        should_configure = (
+            mode in {BuildMode.CONFIG_ONLY, BuildMode.RECONFIG}
+            or not configured
+        )
         should_build = mode in {BuildMode.AUTO, BuildMode.BUILD_ONLY}
 
         is_multi_config = self._is_multi_config_generator(options.generator)
@@ -446,13 +447,26 @@ class BuildEngine:
         definitions: Dict[str, Any],
         extra_args: List[str],
         options: BuildOptions,
-        build_dir_exists: bool,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
         mode = options.operation
+        build_dir_exists = build_dir.exists()
+        configured = build_dir_exists and self._meson_is_configured(build_dir)
 
-        should_configure = mode in {BuildMode.AUTO, BuildMode.CONFIG_ONLY, BuildMode.RECONFIG} or not build_dir_exists
+        should_configure = (
+            mode in {BuildMode.CONFIG_ONLY, BuildMode.RECONFIG}
+            or not configured
+        )
         should_build = mode in {BuildMode.AUTO, BuildMode.BUILD_ONLY}
+
+        if mode is BuildMode.BUILD_ONLY and (not build_dir_exists or not configured):
+            raise ValueError("Build directory is not configured; run configuration first or use auto mode")
+
+        if mode is BuildMode.RECONFIG and build_dir_exists:
+            shutil.rmtree(build_dir)
+            build_dir_exists = False
+            configured = False
+            should_configure = True
 
         if should_configure:
             args = ["meson", "setup", str(build_dir), str(effective_source_dir)]
@@ -496,6 +510,14 @@ class BuildEngine:
                 )
             )
         return steps
+
+    def _cmake_is_configured(self, build_dir: Path) -> bool:
+        cache_file = build_dir / "CMakeCache.txt"
+        return cache_file.exists()
+
+    def _meson_is_configured(self, build_dir: Path) -> bool:
+        coredata = build_dir / "meson-private" / "coredata.dat"
+        return coredata.exists()
 
     def _bazel_steps(
         self,
