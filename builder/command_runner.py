@@ -17,17 +17,23 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+    streamed: bool = False
 
 
 class CommandError(RuntimeError):
     """Raised when a command fails."""
 
     def __init__(self, result: CommandResult):
-        super().__init__(
-            f"Command failed with exit code {result.returncode}: {' '.join(map(shlex.quote, result.command))}\n"
-            f"stdout: {result.stdout}\n"
-            f"stderr: {result.stderr}"
-        )
+        message = f"Command failed with exit code {result.returncode}: {' '.join(map(shlex.quote, result.command))}"
+        if result.streamed:
+            message = f"{message}\nstdout/stderr already streamed above."
+        else:
+            message = (
+                f"{message}\n"
+                f"stdout: {result.stdout}\n"
+                f"stderr: {result.stderr}"
+            )
+        super().__init__(message)
         self.result = result
 
 
@@ -42,6 +48,7 @@ class CommandRunner:
         env: Mapping[str, str] | None = None,
         check: bool = True,
         note: str | None = None,
+        stream: bool = False,
     ) -> CommandResult:
         raise NotImplementedError
 
@@ -60,25 +67,44 @@ class SubprocessCommandRunner(CommandRunner):
         env: Mapping[str, str] | None = None,
         check: bool = True,
         note: str | None = None,
+        stream: bool = False,
     ) -> CommandResult:
         merged_env: Dict[str, str] | None = None
         if env is not None:
             merged_env = os.environ.copy()
             merged_env.update(env)
+        if not stream:
+            process = subprocess.run(
+                command,
+                cwd=str(cwd) if cwd else None,
+                env=merged_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            result = CommandResult(
+                command=command,
+                returncode=process.returncode,
+                stdout=process.stdout,
+                stderr=process.stderr,
+            )
+            if check and process.returncode != 0:
+                raise CommandError(result)
+            return result
 
         process = subprocess.run(
             command,
             cwd=str(cwd) if cwd else None,
             env=merged_env,
-            capture_output=True,
-            text=True,
             check=False,
         )
+
         result = CommandResult(
             command=command,
             returncode=process.returncode,
-            stdout=process.stdout,
-            stderr=process.stderr,
+            stdout="",
+            stderr="",
+            streamed=True,
         )
         if check and process.returncode != 0:
             raise CommandError(result)
@@ -99,12 +125,14 @@ class RecordingCommandRunner(CommandRunner):
         env: Mapping[str, str] | None = None,
         check: bool = True,
         note: str | None = None,
+        stream: bool = False,
     ) -> CommandResult:
         record = {
             "command": list(command),
             "cwd": str(cwd) if cwd else None,
             "env": dict(env) if env else {},
             "note": note,
+            "stream": stream,
         }
         self.commands.append(record)
         return CommandResult(command=command, returncode=0, stdout="", stderr="")

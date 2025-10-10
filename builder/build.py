@@ -200,7 +200,12 @@ class BuildEngine:
             else:
                 environment.setdefault("CC_LD", linker)
                 environment.setdefault("CXX_LD", linker)
-        self._apply_color_diagnostics(environment=environment, toolchain=toolchain)
+        self._apply_color_diagnostics(
+            project=project,
+            environment=environment,
+            definitions=definitions,
+            toolchain=toolchain,
+        )
         self._maybe_wrap_with_ccache(environment=environment, toolchain=toolchain)
         self._apply_cmake_toolchain(
             build_system=project.build_system,
@@ -242,6 +247,7 @@ class BuildEngine:
                     env=step.env,
                     check=False,
                     note=step.description,
+                    stream=False,
                 )
             return results
 
@@ -251,7 +257,7 @@ class BuildEngine:
         for step in plan.steps:
             cwd = step.cwd
             cwd.mkdir(parents=True, exist_ok=True)
-            result = self._command_runner.run(step.command, cwd=cwd, env=step.env)
+            result = self._command_runner.run(step.command, cwd=cwd, env=step.env, stream=True)
             results.append(result)
         return results
 
@@ -560,11 +566,53 @@ class BuildEngine:
         if cxx and not cxx.startswith("ccache "):
             environment["CXX"] = f"ccache {cxx}"
 
-    def _apply_color_diagnostics(self, *, environment: Dict[str, str], toolchain: str) -> None:
-        if toolchain == "clang":
-            environment.setdefault("CLANG_FORCE_COLOR_DIAGNOSTICS", "1")
-        elif toolchain == "gcc":
-            environment.setdefault("GCC_COLORS", "auto")
+    def _append_flag(self, container: Dict[str, str], key: str, flag: str) -> None:
+        existing = container.get(key)
+        if existing:
+            if flag in existing.split():
+                return
+            container[key] = f"{existing} {flag}".strip()
+        else:
+            container[key] = flag
+
+    def _append_definition_flag(self, definitions: Dict[str, Any], key: str, flag: str) -> None:
+        existing = definitions.get(key)
+        if existing:
+            str_value = str(existing)
+            if flag in str_value.split():
+                return
+            definitions[key] = f"{str_value} {flag}".strip()
+        else:
+            definitions[key] = flag
+
+    def _apply_color_diagnostics(
+        self,
+        *,
+        project: ProjectDefinition,
+        environment: Dict[str, str],
+        definitions: Dict[str, Any],
+        toolchain: str,
+    ) -> None:
+        flag_map = {
+            "clang": "-fcolor-diagnostics",
+            "gcc": "-fdiagnostics-color=always",
+            "msvc": "/d2ColorizeDiagnostics",
+        }
+        flag = flag_map.get(toolchain)
+        if not flag:
+            return
+
+        if toolchain == "msvc":
+            self._append_flag(environment, "CL", flag)
+        else:
+            self._append_flag(environment, "CFLAGS", flag)
+            self._append_flag(environment, "CXXFLAGS", flag)
+
+        if project.build_system == "cmake":
+            self._append_definition_flag(definitions, "CMAKE_C_FLAGS", flag)
+            self._append_definition_flag(definitions, "CMAKE_CXX_FLAGS", flag)
+        elif project.build_system == "meson":
+            pass  # Meson respects CFLAGS/CXXFLAGS environment
 
     def _apply_cmake_build_type(
         self,

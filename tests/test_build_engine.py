@@ -123,13 +123,16 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(plan.steps[0].env.get("CXX"), "ccache clang++")
         self.assertEqual(plan.steps[0].env.get("CC_LD"), "ld")
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "ld")
-        self.assertEqual(plan.steps[0].env.get("CLANG_FORCE_COLOR_DIAGNOSTICS"), "1")
+        self.assertEqual(plan.steps[0].env.get("CFLAGS"), "-fcolor-diagnostics")
+        self.assertEqual(plan.steps[0].env.get("CXXFLAGS"), "-fcolor-diagnostics")
         configure_cmd = plan.steps[0].command
         configure_str = " ".join(configure_cmd)
         self.assertIn("-G", configure_cmd)
         ninja_index = configure_cmd.index("-G") + 1
         self.assertEqual(configure_cmd[ninja_index], "Ninja")
         self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON", configure_str)
+        self.assertIn("CMAKE_C_FLAGS:STRING=-fcolor-diagnostics", configure_str)
+        self.assertIn("CMAKE_CXX_FLAGS:STRING=-fcolor-diagnostics", configure_str)
         self.assertIn("DEMO_FOO:BOOL=ON", configure_str)
         self.assertIn("DEMO_NAME:STRING=demo-name", configure_str)
         self.assertIn("DEMO_THREADS:NUMBER=4", configure_str)
@@ -193,11 +196,14 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(plan.steps[0].env.get("CXX"), "ccache g++")
         self.assertEqual(plan.steps[0].env.get("CC_LD"), "gold")
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "gold")
-        self.assertEqual(plan.steps[0].env.get("GCC_COLORS"), "auto")
+        self.assertEqual(plan.steps[0].env.get("CFLAGS"), "-fdiagnostics-color=always")
+        self.assertEqual(plan.steps[0].env.get("CXXFLAGS"), "-fdiagnostics-color=always")
         configure_str = " ".join(configure)
         self.assertIn("CMAKE_C_COMPILER:STRING=gcc", configure_str)
         self.assertIn("CMAKE_C_COMPILER_LAUNCHER:STRING=ccache", configure_str)
         self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON", configure_str)
+        self.assertIn("CMAKE_C_FLAGS:STRING=-fdiagnostics-color=always", configure_str)
+        self.assertIn("CMAKE_CXX_FLAGS:STRING=-fdiagnostics-color=always", configure_str)
 
     def test_toolchain_prefers_mold_then_lld(self) -> None:
         options = BuildOptions(
@@ -220,11 +226,14 @@ class BuildEngineTests(unittest.TestCase):
         self.assertIn("CMAKE_LINKER:STRING=mold", " ".join(configure))
         self.assertEqual(plan.steps[0].env.get("CC_LD"), "mold")
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "mold")
-        self.assertEqual(plan.steps[0].env.get("CLANG_FORCE_COLOR_DIAGNOSTICS"), "1")
+        self.assertEqual(plan.steps[0].env.get("CFLAGS"), "-fcolor-diagnostics")
+        self.assertEqual(plan.steps[0].env.get("CXXFLAGS"), "-fcolor-diagnostics")
         configure_str = " ".join(configure)
         self.assertIn("CMAKE_C_COMPILER:STRING=clang", configure_str)
         self.assertIn("CMAKE_C_COMPILER_LAUNCHER:STRING=ccache", configure_str)
         self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON", configure_str)
+        self.assertIn("CMAKE_C_FLAGS:STRING=-fcolor-diagnostics", configure_str)
+        self.assertIn("CMAKE_CXX_FLAGS:STRING=-fcolor-diagnostics", configure_str)
 
         def fake_which_no_mold(exe: str) -> str | None:
             return {
@@ -240,7 +249,8 @@ class BuildEngineTests(unittest.TestCase):
         self.assertIn("CMAKE_LINKER:STRING=lld", " ".join(configure))
         self.assertEqual(plan.steps[0].env.get("CC_LD"), "lld")
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "lld")
-        self.assertEqual(plan.steps[0].env.get("CLANG_FORCE_COLOR_DIAGNOSTICS"), "1")
+        self.assertEqual(plan.steps[0].env.get("CFLAGS"), "-fcolor-diagnostics")
+        self.assertEqual(plan.steps[0].env.get("CXXFLAGS"), "-fcolor-diagnostics")
 
     def test_toolchain_compatibility(self) -> None:
         options = BuildOptions(
@@ -266,6 +276,8 @@ class BuildEngineTests(unittest.TestCase):
         self.assertIn("--opt=value", configure_cmd)
         self.assertIn("--default-library=static", configure_cmd)
         self.assertIn("clang", plan.steps[0].env.get("CC", ""))
+        self.assertEqual(plan.steps[0].env.get("CFLAGS"), "-fcolor-diagnostics")
+        self.assertEqual(plan.steps[0].env.get("CXXFLAGS"), "-fcolor-diagnostics")
         self.assertEqual(build_cmd[:3], ["meson", "compile", "-C"])
 
     def test_bazel_plan(self) -> None:
