@@ -33,15 +33,18 @@ class GitManager:
         self._ensure_repository(repo_path)
         current_branch = self._current_branch(repo_path)
         stash_applied = False
+        current_commit = self._current_commit(repo_path)
+        target_commit = self._commit_for_branch(repo_path, target_branch)
+        branch_switch_needed = current_branch != target_branch and current_commit != target_commit
         dirty = self._is_dirty(repo_path)
-        if dirty:
+        if dirty and branch_switch_needed:
             if auto_stash:
                 self._runner.run(["git", "stash", "push", "-m", "builder auto-stash"], cwd=repo_path)
                 stash_applied = True
             else:
                 raise RuntimeError("Working tree has uncommitted changes and auto_stash is disabled")
 
-        if current_branch != target_branch:
+        if branch_switch_needed:
             self._runner.run(["git", "fetch", "--all"], cwd=repo_path)
             result = self._runner.run(["git", "switch", target_branch], cwd=repo_path, check=False)
             if result.returncode != 0:
@@ -134,6 +137,16 @@ class GitManager:
     def _current_branch(self, repo_path: Path) -> str:
         result = self._runner.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path)
         return result.stdout.strip() or "HEAD"
+
+    def _current_commit(self, repo_path: Path) -> str:
+        result = self._runner.run(["git", "rev-parse", "HEAD"], cwd=repo_path)
+        return result.stdout.strip()
+
+    def _commit_for_branch(self, repo_path: Path, branch: str) -> str | None:
+        result = self._runner.run(["git", "rev-parse", branch], cwd=repo_path, check=False)
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
 
     def _is_dirty(self, repo_path: Path) -> bool:
         result = self._runner.run(["git", "status", "--porcelain"], cwd=repo_path)
