@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 from builder.build import BuildEngine, BuildMode, BuildOptions
 from builder.command_runner import RecordingCommandRunner
@@ -67,12 +68,20 @@ class BuildEngineTests(unittest.TestCase):
             branch="feature-x",
             operation=BuildMode.AUTO,
         )
-        plan = self.engine.plan(options)
+        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+            plan = self.engine.plan(options)
         self.assertIn("_build/feature-x_Release", plan.build_dir.as_posix())
         commands = [step.command for step in plan.steps]
         self.assertTrue(any(cmd[0] == "cmake" and "--build" in cmd for cmd in commands))
         self.assertIn("configs.release", plan.presets)
         self.assertEqual(plan.steps[0].env.get("BUILD_MODE"), "release")
+        self.assertEqual(plan.steps[0].env.get("CC"), "ccache clang")
+        self.assertEqual(plan.steps[0].env.get("CXX"), "ccache clang++")
+        self.assertEqual(plan.steps[0].env.get("CC_LD"), "ld")
+        self.assertEqual(plan.steps[0].env.get("CXX_LD"), "ld")
+        self.assertEqual(plan.steps[0].env.get("CLANG_FORCE_COLOR_DIAGNOSTICS"), "1")
+        configure_cmd = plan.steps[0].command
+        self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS=ON", " ".join(configure_cmd))
 
     def test_multi_config_adds_debug_and_release_presets(self) -> None:
         options = BuildOptions(
@@ -81,7 +90,8 @@ class BuildEngineTests(unittest.TestCase):
             generator="Ninja Multi-Config",
             operation=BuildMode.AUTO,
         )
-        plan = self.engine.plan(options)
+        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+            plan = self.engine.plan(options)
         self.assertIn("configs.debug", plan.presets)
         self.assertIn("configs.release", plan.presets)
         # Release preset is applied last, so environment reflects release
@@ -95,6 +105,77 @@ class BuildEngineTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             self.engine.plan(options)
+
+    def test_explicit_toolchain_sets_linker(self) -> None:
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            toolchain="gcc",
+        )
+        def fake_which(exe: str) -> str | None:
+            return {
+                "mold": None,
+                "lld": None,
+                "gold": "/usr/bin/gold",
+                "ccache": "/usr/bin/ccache",
+            }.get(exe)
+
+        with patch("builder.build.shutil.which", side_effect=fake_which):
+            plan = self.engine.plan(options)
+        configure = plan.steps[0].command
+        self.assertIn("CMAKE_LINKER=gold", " ".join(configure))
+        self.assertEqual(plan.steps[0].env.get("CC"), "ccache gcc")
+        self.assertEqual(plan.steps[0].env.get("CXX"), "ccache g++")
+        self.assertEqual(plan.steps[0].env.get("CC_LD"), "gold")
+        self.assertEqual(plan.steps[0].env.get("CXX_LD"), "gold")
+        self.assertEqual(plan.steps[0].env.get("GCC_COLORS"), "auto")
+        configure_str = " ".join(configure)
+        self.assertIn("CMAKE_C_COMPILER=gcc", configure_str)
+        self.assertIn("CMAKE_C_COMPILER_LAUNCHER=ccache", configure_str)
+        self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS=ON", configure_str)
+
+    def test_toolchain_prefers_mold_then_lld(self) -> None:
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            toolchain="clang",
+        )
+
+        def fake_which(exe: str) -> str | None:
+            return {
+                "mold": "/usr/bin/mold",
+                "lld": "/usr/bin/lld",
+                "gold": None,
+                "ccache": "/usr/bin/ccache",
+            }.get(exe)
+
+        with patch("builder.build.shutil.which", side_effect=fake_which):
+            plan = self.engine.plan(options)
+        configure = plan.steps[0].command
+        self.assertIn("CMAKE_LINKER=mold", " ".join(configure))
+        self.assertEqual(plan.steps[0].env.get("CC_LD"), "mold")
+        self.assertEqual(plan.steps[0].env.get("CXX_LD"), "mold")
+        self.assertEqual(plan.steps[0].env.get("CLANG_FORCE_COLOR_DIAGNOSTICS"), "1")
+        configure_str = " ".join(configure)
+        self.assertIn("CMAKE_C_COMPILER=clang", configure_str)
+        self.assertIn("CMAKE_C_COMPILER_LAUNCHER=ccache", configure_str)
+        self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS=ON", configure_str)
+
+        def fake_which_no_mold(exe: str) -> str | None:
+            return {
+                "mold": None,
+                "lld": "/usr/bin/lld",
+                "gold": None,
+                "ccache": "/usr/bin/ccache",
+            }.get(exe)
+
+        with patch("builder.build.shutil.which", side_effect=fake_which_no_mold):
+            plan = self.engine.plan(options)
+        configure = plan.steps[0].command
+        self.assertIn("CMAKE_LINKER=lld", " ".join(configure))
+        self.assertEqual(plan.steps[0].env.get("CC_LD"), "lld")
+        self.assertEqual(plan.steps[0].env.get("CXX_LD"), "lld")
+        self.assertEqual(plan.steps[0].env.get("CLANG_FORCE_COLOR_DIAGNOSTICS"), "1")
 
     def test_toolchain_compatibility(self) -> None:
         options = BuildOptions(

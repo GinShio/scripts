@@ -102,6 +102,9 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
 
         print("Resolved variables:")
         pprint(plan.context)
+        if plan.environment:
+            print("Preset environment overrides:")
+            pprint(plan.environment)
 
     project = plan.project
     target_branch = build_options.branch or project.git.main_branch

@@ -58,6 +58,9 @@ class BuildPlan:
     steps: List[BuildStep]
     context: Dict[str, Any]
     presets: List[str]
+    environment: Dict[str, str]
+    definitions: Dict[str, Any]
+    extra_args: List[str]
 
 
 _TOOLCHAIN_MATRIX: Dict[str, set[str]] = {
@@ -66,6 +69,21 @@ _TOOLCHAIN_MATRIX: Dict[str, set[str]] = {
     "bazel": {"clang", "gcc", "msvc"},
     "cargo": {"rustc"},
     "make": {"clang", "gcc"},
+}
+
+_TOOLCHAIN_DEFAULTS: Dict[str, Dict[str, str]] = {
+    "clang": {
+        "CC": "clang",
+        "CXX": "clang++",
+    },
+    "gcc": {
+        "CC": "gcc",
+        "CXX": "g++",
+    },
+    "msvc": {
+        "CC": "cl",
+        "CXX": "cl",
+    },
 }
 
 
@@ -157,8 +175,28 @@ class BuildEngine:
 
         toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name)
         self._ensure_toolchain_compatibility(project.build_system, toolchain)
-        environment.setdefault("CC", self._default_cc(toolchain))
-        environment.setdefault("CXX", self._default_cxx(toolchain))
+        if options.toolchain is not None:
+            environment["CC"] = self._default_cc(toolchain)
+            environment["CXX"] = self._default_cxx(toolchain)
+        else:
+            environment.setdefault("CC", self._default_cc(toolchain))
+            environment.setdefault("CXX", self._default_cxx(toolchain))
+
+        linker = self._determine_linker(toolchain=toolchain, os_name=system_ctx.os_name)
+        if linker:
+            if options.toolchain is not None:
+                environment["CC_LD"] = linker
+                environment["CXX_LD"] = linker
+            else:
+                environment.setdefault("CC_LD", linker)
+                environment.setdefault("CXX_LD", linker)
+        self._apply_color_diagnostics(environment=environment, toolchain=toolchain)
+        self._maybe_wrap_with_ccache(environment=environment, toolchain=toolchain)
+        self._apply_cmake_toolchain(
+            build_system=project.build_system,
+            definitions=definitions,
+            environment=environment,
+        )
 
         plan_steps = self._create_build_steps(
             project=project,
@@ -179,6 +217,9 @@ class BuildEngine:
             steps=plan_steps,
             context=combined_context,
             presets=presets_to_resolve,
+            environment=environment,
+            definitions=definitions,
+            extra_args=extra_args,
         )
 
     def execute(self, plan: BuildPlan, *, dry_run: bool) -> List[CommandResult]:
@@ -462,18 +503,76 @@ class BuildEngine:
         return "msvc" if os_name == "windows" else "clang"
 
     def _default_cc(self, toolchain: str) -> str:
-        if toolchain == "msvc":
-            return "cl"
-        if toolchain == "gcc":
-            return "gcc"
-        return "clang"
+        return _TOOLCHAIN_DEFAULTS.get(toolchain, {}).get("CC", "clang")
 
     def _default_cxx(self, toolchain: str) -> str:
-        if toolchain == "msvc":
-            return "cl"
-        if toolchain == "gcc":
-            return "g++"
-        return "clang++"
+        return _TOOLCHAIN_DEFAULTS.get(toolchain, {}).get("CXX", "clang++")
+
+    def _determine_linker(self, *, toolchain: str, os_name: str) -> str | None:
+        if os_name == "windows" or toolchain == "msvc":
+            return None
+        if shutil.which("mold"):
+            return "mold"
+        if toolchain == "clang" and shutil.which("lld"):
+            return "lld"
+        if toolchain == "gcc" and shutil.which("gold"):
+            return "gold"
+        return "ld"
+
+    def _maybe_wrap_with_ccache(self, *, environment: Dict[str, str], toolchain: str) -> None:
+        if toolchain not in {"clang", "gcc"}:
+            return
+        if not shutil.which("ccache"):
+            return
+        cc = environment.get("CC")
+        cxx = environment.get("CXX")
+        if cc and not cc.startswith("ccache "):
+            environment["CC"] = f"ccache {cc}"
+        if cxx and not cxx.startswith("ccache "):
+            environment["CXX"] = f"ccache {cxx}"
+
+    def _apply_color_diagnostics(self, *, environment: Dict[str, str], toolchain: str) -> None:
+        if toolchain == "clang":
+            environment.setdefault("CLANG_FORCE_COLOR_DIAGNOSTICS", "1")
+        elif toolchain == "gcc":
+            environment.setdefault("GCC_COLORS", "auto")
+
+    def _apply_cmake_toolchain(
+        self,
+        *,
+        build_system: str,
+        definitions: Dict[str, Any],
+        environment: Dict[str, str],
+    ) -> None:
+        if build_system != "cmake":
+            return
+        cc = environment.get("CC")
+        cxx = environment.get("CXX")
+        if cc:
+            launcher: str | None = None
+            actual_cc = cc
+            if cc.startswith("ccache "):
+                launcher = "ccache"
+                actual_cc = cc.split(" ", 1)[1]
+            if "CMAKE_C_COMPILER" not in definitions:
+                definitions["CMAKE_C_COMPILER"] = actual_cc
+            if launcher and "CMAKE_C_COMPILER_LAUNCHER" not in definitions:
+                definitions["CMAKE_C_COMPILER_LAUNCHER"] = launcher
+        if cxx:
+            launcher = None
+            actual_cxx = cxx
+            if cxx.startswith("ccache "):
+                launcher = "ccache"
+                actual_cxx = cxx.split(" ", 1)[1]
+            if "CMAKE_CXX_COMPILER" not in definitions:
+                definitions["CMAKE_CXX_COMPILER"] = actual_cxx
+            if launcher and "CMAKE_CXX_COMPILER_LAUNCHER" not in definitions:
+                definitions["CMAKE_CXX_COMPILER_LAUNCHER"] = launcher
+        linker = environment.get("CXX_LD") or environment.get("CC_LD")
+        if linker and "CMAKE_LINKER" not in definitions:
+            definitions["CMAKE_LINKER"] = linker
+        if "CMAKE_EXPORT_COMPILE_COMMANDS" not in definitions:
+            definitions["CMAKE_EXPORT_COMPILE_COMMANDS"] = "ON"
 
     def _format_cmake_value(self, value: Any) -> str:
         if isinstance(value, bool):
@@ -498,5 +597,8 @@ class BuildEngine:
             ],
             "context": plan.context,
             "presets": plan.presets,
+            "environment": plan.environment,
+            "definitions": plan.definitions,
+            "extra_args": plan.extra_args,
         }
         return json.dumps(data, indent=2)
