@@ -1,7 +1,7 @@
 """Template and expression resolution utilities."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping
 import ast
 import operator
@@ -10,6 +10,7 @@ import re
 
 _PLACEHOLDER_PATTERN = re.compile(r"\{\{([^{}]+)\}\}")
 _EXPRESSION_PATTERN = re.compile(r"^\s*\[\[(?P<expr>.*)\]\]\s*$", re.DOTALL)
+_SINGLE_PLACEHOLDER_PATTERN = re.compile(r"^\s*\{\{([^{}]+)\}\}\s*$")
 
 _ALLOWED_BIN_OPS: dict[type[ast.AST], Any] = {
     ast.Add: operator.add,
@@ -61,41 +62,66 @@ class TemplateResolver:
     """Resolves templates and expressions using a nested mapping context."""
 
     context: Mapping[str, Any]
+    _cache: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
 
     def resolve(self, value: Any) -> Any:
+        return self._resolve_value(value, stack=[])
+
+    def _resolve_value(self, value: Any, *, stack: list[str]) -> Any:
         if isinstance(value, str):
-            return self._resolve_string(value)
+            return self._resolve_string(value, stack=stack)
         if isinstance(value, list):
-            return [self.resolve(item) for item in value]
+            return [self._resolve_value(item, stack=list(stack)) for item in value]
         if isinstance(value, tuple):
-            return tuple(self.resolve(list(value)))
+            resolved_list = [self._resolve_value(item, stack=list(stack)) for item in value]
+            return tuple(resolved_list)
         if isinstance(value, dict):
-            return {key: self.resolve(val) for key, val in value.items()}
+            return {key: self._resolve_value(val, stack=list(stack)) for key, val in value.items()}
         return value
 
-    def _resolve_string(self, value: str) -> Any:
+    def _resolve_string(self, value: str, *, stack: list[str]) -> Any:
         expression_match = _EXPRESSION_PATTERN.match(value)
         if expression_match:
             expr = expression_match.group("expr")
-            expr = self._substitute(expr, for_expression=True)
+            expr = self._substitute(expr, stack=stack, for_expression=True)
             expr = expr.strip()
             return self._evaluate_expression(expr)
-        substituted = self._substitute(value, for_expression=False)
+        placeholder_match = _SINGLE_PLACEHOLDER_PATTERN.match(value)
+        if placeholder_match:
+            path = placeholder_match.group(1).strip()
+            return self._resolve_path(path, stack=stack)
+        substituted = self._substitute(value, stack=stack, for_expression=False)
         return substituted
 
-    def _substitute(self, text: str, *, for_expression: bool) -> str:
+    def _substitute(self, text: str, *, stack: list[str], for_expression: bool) -> str:
         def replacement(match: re.Match[str]) -> str:
             path = match.group(1).strip()
-            result = self._resolve_path(path)
+            result = self._resolve_path(path, stack=stack)
             if for_expression:
                 return _to_expression_literal(result)
             if isinstance(result, (dict, list, tuple)):
                 return _to_expression_literal(result)
             return str(result)
 
+        if not _PLACEHOLDER_PATTERN.search(text):
+            return text
         return _PLACEHOLDER_PATTERN.sub(replacement, text)
 
-    def _resolve_path(self, path: str) -> Any:
+    def _resolve_path(self, path: str, *, stack: list[str]) -> Any:
+        if path in self._cache:
+            return self._cache[path]
+        if path in stack:
+            cycle = " -> ".join(stack + [path])
+            raise TemplateError(f"Circular dependency detected: {cycle}")
+
+        raw_value = self._lookup_raw(path)
+        stack.append(path)
+        resolved = self._resolve_value(raw_value, stack=stack)
+        stack.pop()
+        self._cache[path] = resolved
+        return resolved
+
+    def _lookup_raw(self, path: str) -> Any:
         current: Any = self.context
         for part in path.split("."):
             if isinstance(current, Mapping) and part in current:
