@@ -7,9 +7,35 @@ Builder is a Python 3.11 command line utility that turns the documentation under
 - Pluggable build system support with generated command sequences for CMake, Meson, and Bazel.
 - Preset inheritance, conditional application, and expression evaluation via `{{ }}` placeholders and `[[ ]]` expressions.
 
+## Setup
+
+### Install (recommended)
+
+Create a virtual environment and install the CLI in editable mode:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -e .
+```
+
+### Run without installing
+
+If you prefer not to install the package, invoke the CLI module directly from the repository root:
+
+```sh
+python -m builder.cli build myapp --preset development
+```
+
+You can also call the script file explicitly:
+
+```sh
+python builder/cli.py build myapp --preset development
+```
+
 ## Usage
 
-Create the expected configuration layout (see `docs/config.md` for details), then run:
+Once the configuration layout is in place (see `docs/config.md`), the installed `builder` command is available:
 
 ```sh
 builder build myapp --preset development
