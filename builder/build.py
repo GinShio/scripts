@@ -370,6 +370,9 @@ class BuildEngine:
         build_dir_exists = build_dir.exists()
         configured = build_dir_exists and self._cmake_is_configured(build_dir)
 
+        if install_dir is not None:
+            definitions.setdefault("CMAKE_INSTALL_PREFIX", str(install_dir))
+
         if mode is BuildMode.BUILD_ONLY and (not build_dir_exists or not configured):
             raise ValueError("Build directory is not configured; run configuration first or use auto mode")
 
@@ -426,7 +429,7 @@ class BuildEngine:
         if options.install:
             if install_dir is None:
                 raise ValueError("Install directory is not defined for this project")
-            cmd = ["cmake", "--install", str(build_dir), "--prefix", str(install_dir)]
+            cmd = ["cmake", "--install", str(build_dir)]
             steps.append(
                 BuildStep(
                     description="Install project",
@@ -452,6 +455,10 @@ class BuildEngine:
         mode = options.operation
         build_dir_exists = build_dir.exists()
         configured = build_dir_exists and self._meson_is_configured(build_dir)
+        prefix_args: List[str] = []
+
+        if install_dir is not None:
+            prefix_args = ["--prefix", str(install_dir)]
 
         should_configure = (
             mode in {BuildMode.CONFIG_ONLY, BuildMode.RECONFIG}
@@ -470,6 +477,8 @@ class BuildEngine:
 
         if should_configure:
             args = ["meson", "setup", str(build_dir), str(effective_source_dir)]
+            if prefix_args:
+                args.extend(prefix_args)
             for key, value in definitions.items():
                 formatted = self._format_meson_value(value)
                 args.append(f"-D{key}={formatted}")
@@ -500,7 +509,7 @@ class BuildEngine:
         if options.install:
             if install_dir is None:
                 raise ValueError("Install directory is not defined for this project")
-            cmd = ["meson", "install", "-C", str(build_dir), "--destdir", str(install_dir)]
+            cmd = ["meson", "install", "-C", str(build_dir)]
             steps.append(
                 BuildStep(
                     description="Install project",

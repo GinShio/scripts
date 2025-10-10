@@ -154,6 +154,27 @@ class BuildEngineTests(unittest.TestCase):
         self.assertIn("Build project", descriptions)
         self.assertNotIn("Configure project", descriptions)
 
+    def test_cmake_configures_install_prefix(self) -> None:
+        install_dir = Path(self.workspace) / "install-root"
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            operation=BuildMode.AUTO,
+            install=True,
+            install_dir=str(install_dir),
+        )
+        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+            plan = self.engine.plan(options)
+
+        configure_cmd = plan.steps[0].command
+        build_cmd = plan.steps[1].command
+        install_cmd = plan.steps[2].command
+
+        configure_str = " ".join(configure_cmd)
+        self.assertIn("CMAKE_INSTALL_PREFIX:STRING=" + str(install_dir), configure_str)
+        self.assertEqual(build_cmd[:3], ["cmake", "--build", str(plan.build_dir)])
+        self.assertEqual(install_cmd, ["cmake", "--install", str(plan.build_dir)])
+
     def test_cli_build_type_overrides_presets(self) -> None:
         options = BuildOptions(
             project_name="demo",
@@ -313,6 +334,26 @@ class BuildEngineTests(unittest.TestCase):
 
         descriptions = [step.description for step in plan.steps]
         self.assertEqual(descriptions, ["Build project"])
+
+    def test_meson_configures_install_prefix(self) -> None:
+        install_dir = Path(self.workspace) / "meson-prefix"
+        options = BuildOptions(
+            project_name="meson-app",
+            presets=["dev"],
+            operation=BuildMode.AUTO,
+            install=True,
+            install_dir=str(install_dir),
+        )
+        plan = self.engine.plan(options)
+
+        configure_cmd = plan.steps[0].command
+        build_cmd = plan.steps[1].command
+        install_cmd = plan.steps[2].command
+
+        self.assertIn("--prefix", configure_cmd)
+        self.assertIn(str(install_dir), configure_cmd)
+        self.assertEqual(build_cmd[:3], ["meson", "compile", "-C"])
+        self.assertEqual(install_cmd, ["meson", "install", "-C", str(plan.build_dir)])
 
     def test_bazel_plan(self) -> None:
         options = BuildOptions(
