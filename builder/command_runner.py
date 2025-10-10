@@ -41,6 +41,7 @@ class CommandRunner:
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
         check: bool = True,
+        note: str | None = None,
     ) -> CommandResult:
         raise NotImplementedError
 
@@ -58,6 +59,7 @@ class SubprocessCommandRunner(CommandRunner):
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
         check: bool = True,
+        note: str | None = None,
     ) -> CommandResult:
         merged_env: Dict[str, str] | None = None
         if env is not None:
@@ -96,14 +98,30 @@ class RecordingCommandRunner(CommandRunner):
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
         check: bool = True,
+        note: str | None = None,
     ) -> CommandResult:
         record = {
             "command": list(command),
             "cwd": str(cwd) if cwd else None,
             "env": dict(env) if env else {},
+            "note": note,
         }
         self.commands.append(record)
         return CommandResult(command=command, returncode=0, stdout="", stderr="")
 
     def iter_commands(self) -> Iterable[dict]:
         return iter(self.commands)
+
+    def iter_formatted(self, *, workspace: Path | None = None) -> Iterable[str]:
+        default_cwd = str(workspace) if workspace else None
+        for record in self.commands:
+            cmd = self.format_command(record["command"])
+            cwd = record["cwd"] or default_cwd
+            note = record.get("note")
+            parts: List[str] = ["[dry-run]"]
+            if note:
+                parts.append(note)
+            if cwd:
+                parts.append(f"(cwd={cwd})")
+            parts.append(cmd)
+            yield " ".join(parts)

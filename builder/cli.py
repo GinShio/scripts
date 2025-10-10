@@ -11,6 +11,10 @@ from .command_runner import RecordingCommandRunner, SubprocessCommandRunner
 from .config_loader import ConfigurationStore
 from .git_manager import GitManager
 
+def _emit_dry_run_output(runner: RecordingCommandRunner, *, workspace: Path) -> None:
+    for line in runner.iter_formatted(workspace=workspace):
+        print(line)
+
 
 def _parse_arguments(argv: Iterable[str]) -> Namespace:
     parser = ArgumentParser(prog="builder", description="Preset-driven build orchestrator")
@@ -125,6 +129,8 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
         if state is not None:
             git_manager.restore_checkout(plan.source_dir, state)
 
+    if args.dry_run and isinstance(runner, RecordingCommandRunner):
+        _emit_dry_run_output(runner, workspace=workspace)
     return 0
 
 
@@ -174,10 +180,7 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
             dry_run=args.dry_run,
         )
     if args.dry_run and isinstance(runner, RecordingCommandRunner):
-        for record in runner.iter_commands():
-            cmd = " ".join(record["command"])
-            cwd = record["cwd"] or workspace
-            print(f"[dry-run] (cwd={cwd}) {cmd}")
+        _emit_dry_run_output(runner, workspace=workspace)
     return 0
 
 

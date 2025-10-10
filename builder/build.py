@@ -226,7 +226,13 @@ class BuildEngine:
         results: List[CommandResult] = []
         if dry_run:
             for step in plan.steps:
-                print(f"[dry-run] {step.description}: {' '.join(step.command)}")
+                self._command_runner.run(
+                    step.command,
+                    cwd=step.cwd,
+                    env=step.env,
+                    check=False,
+                    note=step.description,
+                )
             return results
 
         build_dir_parent = plan.build_dir.parent
