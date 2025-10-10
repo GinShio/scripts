@@ -273,7 +273,7 @@ class BuildEngineTests(unittest.TestCase):
         configure_cmd = plan.steps[0].command
         build_cmd = plan.steps[1].command
         self.assertEqual(configure_cmd[:3], ["meson", "setup", str(plan.build_dir)])
-        self.assertIn("--opt=value", configure_cmd)
+        self.assertIn("-Dopt=value", configure_cmd)
         self.assertIn("--default-library=static", configure_cmd)
         self.assertIn("clang", plan.steps[0].env.get("CC", ""))
         self.assertEqual(plan.steps[0].env.get("CFLAGS"), "-fcolor-diagnostics")

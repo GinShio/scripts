@@ -457,7 +457,8 @@ class BuildEngine:
         if should_configure:
             args = ["meson", "setup", str(build_dir), str(effective_source_dir)]
             for key, value in definitions.items():
-                args.append(f"--{key}={value}")
+                formatted = self._format_meson_value(value)
+                args.append(f"-D{key}={formatted}")
             args.extend(extra_args)
             steps.append(
                 BuildStep(
@@ -675,6 +676,11 @@ class BuildEngine:
             return "ON" if value else "OFF"
         if isinstance(value, (int, float)):
             return str(value)
+        return str(value)
+
+    def _format_meson_value(self, value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
         return str(value)
 
     def _cmake_definition_flag(self, *, name: str, value: Any) -> str:
