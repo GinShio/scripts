@@ -84,6 +84,12 @@ class GitManager:
             return
 
         self._ensure_repository(repo_path)
+        restore_branch: Optional[str] = None
+        if not dry_run:
+            current_branch = self._current_branch(repo_path)
+            if current_branch and current_branch not in {"", "HEAD", main_branch}:
+                restore_branch = current_branch
+
         dirty = self._is_dirty(repo_path)
         stash_applied = False
         if dirty and auto_stash:
@@ -111,6 +117,9 @@ class GitManager:
         if stash_applied:
             self._run_command(["git", "switch", main_branch], cwd=repo_path, dry_run=dry_run)
             self._run_command(["git", "stash", "pop"], cwd=repo_path, check=False, dry_run=dry_run)
+
+        if restore_branch:
+            self._run_command(["git", "switch", restore_branch], cwd=repo_path, dry_run=dry_run)
 
     def _run_command(
         self,
