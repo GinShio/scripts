@@ -43,6 +43,12 @@ class BuildEngineTests(unittest.TestCase):
                 [presets.dev]
                 environment = { CC = "clang" }
                 definitions = { CMAKE_BUILD_TYPE = "Debug" }
+
+                [presets."configs.debug".environment]
+                BUILD_MODE = "debug"
+
+                [presets."configs.release".environment]
+                BUILD_MODE = "release"
                 """
             )
         )
@@ -65,6 +71,21 @@ class BuildEngineTests(unittest.TestCase):
         self.assertIn("_build/feature-x_Release", plan.build_dir.as_posix())
         commands = [step.command for step in plan.steps]
         self.assertTrue(any(cmd[0] == "cmake" and "--build" in cmd for cmd in commands))
+        self.assertIn("configs.release", plan.presets)
+        self.assertEqual(plan.steps[0].env.get("BUILD_MODE"), "release")
+
+    def test_multi_config_adds_debug_and_release_presets(self) -> None:
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            generator="Ninja Multi-Config",
+            operation=BuildMode.AUTO,
+        )
+        plan = self.engine.plan(options)
+        self.assertIn("configs.debug", plan.presets)
+        self.assertIn("configs.release", plan.presets)
+        # Release preset is applied last, so environment reflects release
+        self.assertEqual(plan.steps[0].env.get("BUILD_MODE"), "release")
 
     def test_build_only_requires_existing_build_dir(self) -> None:
         options = BuildOptions(

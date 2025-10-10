@@ -41,6 +41,8 @@ Once the configuration layout is in place (see `docs/config.md`), the installed 
 builder build myapp --preset development
 ```
 
+If you omit presets, the CLI will automatically apply `configs.<build_type>` for single-config generators, or both `configs.debug` and `configs.release` for multi-config generators when those presets are defined.
+
 Enable dry runs to inspect the generated build plan:
 
 ```sh

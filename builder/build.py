@@ -57,6 +57,7 @@ class BuildPlan:
     source_dir: Path
     steps: List[BuildStep]
     context: Dict[str, Any]
+    presets: List[str]
 
 
 _TOOLCHAIN_MATRIX: Dict[str, set[str]] = {
@@ -142,7 +143,12 @@ class BuildEngine:
             project_presets=project.presets,
             shared_presets=[cfg.get("presets", {}) for cfg in self._store.shared_configs.values()],
         )
-        presets_to_resolve = options.presets or []
+        presets_to_resolve = self._determine_presets(
+            provided_presets=options.presets,
+            build_type=build_type,
+            generator=generator,
+            preset_repo=preset_repo,
+        )
         resolved_presets = preset_repo.resolve(presets_to_resolve, template_resolver=resolver)
 
         environment = dict(resolved_presets.environment)
@@ -172,6 +178,7 @@ class BuildEngine:
             source_dir=effective_source_dir,
             steps=plan_steps,
             context=combined_context,
+            presets=presets_to_resolve,
         )
 
     def execute(self, plan: BuildPlan, *, dry_run: bool) -> List[CommandResult]:
@@ -254,6 +261,41 @@ class BuildEngine:
         else:
             raise ValueError(f"Unsupported build system: {project.build_system}")
         return steps
+
+    def _determine_presets(
+        self,
+        *,
+        provided_presets: Iterable[str] | None,
+        build_type: str,
+        generator: str | None,
+        preset_repo: PresetRepository,
+    ) -> List[str]:
+        resolved: List[str] = []
+        if provided_presets:
+            for preset in provided_presets:
+                for part in preset.split(","):
+                    stripped = part.strip()
+                    if stripped and stripped not in resolved:
+                        resolved.append(stripped)
+
+        available = set(preset_repo.available())
+        for preset in self._default_presets(build_type=build_type, generator=generator):
+            if preset in available and preset not in resolved:
+                resolved.append(preset)
+        return resolved
+
+    def _default_presets(self, *, build_type: str, generator: str | None) -> List[str]:
+        if self._is_multi_config_generator(generator):
+            return ["configs.debug", "configs.release"]
+        preset_name = f"configs.{build_type.lower()}"
+        return [preset_name]
+
+    def _is_multi_config_generator(self, generator: str | None) -> bool:
+        if not generator:
+            return False
+        normalized = generator.lower()
+        multi_keywords = ["multi-config", "visual studio", "xcode"]
+        return any(keyword in normalized for keyword in multi_keywords)
 
     def _cmake_steps(
         self,
@@ -455,5 +497,6 @@ class BuildEngine:
                 for step in plan.steps
             ],
             "context": plan.context,
+            "presets": plan.presets,
         }
         return json.dumps(data, indent=2)

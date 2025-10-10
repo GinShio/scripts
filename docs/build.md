@@ -289,6 +289,7 @@ builder build myapp --preset feature-x,feature-y
 #### Behavior:
 - Presets are resolved in the order they are declared.
 - Later presets override earlier ones.
+- If no preset for the current build type is specified explicitly, the builder automatically applies `configs.<build_type>` for single-config generators. Multi-config generators automatically apply both `configs.debug` and `configs.release` (when present).
 
 ---
 
