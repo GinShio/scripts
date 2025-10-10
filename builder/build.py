@@ -367,7 +367,8 @@ class BuildEngine:
             if options.generator:
                 args.extend(["-G", options.generator])
             for key, value in definitions.items():
-                args.extend(["-D", f"{key}={self._format_cmake_value(value)}"])
+                typed_flag = self._cmake_definition_flag(name=key, value=value)
+                args.extend(["-D", typed_flag])
             args.extend(["-B", str(build_dir), "-S", str(effective_source_dir)])
             args.extend(extra_args)
             steps.append(
@@ -578,7 +579,7 @@ class BuildEngine:
         if linker and "CMAKE_LINKER" not in definitions:
             definitions["CMAKE_LINKER"] = linker
         if "CMAKE_EXPORT_COMPILE_COMMANDS" not in definitions:
-            definitions["CMAKE_EXPORT_COMPILE_COMMANDS"] = "ON"
+            definitions["CMAKE_EXPORT_COMPILE_COMMANDS"] = True
 
     def _format_cmake_value(self, value: Any) -> str:
         if isinstance(value, bool):
@@ -586,6 +587,24 @@ class BuildEngine:
         if isinstance(value, (int, float)):
             return str(value)
         return str(value)
+
+    def _cmake_definition_flag(self, *, name: str, value: Any) -> str:
+        type_hint = self._cmake_definition_type(value)
+        formatted_value = self._format_cmake_value(value)
+        if type_hint:
+            return f"{name}:{type_hint}={formatted_value}"
+        return f"{name}={formatted_value}"
+
+    def _cmake_definition_type(self, value: Any) -> str | None:
+        if isinstance(value, bool):
+            return "BOOL"
+        if isinstance(value, int) and not isinstance(value, bool):
+            return "NUMBER"
+        if isinstance(value, float):
+            return "NUMBER"
+        if isinstance(value, str):
+            return "STRING"
+        return None
 
     def serialize_plan(self, plan: BuildPlan) -> str:
         data = {

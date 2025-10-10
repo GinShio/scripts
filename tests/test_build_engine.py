@@ -43,7 +43,7 @@ class BuildEngineTests(unittest.TestCase):
 
                 [presets.dev]
                 environment = { CC = "clang" }
-                definitions = { CMAKE_BUILD_TYPE = "Debug" }
+                definitions = { CMAKE_BUILD_TYPE = "Debug", DEMO_FOO = true, DEMO_NAME = "demo-name", DEMO_THREADS = 4 }
 
                 [presets."configs.debug".environment]
                 BUILD_MODE = "debug"
@@ -81,7 +81,11 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "ld")
         self.assertEqual(plan.steps[0].env.get("CLANG_FORCE_COLOR_DIAGNOSTICS"), "1")
         configure_cmd = plan.steps[0].command
-        self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS=ON", " ".join(configure_cmd))
+        configure_str = " ".join(configure_cmd)
+        self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON", configure_str)
+        self.assertIn("DEMO_FOO:BOOL=ON", configure_str)
+        self.assertIn("DEMO_NAME:STRING=demo-name", configure_str)
+        self.assertIn("DEMO_THREADS:NUMBER=4", configure_str)
 
     def test_multi_config_adds_debug_and_release_presets(self) -> None:
         options = BuildOptions(
@@ -123,16 +127,16 @@ class BuildEngineTests(unittest.TestCase):
         with patch("builder.build.shutil.which", side_effect=fake_which):
             plan = self.engine.plan(options)
         configure = plan.steps[0].command
-        self.assertIn("CMAKE_LINKER=gold", " ".join(configure))
+        self.assertIn("CMAKE_LINKER:STRING=gold", " ".join(configure))
         self.assertEqual(plan.steps[0].env.get("CC"), "ccache gcc")
         self.assertEqual(plan.steps[0].env.get("CXX"), "ccache g++")
         self.assertEqual(plan.steps[0].env.get("CC_LD"), "gold")
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "gold")
         self.assertEqual(plan.steps[0].env.get("GCC_COLORS"), "auto")
         configure_str = " ".join(configure)
-        self.assertIn("CMAKE_C_COMPILER=gcc", configure_str)
-        self.assertIn("CMAKE_C_COMPILER_LAUNCHER=ccache", configure_str)
-        self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS=ON", configure_str)
+        self.assertIn("CMAKE_C_COMPILER:STRING=gcc", configure_str)
+        self.assertIn("CMAKE_C_COMPILER_LAUNCHER:STRING=ccache", configure_str)
+        self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON", configure_str)
 
     def test_toolchain_prefers_mold_then_lld(self) -> None:
         options = BuildOptions(
@@ -152,14 +156,14 @@ class BuildEngineTests(unittest.TestCase):
         with patch("builder.build.shutil.which", side_effect=fake_which):
             plan = self.engine.plan(options)
         configure = plan.steps[0].command
-        self.assertIn("CMAKE_LINKER=mold", " ".join(configure))
+        self.assertIn("CMAKE_LINKER:STRING=mold", " ".join(configure))
         self.assertEqual(plan.steps[0].env.get("CC_LD"), "mold")
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "mold")
         self.assertEqual(plan.steps[0].env.get("CLANG_FORCE_COLOR_DIAGNOSTICS"), "1")
         configure_str = " ".join(configure)
-        self.assertIn("CMAKE_C_COMPILER=clang", configure_str)
-        self.assertIn("CMAKE_C_COMPILER_LAUNCHER=ccache", configure_str)
-        self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS=ON", configure_str)
+        self.assertIn("CMAKE_C_COMPILER:STRING=clang", configure_str)
+        self.assertIn("CMAKE_C_COMPILER_LAUNCHER:STRING=ccache", configure_str)
+        self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON", configure_str)
 
         def fake_which_no_mold(exe: str) -> str | None:
             return {
@@ -172,7 +176,7 @@ class BuildEngineTests(unittest.TestCase):
         with patch("builder.build.shutil.which", side_effect=fake_which_no_mold):
             plan = self.engine.plan(options)
         configure = plan.steps[0].command
-        self.assertIn("CMAKE_LINKER=lld", " ".join(configure))
+        self.assertIn("CMAKE_LINKER:STRING=lld", " ".join(configure))
         self.assertEqual(plan.steps[0].env.get("CC_LD"), "lld")
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "lld")
         self.assertEqual(plan.steps[0].env.get("CLANG_FORCE_COLOR_DIAGNOSTICS"), "1")
