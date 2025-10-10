@@ -3,8 +3,64 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping
+from typing import Any, Callable, Dict, Iterable, Mapping
+import json
 import tomllib
+
+try:  # Optional dependency for YAML support
+    import yaml
+except ModuleNotFoundError:  # pragma: no cover - exercised when PyYAML absent
+    yaml = None
+
+
+ConfigLoader = Callable[[Any], Mapping[str, Any]]
+
+
+def _raise_yaml_missing() -> None:
+    raise RuntimeError("PyYAML is required to load YAML configuration files. Install with `pip install PyYAML`.")
+
+
+_FILE_LOADERS: Dict[str, ConfigLoader] = {
+    ".toml": lambda stream: tomllib.load(stream),
+    ".json": lambda stream: json.load(stream),
+    ".yaml": lambda stream: yaml.safe_load(stream) if yaml else _raise_yaml_missing(),
+    ".yml": lambda stream: yaml.safe_load(stream) if yaml else _raise_yaml_missing(),
+}
+
+
+def _load_config_file(path: Path) -> Mapping[str, Any]:
+    suffix = path.suffix.lower()
+    loader = _FILE_LOADERS.get(suffix)
+    if loader is None:
+        raise ValueError(f"Unsupported configuration file extension: {suffix}")
+    mode = "rb" if suffix == ".toml" else "r"
+    kwargs: Dict[str, Any] = {}
+    if mode == "r":
+        kwargs["encoding"] = "utf-8"
+    with path.open(mode, **kwargs) as handle:
+        data = loader(handle)
+    if not isinstance(data, Mapping):
+        raise TypeError(f"Configuration file '{path}' must contain a mapping at the root")
+    return data
+
+
+def _collect_config_files(directory: Path) -> Dict[str, Path]:
+    files: Dict[str, Path] = {}
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in _FILE_LOADERS:
+            continue
+        stem = path.stem
+        if stem in files:
+            other = files[stem]
+            raise ValueError(
+                f"Multiple configuration files found for '{stem}': '{other.name}' and '{path.name}'. "
+                "Only one format per configuration entry is allowed."
+            )
+        files[stem] = path
+    return files
 
 
 @dataclass(slots=True)
@@ -126,28 +182,26 @@ class ConfigurationStore:
         if not config_dir.exists():
             raise FileNotFoundError(f"Configuration directory not found: {config_dir}")
 
-        global_path = config_dir / "config.toml"
+        top_level_files = _collect_config_files(config_dir)
+
         global_data: Mapping[str, Any] = {}
-        if global_path.exists():
-            with global_path.open("rb") as fh:
-                global_data = tomllib.load(fh)
+        global_path = top_level_files.pop("config", None)
+        if global_path is not None:
+            global_data = _load_config_file(global_path)
         global_config = GlobalConfig.from_mapping(global_data)
 
         shared_configs: Dict[str, Mapping[str, Any]] = {}
-        for path in config_dir.glob("*.toml"):
-            if path.name == "config.toml":
-                continue
-            with path.open("rb") as fh:
-                shared_configs[path.stem] = tomllib.load(fh)
+        for stem, path in sorted(top_level_files.items()):
+            shared_configs[stem] = _load_config_file(path)
 
         projects_dir = config_dir / "projects"
         if not projects_dir.exists():
             raise FileNotFoundError("Directory config/projects does not exist")
 
         projects: Dict[str, ProjectDefinition] = {}
-        for path in sorted(projects_dir.glob("*.toml")):
-            with path.open("rb") as fh:
-                data = tomllib.load(fh)
+        project_files = _collect_config_files(projects_dir)
+        for _, path in sorted(project_files.items()):
+            data = _load_config_file(path)
             project = ProjectDefinition.from_mapping(data)
             projects[project.name] = project
 

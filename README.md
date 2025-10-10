@@ -35,7 +35,7 @@ python builder/cli.py build myapp --preset development
 
 ## Usage
 
-Once the configuration layout is in place (see `docs/config.md`), the installed `builder` command is available:
+Once the configuration layout is in place (see `docs/config.md`), the installed `builder` command is available. Configuration files may be written in TOML, JSON, or YAML, and the loader will pick the appropriate parser based on the file extension:
 
 ```sh
 builder build myapp --preset development

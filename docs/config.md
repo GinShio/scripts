@@ -19,19 +19,23 @@ The configuration files are organized in the following structure as example:
 ```
 
 ### Key Points:
-- **Global Configuration**: `config.toml` serves as the central configuration file for global settings.
-- **Shared Base Configuration**: `company-base.toml` contains reusable configurations shared across multiple projects.
-- **Project Configuration**: Each project has its own configuration file under `projects/`, named after the project.
+- **Global Configuration**: `config.*` (TOML/JSON/YAML) serves as the central configuration file for global settings.
+- **Shared Base Configuration**: Files such as `company-base.toml`, `company-base.json`, or `company-base.yaml` contain reusable configurations shared across multiple projects.
+- **Project Configuration**: Each project has its own configuration file under `projects/`, named after the project. Only one file per stem is allowed (e.g., don't mix `myapp.toml` and `myapp.yaml`).
 
 ---
 
 ## File Naming Conventions
 
+Supported file extensions are `.toml`, `.json`, `.yaml`, and `.yml`. Choose one format per configuration entry.
+
 1. **Project Configuration**:
-   - Use the project name as the file name.
+   - Use the project name as the file name (e.g., `myapp.toml`, `myapp.json`).
    - File names must be concise and avoid special characters.
 2. **Shared Configuration**:
-   - Use descriptive names for shared configurations (e.g., `company-base.toml`).
+   - Use descriptive names for shared configurations (e.g., `company-base.yaml`).
+
+> **Dependency note**: YAML files require the `PyYAML` package. It is included in the default project dependencies, but custom environments must ensure it is installed.
 
 ---
 
