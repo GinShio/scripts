@@ -42,6 +42,7 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
     update_parser.add_argument("project", nargs="?", help="Project to update; omit to update all")
     update_parser.add_argument("--branch", help="Branch to checkout during update")
     update_parser.add_argument("--submodule", choices=["default", "latest", "skip"], default="default", help="Submodule update strategy")
+    update_parser.add_argument("--dry-run", action="store_true", help="Preview git commands without executing them")
 
     return parser.parse_args(list(argv))
 
@@ -140,7 +141,11 @@ def _handle_validate(args: Namespace, workspace: Path) -> int:
 
 def _handle_update(args: Namespace, workspace: Path) -> int:
     store = ConfigurationStore.from_directory(workspace)
-    runner = SubprocessCommandRunner()
+    runner: SubprocessCommandRunner | RecordingCommandRunner
+    if args.dry_run:
+        runner = RecordingCommandRunner()
+    else:
+        runner = SubprocessCommandRunner()
     git_manager = GitManager(runner)
     planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
 
@@ -166,7 +171,13 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
             clone_script=project.git.clone_script,
             update_script=project.git.update_script,
             auto_stash=project.git.auto_stash,
+            dry_run=args.dry_run,
         )
+    if args.dry_run and isinstance(runner, RecordingCommandRunner):
+        for record in runner.iter_commands():
+            cmd = " ".join(record["command"])
+            cwd = record["cwd"] or workspace
+            print(f"[dry-run] (cwd={cwd}) {cmd}")
     return 0
 
 
