@@ -105,8 +105,10 @@ class BuildEngine:
         context_builder = ContextBuilder(builder_path)
 
         branch = options.branch or project.git.main_branch
-        build_type = options.build_type or self._store.global_config.default_build_type
-        generator = options.generator or project.generator
+        build_type = self._determine_build_type(options=options)
+        generator = options.generator if options.generator is not None else project.generator
+        if generator is not None:
+            options.generator = generator
         user_ctx = context_builder.user(branch=branch, build_type=build_type, generator=generator, operation=options.operation.value)
         system_ctx = context_builder.system()
 
@@ -172,6 +174,14 @@ class BuildEngine:
         environment = dict(resolved_presets.environment)
         definitions = dict(resolved_presets.definitions)
         extra_args = [*resolved_presets.extra_args, *options.extra_args]
+
+        self._apply_cmake_build_type(
+            project=project,
+            definitions=definitions,
+            build_type=build_type,
+            build_type_override=options.build_type,
+            generator=generator,
+        )
 
         toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name)
         self._ensure_toolchain_compatibility(project.build_system, toolchain)
@@ -244,6 +254,11 @@ class BuildEngine:
             result = self._command_runner.run(step.command, cwd=cwd, env=step.env)
             results.append(result)
         return results
+
+    def _determine_build_type(self, *, options: BuildOptions) -> str:
+        if options.build_type:
+            return options.build_type
+        return self._store.global_config.default_build_type
 
     def _create_build_steps(
         self,
@@ -362,11 +377,15 @@ class BuildEngine:
         should_configure = mode in {BuildMode.AUTO, BuildMode.CONFIG_ONLY, BuildMode.RECONFIG} or not build_dir_exists
         should_build = mode in {BuildMode.AUTO, BuildMode.BUILD_ONLY}
 
+        is_multi_config = self._is_multi_config_generator(options.generator)
+
         if should_configure:
             args: List[str] = ["cmake"]
             if options.generator:
                 args.extend(["-G", options.generator])
             for key, value in definitions.items():
+                if key == "CMAKE_BUILD_TYPE" and is_multi_config:
+                    continue
                 typed_flag = self._cmake_definition_flag(name=key, value=value)
                 args.extend(["-D", typed_flag])
             args.extend(["-B", str(build_dir), "-S", str(effective_source_dir)])
@@ -384,6 +403,9 @@ class BuildEngine:
             cmd = ["cmake", "--build", str(build_dir)]
             if options.target:
                 cmd.extend(["--target", options.target])
+            if is_multi_config:
+                build_type = self._determine_build_type(options=options)
+                cmd.extend(["--config", build_type])
             cmd.extend(extra_args)
             steps.append(
                 BuildStep(
@@ -543,6 +565,25 @@ class BuildEngine:
             environment.setdefault("CLANG_FORCE_COLOR_DIAGNOSTICS", "1")
         elif toolchain == "gcc":
             environment.setdefault("GCC_COLORS", "auto")
+
+    def _apply_cmake_build_type(
+        self,
+        *,
+        project: ProjectDefinition,
+        definitions: Dict[str, Any],
+        build_type: str,
+        build_type_override: str | None,
+        generator: str | None,
+    ) -> None:
+        if project.build_system != "cmake":
+            return
+        if self._is_multi_config_generator(generator):
+            return
+        if build_type_override is not None:
+            definitions["CMAKE_BUILD_TYPE"] = build_type
+            return
+        if "CMAKE_BUILD_TYPE" not in definitions:
+            definitions["CMAKE_BUILD_TYPE"] = build_type
 
     def _apply_cmake_toolchain(
         self,
