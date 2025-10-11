@@ -116,7 +116,7 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
     )
 
     validate_parser = subparsers.add_parser("validate", help="Validate configuration files")
-    validate_parser.add_argument("--project", help="Validate a single project by name")
+    validate_parser.add_argument("project", nargs="?", help="Validate a single project by name")
 
     update_parser = subparsers.add_parser("update", help="Update Git repositories")
     update_parser.add_argument("project", nargs="?", help="Project to update; omit to update all")
@@ -273,10 +273,24 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
 def _handle_validate(args: Namespace, workspace: Path) -> int:
     store = ConfigurationStore.from_directory(workspace)
     if args.project:
-        _validate_project(store, args.project)
+        project_names = [args.project]
     else:
-        for project_name in store.list_projects():
+        project_names = sorted(store.list_projects())
+
+    errors: List[tuple[str, str]] = []
+    for project_name in project_names:
+        try:
             _validate_project(store, project_name)
+        except Exception as exc:
+            message = exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
+            errors.append((project_name, message))
+
+    if errors:
+        print("Validation failed:")
+        for project_name, message in errors:
+            print(f"  [{project_name}] {message}")
+        return 1
+
     print("Validation successful")
     return 0
 
@@ -455,12 +469,34 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
 
 def _validate_project(store: ConfigurationStore, name: str) -> None:
     project = store.get_project(name)
+    errors: List[str] = []
+
     if not project.source_dir:
-        raise ValueError(f"Project '{name}' has empty source_dir")
-    if project.build_dir is None:
-        return
-    if project.build_system not in {"cmake", "meson", "bazel", "cargo", "make"}:
-        raise ValueError(f"Project '{name}' uses unsupported build system '{project.build_system}'")
+        errors.append("project.source_dir must be defined")
+
+    build_system = project.build_system
+    allowed_systems = {"cmake", "meson", "bazel", "cargo", "make"}
+
+    if build_system is not None and build_system not in allowed_systems:
+        errors.append(
+            f"project.build_system '{build_system}' is not supported (allowed: {', '.join(sorted(allowed_systems))})"
+        )
+
+    if project.build_dir:
+        build_dir_path = Path(project.build_dir)
+        if build_dir_path.is_absolute():
+            errors.append("project.build_dir must be a relative path")
+    required_build_dir_systems = {"cmake", "meson", "cargo", "make"}
+    if build_system in required_build_dir_systems and not project.build_dir:
+        errors.append(f"project.build_dir is required for build_system '{build_system}'")
+
+    if project.component_dir:
+        component_path = Path(project.component_dir)
+        if component_path.is_absolute():
+            errors.append("project.component_dir must be a relative path")
+
+    if errors:
+        raise ValueError("; ".join(errors))
 
 
 def _collect_presets(values: List[str]) -> List[str]:
