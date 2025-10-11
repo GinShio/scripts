@@ -249,6 +249,93 @@ class ListCommandTests(unittest.TestCase):
         parts = [part.strip() for part in submodule_line.split("  ") if part.strip()]
         self.assertEqual(parts, ["fedcba98765", "external/vulkan", "https://example.com/vulkan.git"])
 
+    def test_list_with_presets_and_dependencies(self) -> None:
+        project_path = self.workspace / "config" / "projects" / "complex.toml"
+        project_path.write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "complex"
+                source_dir = "{{builder.path}}/repos/complex"
+
+                [git]
+                url = "https://example.com/complex.git"
+                main_branch = "main"
+
+                [presets.default]
+                description = "Default preset"
+
+                [presets.optimized]
+                description = "Optimized preset"
+
+                [[dependencies]]
+                name = "dep-one"
+                presets = ["fast"]
+
+                [[dependencies]]
+                name = "dep-two"
+                """
+            )
+        )
+        repo_dir = self.workspace / "repos" / "complex"
+        (repo_dir / ".git").mkdir(parents=True, exist_ok=True)
+
+        class FakeGitManager:
+            def __init__(self, runner) -> None:
+                self.runner = runner
+
+            def get_repository_state(self, repo_path: Path, *, environment=None):
+                return ("feature", "1234567890abcdef")
+
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return [
+                    {
+                        "path": "external/lib",
+                        "hash": "abcdefabcdefabcd",
+                        "url": "https://example.com/lib.git",
+                    }
+                ]
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ):
+                return GitWorkState(branch="feature", stash_applied=False)
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                pass
+
+        args = SimpleNamespace(
+            project="complex",
+            branch=None,
+            no_switch_branch=False,
+            url=False,
+            presets=True,
+            dependencies=True,
+        )
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", FakeGitManager):
+            with redirect_stdout(buffer):
+                exit_code = cli._handle_list(args, self.workspace)
+
+        output = buffer.getvalue()
+        self.assertEqual(exit_code, 0)
+        header_line = output.splitlines()[0]
+        self.assertIn("Presets", header_line)
+        self.assertIn("Dependencies", header_line)
+        self.assertIn("default, optimized", output)
+        self.assertIn("dep-one (fast)", output)
+        self.assertIn("dep-two", output)
+        self.assertNotIn("external/lib", output)
+        self.assertNotIn("abcdefabcdefa", output)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

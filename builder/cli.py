@@ -140,6 +140,16 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         action="store_true",
         help="Include repository and submodule URLs in the listing",
     )
+    list_parser.add_argument(
+        "--presets",
+        action="store_true",
+        help="Include preset names in the listing",
+    )
+    list_parser.add_argument(
+        "--dependencies",
+        action="store_true",
+        help="Include dependency information in the listing",
+    )
 
     return parser.parse_args(list(argv))
 
@@ -349,7 +359,10 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         project_names = sorted(store.list_projects())
 
     include_url = bool(getattr(args, "url", False))
-    rows: List[tuple[str, str, str, str, str]] = []
+    include_presets = bool(getattr(args, "presets", False))
+    include_dependencies = bool(getattr(args, "dependencies", False))
+    rows: List[dict[str, str]] = []
+    include_submodules = not (include_presets or include_dependencies)
 
     for name in project_names:
         try:
@@ -430,17 +443,53 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
 
         branch_display = branch or "-"
         commit_display = commit[:11] if commit else "<missing>"
-        rows.append((project.name, branch_display, commit_display, str(repo_path), project_url))
+        row: dict[str, str] = {
+            "Project": project.name,
+            "Branch": branch_display,
+            "Commit": commit_display,
+            "Path": str(repo_path),
+        }
+        if include_url:
+            row["URL"] = project_url
+        if include_presets:
+            preset_names = ", ".join(sorted(project.presets)) if project.presets else "-"
+            row["Presets"] = preset_names
+        if include_dependencies:
+            dependency_entries: List[str] = []
+            for dependency in project.dependencies:
+                if dependency.presets:
+                    dependency_entries.append(
+                        f"{dependency.name} ({', '.join(dependency.presets)})"
+                    )
+                else:
+                    dependency_entries.append(dependency.name)
+            row["Dependencies"] = ", ".join(dependency_entries) if dependency_entries else "-"
+        rows.append(row)
 
         if not repo_path.exists():
             print(f"Warning: Repository path '{repo_path}' does not exist for project '{name}'")
+            continue
+
+        if not include_submodules:
             continue
 
         for submodule in submodules:
             hash_value = submodule.get("hash")
             hash_display = hash_value[:11] if hash_value else "<missing>"
             url_display = submodule.get("url") or "-"
-            rows.append(("", "", hash_display, submodule.get("path", "-"), url_display))
+            submodule_row: dict[str, str] = {
+                "Project": "",
+                "Branch": "",
+                "Commit": hash_display,
+                "Path": submodule.get("path", "-"),
+            }
+            if include_url:
+                submodule_row["URL"] = url_display
+            if include_presets:
+                submodule_row["Presets"] = ""
+            if include_dependencies:
+                submodule_row["Dependencies"] = ""
+            rows.append(submodule_row)
 
     if not rows:
         print("No projects found")
@@ -449,19 +498,23 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
     headers: List[str] = ["Project", "Branch", "Commit", "Path"]
     if include_url:
         headers.append("URL")
+    if include_presets:
+        headers.append("Presets")
+    if include_dependencies:
+        headers.append("Dependencies")
 
-    widths = [len(header) for header in headers]
+    widths = {header: len(header) for header in headers}
     for row in rows:
-        visible = row[: len(headers)]
-        for idx, value in enumerate(visible):
-            widths[idx] = max(widths[idx], len(value))
+        for header in headers:
+            value = row.get(header, "")
+            widths[header] = max(widths[header], len(value))
 
-    def _format(row: tuple[str, str, str, str, str]) -> str:
-        visible = row[: len(headers)]
-        return "  ".join(visible[idx].ljust(widths[idx]) for idx in range(len(headers)))
+    def _format(row: dict[str, str]) -> str:
+        return "  ".join(row.get(header, "").ljust(widths[header]) for header in headers)
 
-    print(_format(headers))
-    print("  ".join("-" * width for width in widths))
+    header_row = {header: header for header in headers}
+    print(_format(header_row))
+    print("  ".join("-" * widths[header] for header in headers))
     for row in rows:
         print(_format(row))
     return 0

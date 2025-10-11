@@ -73,6 +73,12 @@ Inspect a single project:
 builder list myapp
 ```
 
+Reveal presets and dependency relationships in the listing:
+
+```sh
+builder list myapp --presets --dependencies
+```
+
 ## Development
 
 The project targets Python 3.11 and ships with a small unit test suite. Run tests from the repository root:
