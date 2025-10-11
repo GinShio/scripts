@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 import json
 import tomllib
 
@@ -61,6 +61,17 @@ def _collect_config_files(directory: Path) -> Dict[str, Path]:
             )
         files[stem] = path
     return files
+
+
+def _merge_mappings(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> Dict[str, Any]:
+    result: Dict[str, Any] = {key: value for key, value in base.items()}
+    for key, value in overlay.items():
+        existing = result.get(key)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            result[key] = _merge_mappings(existing, value)
+        else:
+            result[key] = value
+    return result
 
 
 def _normalize_string_list(value: Any, *, field_name: str) -> List[str]:
@@ -289,38 +300,77 @@ class ConfigurationStore:
     global_config: GlobalConfig
     shared_configs: Dict[str, Mapping[str, Any]]
     projects: Dict[str, ProjectDefinition]
+    config_dirs: tuple[Path, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_directory(cls, root: Path) -> "ConfigurationStore":
-        config_dir = root / "config"
-        if not config_dir.exists():
-            raise FileNotFoundError(f"Configuration directory not found: {config_dir}")
+        return cls.from_directories(root, [root / "config"])
 
-        top_level_files = _collect_config_files(config_dir)
+    @classmethod
+    def from_directories(cls, root: Path, directories: Iterable[Path]) -> "ConfigurationStore":
+        resolved_dirs: List[Path] = []
+        seen: set[Path] = set()
+        missing: List[Path] = []
+
+        for raw_dir in directories:
+            path = raw_dir
+            if not path.is_absolute():
+                path = (root / path).resolve()
+            else:
+                path = path.resolve()
+
+            if path in seen:
+                resolved_dirs = [existing for existing in resolved_dirs if existing != path]
+            else:
+                seen.add(path)
+
+            if not path.exists():
+                missing.append(path)
+                continue
+
+            resolved_dirs.append(path)
+
+        if missing and not resolved_dirs:
+            missing_display = ", ".join(str(path) for path in missing)
+            raise FileNotFoundError(f"No configuration directories found. Missing: {missing_display}")
+
+        if not resolved_dirs:
+            raise FileNotFoundError("No configuration directories were provided")
 
         global_data: Mapping[str, Any] = {}
-        global_path = top_level_files.pop("config", None)
-        if global_path is not None:
-            global_data = _load_config_file(global_path)
-        global_config = GlobalConfig.from_mapping(global_data)
-
         shared_configs: Dict[str, Mapping[str, Any]] = {}
-        for stem, path in sorted(top_level_files.items()):
-            shared_configs[stem] = _load_config_file(path)
-
-        projects_dir = config_dir / "projects"
-        if not projects_dir.exists():
-            raise FileNotFoundError("Directory config/projects does not exist")
-
         projects: Dict[str, ProjectDefinition] = {}
-        project_files = _collect_config_files(projects_dir)
-        for _, path in sorted(project_files.items()):
-            data = _load_config_file(path)
-            project = ProjectDefinition.from_mapping(data)
-            projects[project.name] = project
+        have_projects_dir = False
+
+        for config_dir in resolved_dirs:
+            top_level_files = _collect_config_files(config_dir)
+            global_path = top_level_files.pop("config", None)
+            if global_path is not None:
+                data = _load_config_file(global_path)
+                global_data = _merge_mappings(global_data, data)
+
+            for stem, path in sorted(top_level_files.items()):
+                shared_configs[stem] = _load_config_file(path)
+
+            projects_dir = config_dir / "projects"
+            if not projects_dir.exists():
+                continue
+
+            have_projects_dir = True
+            project_files = _collect_config_files(projects_dir)
+            for _, path in sorted(project_files.items()):
+                data = _load_config_file(path)
+                project = ProjectDefinition.from_mapping(data)
+                projects[project.name] = project
+
+        if not have_projects_dir or not projects:
+            raise FileNotFoundError("No project configurations found in the provided directories")
+
+        global_config = GlobalConfig.from_mapping(global_data)
 
         return cls(
             root=root,
+            config_dirs=tuple(resolved_dirs),
             global_config=global_config,
             shared_configs=shared_configs,
             projects=projects,

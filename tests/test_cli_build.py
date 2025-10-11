@@ -7,8 +7,51 @@ import tempfile
 import textwrap
 import unittest
 from contextlib import redirect_stdout
+import os
 
 from builder import cli
+
+
+class ConfigDirectoryResolutionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.workspace = Path(self.temp_dir.name)
+        (self.workspace / "config").mkdir()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_resolve_config_directories_order_and_expansion(self) -> None:
+        env_rel = "extras"
+        env_abs = (self.workspace / "env" / "absolute").resolve()
+        env_abs.parent.mkdir(parents=True, exist_ok=True)
+
+        original_env = os.environ.get("BUILDER_CONFIG_DIR")
+        if original_env is None:
+            self.addCleanup(os.environ.pop, "BUILDER_CONFIG_DIR", None)
+        else:
+            self.addCleanup(os.environ.__setitem__, "BUILDER_CONFIG_DIR", original_env)
+        os.environ["BUILDER_CONFIG_DIR"] = os.pathsep.join([env_rel, str(env_abs)])
+
+        cli_override = "overrides"
+        extra_one = self.workspace / "extra-one"
+        extra_two = self.workspace / "extra-two"
+
+        result = cli._resolve_config_directories(
+            self.workspace,
+            [str(extra_one), os.pathsep.join([cli_override, str(extra_two)])],
+        )
+
+        expected = [
+            self.workspace / "config",
+            self.workspace / env_rel,
+            env_abs,
+            extra_one,
+            self.workspace / cli_override,
+            extra_two,
+        ]
+
+        self.assertEqual(result, expected)
 
 
 class BuildCommandDryRunTests(unittest.TestCase):

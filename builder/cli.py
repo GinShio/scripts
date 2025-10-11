@@ -4,6 +4,7 @@ from __future__ import annotations
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import Iterable, List
+import os
 import sys
 
 from .build import BuildEngine, BuildMode, BuildOptions
@@ -66,6 +67,54 @@ def _parse_extra_switches(values: Iterable[str]) -> tuple[List[str], List[str]]:
 
     return config_args, build_args
 
+
+def _split_config_values(values: Iterable[str]) -> List[str]:
+    parts: List[str] = []
+    separator = os.pathsep
+    for value in values:
+        if not value:
+            continue
+        text = value.strip()
+        if not text:
+            continue
+        segments = text.split(separator) if separator in text else [text]
+        for segment in segments:
+            trimmed = segment.strip()
+            if trimmed:
+                parts.append(trimmed)
+    return parts
+
+
+def _resolve_config_directories(workspace: Path, cli_values: Iterable[str]) -> List[Path]:
+    config_dirs: List[Path] = [workspace / "config"]
+
+    env_value = os.environ.get("BUILDER_CONFIG_DIR")
+    if env_value:
+        for entry in _split_config_values([env_value]):
+            path = Path(entry)
+            if not path.is_absolute():
+                path = workspace / path
+            config_dirs.append(path)
+
+    for entry in _split_config_values(cli_values):
+        path = Path(entry)
+        if not path.is_absolute():
+            path = workspace / path
+        config_dirs.append(path)
+
+    ordered: List[Path] = []
+    for path in config_dirs:
+        if path in ordered:
+            ordered.remove(path)
+        ordered.append(path)
+    return ordered
+
+
+def _load_configuration_store(args: Namespace, workspace: Path) -> ConfigurationStore:
+    cli_dirs: Iterable[str] = getattr(args, "config_dirs", [])
+    directories = _resolve_config_directories(workspace, cli_dirs)
+    return ConfigurationStore.from_directories(workspace, directories)
+
 def _emit_dry_run_output(runner: RecordingCommandRunner, *, workspace: Path) -> None:
     for line in runner.iter_formatted(workspace=workspace):
         print(line)
@@ -73,6 +122,14 @@ def _emit_dry_run_output(runner: RecordingCommandRunner, *, workspace: Path) -> 
 
 def _parse_arguments(argv: Iterable[str]) -> Namespace:
     parser = ArgumentParser(prog="builder", description="Preset-driven build orchestrator")
+    parser.add_argument(
+        "--config-dir",
+        dest="config_dirs",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Additional configuration directory (repeat or separate with PATH separator)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     build_parser = subparsers.add_parser("build", help="Configure and build a project")
@@ -174,7 +231,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
 
 def _handle_build(args: Namespace, workspace: Path) -> int:
-    store = ConfigurationStore.from_directory(workspace)
+    store = _load_configuration_store(args, workspace)
     switch_config_args, switch_build_args = _parse_extra_switches(getattr(args, "extra_switches", []))
     cli_extra_config_args = _flatten_arg_groups(getattr(args, "extra_config_args", []))
     cli_extra_build_args = _flatten_arg_groups(getattr(args, "extra_build_args", []))
@@ -281,7 +338,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
 
 
 def _handle_validate(args: Namespace, workspace: Path) -> int:
-    store = ConfigurationStore.from_directory(workspace)
+    store = _load_configuration_store(args, workspace)
     if args.project:
         project_names = [args.project]
     else:
@@ -306,7 +363,7 @@ def _handle_validate(args: Namespace, workspace: Path) -> int:
 
 
 def _handle_update(args: Namespace, workspace: Path) -> int:
-    store = ConfigurationStore.from_directory(workspace)
+    store = _load_configuration_store(args, workspace)
     runner = _make_runner(args.dry_run)
     git_manager = GitManager(runner)
     planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
@@ -344,7 +401,7 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
 
 
 def _handle_list(args: Namespace, workspace: Path) -> int:
-    store = ConfigurationStore.from_directory(workspace)
+    store = _load_configuration_store(args, workspace)
     runner = SubprocessCommandRunner()
     git_manager = GitManager(runner)
     planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
