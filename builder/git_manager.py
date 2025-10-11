@@ -12,6 +12,8 @@ from .command_runner import CommandRunner, CommandResult, CommandError
 class GitWorkState:
     branch: str
     stash_applied: bool
+    component_branch: str | None = None
+    component_path: Path | None = None
 
 
 class GitManager:
@@ -51,6 +53,8 @@ class GitManager:
         auto_stash: bool,
         no_switch_branch: bool,
         environment: Mapping[str, str] | None = None,
+        component_dir: Path | str | None = None,
+        component_branch: str | None = None,
     ) -> GitWorkState:
         repo_path = repo_path.resolve()
         if no_switch_branch:
@@ -63,6 +67,33 @@ class GitManager:
         current_commit = self._current_commit(repo_path, environment=environment)
         target_commit = self._commit_for_branch(repo_path, target_branch, environment=environment)
         branch_switch_needed = current_branch != target_branch and current_commit != target_commit
+
+        component_state_branch: str | None = None
+        component_path: Path | None = None
+        component_target_branch = component_branch or target_branch
+        component_rel_path: Path | None = None
+        component_is_submodule = False
+
+        if component_dir:
+            component_rel_path = Path(component_dir)
+            component_path = component_rel_path if component_rel_path.is_absolute() else (repo_path / component_rel_path).resolve()
+            component_is_submodule = self._is_component_submodule(
+                repo_path,
+                component_rel_path,
+                environment=environment,
+            )
+            if component_is_submodule and component_target_branch:
+                if self._is_git_directory(component_path):
+                    try:
+                        component_state_branch = self._current_branch(component_path, environment=environment)
+                    except CommandError:
+                        component_state_branch = None
+                else:
+                    component_path = None
+                    component_state_branch = None
+            else:
+                component_path = None
+
         dirty = self._is_dirty(repo_path, environment=environment)
         if dirty and branch_switch_needed:
             if auto_stash:
@@ -76,7 +107,6 @@ class GitManager:
                 raise RuntimeError("Working tree has uncommitted changes and auto_stash is disabled")
 
         if branch_switch_needed:
-            self._runner.run(["git", "fetch", "--all"], cwd=repo_path, env=environment)
             result = self._runner.run(
                 ["git", "switch", target_branch],
                 cwd=repo_path,
@@ -84,20 +114,76 @@ class GitManager:
                 check=False,
             )
             if result.returncode != 0:
+                raise RuntimeError(
+                    f"Unable to switch repository at '{repo_path}' to branch '{target_branch}'. Run 'builder update' first."
+                )
+            if component_is_submodule and component_path is not None and component_target_branch:
+                restored_branch = self._switch_component_submodule(
+                    component_path=component_path,
+                    original_branch=component_state_branch,
+                    target_branch=component_target_branch,
+                    environment=environment,
+                )
+                if restored_branch is None:
+                    component_path = None
+                component_state_branch = restored_branch
+            else:
                 self._runner.run(
-                    ["git", "switch", "-c", target_branch, f"origin/{target_branch}"],
+                    ["git", "submodule", "update", "--recursive"],
                     cwd=repo_path,
                     env=environment,
                 )
-        return GitWorkState(branch=current_branch, stash_applied=stash_applied)
+        else:
+            component_path = None
+            component_state_branch = None
+        return GitWorkState(
+            branch=current_branch,
+            stash_applied=stash_applied,
+            component_branch=component_state_branch,
+            component_path=component_path,
+        )
 
-    def restore_checkout(self, repo_path: Path, state: GitWorkState) -> None:
+    def restore_checkout(
+        self,
+        repo_path: Path,
+        state: GitWorkState,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> None:
         repo_path = repo_path.resolve()
-        current_branch = self._current_branch(repo_path)
-        if current_branch != state.branch:
-            self._runner.run(["git", "checkout", state.branch], cwd=repo_path)
+        current_branch = self._current_branch(repo_path, environment=environment)
+        branch_restored = current_branch == state.branch
+        if not branch_restored:
+            self._runner.run(["git", "checkout", state.branch], cwd=repo_path, env=environment)
+            branch_restored = True
+        if branch_restored:
+            self._runner.run(["git", "submodule", "update", "--recursive"], cwd=repo_path, env=environment)
         if state.stash_applied:
-            self._runner.run(["git", "stash", "pop"], cwd=repo_path, check=False)
+            self._runner.run(["git", "stash", "pop"], cwd=repo_path, env=environment, check=False)
+        if state.component_path and state.component_branch:
+            try:
+                component_current = self._current_branch(state.component_path, environment=environment)
+            except CommandError:
+                return
+            component_restored = component_current == state.component_branch
+            if not component_restored:
+                result = self._runner.run(
+                    ["git", "switch", state.component_branch],
+                    cwd=state.component_path,
+                    env=environment,
+                    check=False,
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"Unable to restore component repository at '{state.component_path}' to branch '{state.component_branch}'."
+                    )
+                component_restored = True
+            if component_restored:
+                self._runner.run(
+                    ["git", "submodule", "update", "--recursive"],
+                    cwd=state.component_path,
+                    env=environment,
+                )
 
     def update_repository(
         self,
@@ -243,6 +329,79 @@ class GitManager:
         run_stream = stream if stream is not None else not dry_run
         return self._runner.run(command, cwd=cwd, env=environment, check=check, stream=run_stream)
 
+    def _is_git_directory(self, path: Path) -> bool:
+        git_dir = path / ".git"
+        return git_dir.exists()
+
+    def _is_component_submodule(
+        self,
+        repo_path: Path,
+        component_dir: Path,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> bool:
+        # Normalize path to the git-config representation
+        relative_str = component_dir.as_posix()
+        escaped = relative_str.replace("\"", r"\\\"")
+        candidate_keys = [
+            f'submodule."{escaped}".path',
+            f"submodule.{relative_str}.path",
+        ]
+        for key in candidate_keys:
+            result = self._runner.run(
+                ["git", "config", "--file", ".gitmodules", key],
+                cwd=repo_path,
+                env=environment,
+                check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return True
+        return False
+
+    def _switch_component_submodule(
+        self,
+        *,
+        component_path: Path,
+        original_branch: str | None,
+        target_branch: str,
+        environment: Mapping[str, str] | None = None,
+    ) -> str | None:
+        if not self._is_git_directory(component_path):
+            return None
+
+        try:
+            current_branch = self._current_branch(component_path, environment=environment)
+        except CommandError:
+            current_branch = None
+
+        try:
+            current_commit = self._current_commit(component_path, environment=environment)
+        except CommandError:
+            current_commit = None
+
+        target_commit = self._commit_for_branch(component_path, target_branch, environment=environment)
+        branch_switch_needed = current_branch != target_branch and (current_commit != target_commit)
+
+        if branch_switch_needed:
+            result = self._runner.run(
+                ["git", "switch", target_branch],
+                cwd=component_path,
+                env=environment,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"Unable to switch component repository at '{component_path}' to branch '{target_branch}'. Run 'builder update' first."
+                )
+            self._runner.run(
+                ["git", "submodule", "update", "--recursive"],
+                cwd=component_path,
+                env=environment,
+            )
+            if original_branch and original_branch != target_branch:
+                return original_branch
+        return None
+
     def _current_branch(self, repo_path: Path, *, environment: Mapping[str, str] | None = None) -> str:
         result = self._runner.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -254,6 +413,96 @@ class GitManager:
     def _current_commit(self, repo_path: Path, *, environment: Mapping[str, str] | None = None) -> str:
         result = self._runner.run(["git", "rev-parse", "HEAD"], cwd=repo_path, env=environment)
         return result.stdout.strip()
+
+    def list_submodules(
+        self,
+        repo_path: Path,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        """List all submodules with their paths, URLs, and commit hashes."""
+        repo_path = repo_path.resolve()
+        if not repo_path.exists() or not (repo_path / ".git").exists():
+            return []
+
+        submodules: list[dict[str, str]] = []
+
+        try:
+            # Get submodule status which includes commit hash and path
+            status_result = self._runner.run(
+                ["git", "submodule", "status", "--recursive"],
+                cwd=repo_path,
+                env=environment,
+                check=False,
+            )
+
+            if status_result.returncode != 0:
+                return []
+
+            # Parse submodule status output
+            # Format: [+|-| ]<hash> <path> [(<branch>)]
+            for line in status_result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Remove status prefix (+ for ahead, - for behind, space for clean)
+                if line.startswith(('+', '-', ' ')):
+                    line = line[1:]
+
+                parts = line.split(None, 2)
+                if len(parts) < 2:
+                    continue
+
+                commit_hash = parts[0]
+                submodule_path = parts[1]
+
+                # Get submodule URL from configuration
+                url = ""
+                try:
+                    escaped_path = submodule_path.replace("\"", r"\\\"")
+                    candidate_keys = [
+                        f'submodule."{escaped_path}".url',
+                        f"submodule.{submodule_path}.url",
+                    ]
+
+                    for key in candidate_keys:
+                        url_result = self._runner.run(
+                            ["git", "config", "--file", ".gitmodules", key],
+                            cwd=repo_path,
+                            env=environment,
+                            check=False,
+                        )
+                        if url_result.returncode == 0:
+                            url = url_result.stdout.strip()
+                            if url:
+                                break
+
+                    if not url:
+                        for key in candidate_keys:
+                            url_result = self._runner.run(
+                                ["git", "config", "--get", key],
+                                cwd=repo_path,
+                                env=environment,
+                                check=False,
+                            )
+                            if url_result.returncode == 0:
+                                url = url_result.stdout.strip()
+                                if url:
+                                    break
+                except CommandError:
+                    pass
+
+                submodules.append({
+                    "path": submodule_path,
+                    "hash": commit_hash,
+                    "url": url,
+                })
+
+        except CommandError:
+            pass
+
+        return submodules
 
     def _commit_for_branch(
         self,

@@ -124,8 +124,22 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
     update_parser.add_argument("--submodule", choices=["default", "latest", "skip"], default="default", help="Submodule update strategy")
     update_parser.add_argument("--dry-run", action="store_true", help="Preview git commands without executing them")
 
-    list_parser = subparsers.add_parser("list", help="List project repositories and their current commit")
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List project repositories, their commits, and submodule information",
+    )
     list_parser.add_argument("project", nargs="?", help="Project to inspect; omit to list all projects")
+    list_parser.add_argument("--branch", help="Git branch to inspect (switches repositories unless --no-switch-branch is used)")
+    list_parser.add_argument(
+        "--no-switch-branch",
+        action="store_true",
+        help="Do not switch Git branches automatically when inspecting repositories",
+    )
+    list_parser.add_argument(
+        "--url",
+        action="store_true",
+        help="Include repository and submodule URLs in the listing",
+    )
 
     return parser.parse_args(list(argv))
 
@@ -222,7 +236,11 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
             engine.execute(plan, dry_run=args.dry_run)
         finally:
             if state is not None:
-                git_manager.restore_checkout(plan.source_dir, state)
+                git_manager.restore_checkout(
+                    plan.source_dir,
+                    state,
+                    environment=plan.git_environment,
+                )
 
     for dependency in dependencies:
         dep_options = BuildOptions(
@@ -316,7 +334,8 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
     else:
         project_names = sorted(store.list_projects())
 
-    rows: List[tuple[str, str, str, str]] = []
+    include_url = bool(getattr(args, "url", False))
+    rows: List[tuple[str, str, str, str, str]] = []
 
     for name in project_names:
         try:
@@ -325,31 +344,107 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
             print(str(exc))
             continue
 
-        options = BuildOptions(
-            project_name=project.name,
-            presets=[],
-            operation=BuildMode.CONFIG_ONLY,
-        )
-        plan = planning_engine.plan(options)
+        try:
+            options = BuildOptions(
+                project_name=project.name,
+                presets=[],
+                branch=args.branch,
+                no_switch_branch=args.no_switch_branch,
+                operation=BuildMode.CONFIG_ONLY,
+            )
+            plan = planning_engine.plan(options)
+        except ValueError as exc:
+            print(f"Warning: Configuration error for project '{name}': {exc}")
+            continue
+        except Exception as exc:
+            print(f"Warning: Error processing project '{name}': {exc}")
+            continue
+
         repo_path = plan.source_dir
-        branch, commit = git_manager.get_repository_state(repo_path, environment=plan.git_environment)
+        project_url = project.git.url or "-"
+
+        branch: str | None = None
+        commit: str | None = None
+        state = None
+        repo_ready = repo_path.exists() and (repo_path / ".git").exists()
+        submodules: List[dict[str, str]] = []
+
+        try:
+            if repo_ready:
+                component_dir_arg: Path | None = None
+                if project.component_dir:
+                    if isinstance(plan.context, dict):
+                        project_ctx = plan.context.get("project", {})  # type: ignore[arg-type]
+                    else:
+                        project_ctx = {}
+                    resolved_component = None
+                    if isinstance(project_ctx, dict):
+                        resolved_component = project_ctx.get("component_dir")
+                    if resolved_component:
+                        resolved_path = Path(resolved_component)
+                        try:
+                            component_dir_arg = resolved_path.relative_to(repo_path)
+                        except ValueError:
+                            component_dir_arg = Path(project.component_dir)
+                    else:
+                        component_dir_arg = Path(project.component_dir)
+
+                state = git_manager.prepare_checkout(
+                    repo_path=repo_path,
+                    target_branch=plan.branch,
+                    auto_stash=plan.project.git.auto_stash,
+                    no_switch_branch=args.no_switch_branch,
+                    environment=plan.git_environment,
+                    component_dir=component_dir_arg,
+                    component_branch=plan.branch if component_dir_arg else None,
+                )
+            branch, commit = git_manager.get_repository_state(repo_path, environment=plan.git_environment)
+            if repo_path.exists():
+                submodules = git_manager.list_submodules(repo_path, environment=plan.git_environment)
+        except RuntimeError as exc:
+            print(f"Warning: Could not prepare repository '{name}': {exc}")
+        finally:
+            if state is not None:
+                try:
+                    git_manager.restore_checkout(
+                        repo_path,
+                        state,
+                        environment=plan.git_environment,
+                    )
+                except RuntimeError as exc:
+                    print(f"Warning: Could not restore repository '{name}': {exc}")
 
         branch_display = branch or "-"
-        commit_display = commit or "<missing>"
-        rows.append((project.name, branch_display, commit_display, str(repo_path)))
+        commit_display = commit[:11] if commit else "<missing>"
+        rows.append((project.name, branch_display, commit_display, str(repo_path), project_url))
+
+        if not repo_path.exists():
+            print(f"Warning: Repository path '{repo_path}' does not exist for project '{name}'")
+            continue
+
+        for submodule in submodules:
+            hash_value = submodule.get("hash")
+            hash_display = hash_value[:11] if hash_value else "<missing>"
+            url_display = submodule.get("url") or "-"
+            rows.append(("", "", hash_display, submodule.get("path", "-"), url_display))
 
     if not rows:
         print("No projects found")
         return 0
 
-    headers = ("Project", "Branch", "Commit", "Path")
+    headers: List[str] = ["Project", "Branch", "Commit", "Path"]
+    if include_url:
+        headers.append("URL")
+
     widths = [len(header) for header in headers]
     for row in rows:
-        for idx, value in enumerate(row):
+        visible = row[: len(headers)]
+        for idx, value in enumerate(visible):
             widths[idx] = max(widths[idx], len(value))
 
-    def _format(values: tuple[str, str, str, str]) -> str:
-        return "  ".join(value.ljust(widths[idx]) for idx, value in enumerate(values))
+    def _format(row: tuple[str, str, str, str, str]) -> str:
+        visible = row[: len(headers)]
+        return "  ".join(visible[idx].ljust(widths[idx]) for idx in range(len(headers)))
 
     print(_format(headers))
     print("  ".join("-" * width for width in widths))

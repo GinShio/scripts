@@ -11,6 +11,7 @@ from unittest.mock import patch
 import shutil
 
 from builder import cli
+from builder.git_manager import GitWorkState
 
 
 class ListCommandTests(unittest.TestCase):
@@ -51,14 +52,39 @@ class ListCommandTests(unittest.TestCase):
 
     def test_list_all_projects_displays_commit_information(self) -> None:
         class FakeGitManager:
+            last_instance = None
+
             def __init__(self, runner) -> None:
                 self.runner = runner
+                self.prepare_calls: list[tuple[Path, str]] = []
+                self.restore_calls: list[Path] = []
+                FakeGitManager.last_instance = self
 
             def get_repository_state(self, repo_path: Path, *, environment=None):
                 self.repo_path = repo_path
                 return ("main", "abcdef1234567890")
 
-        args = SimpleNamespace(project=None)
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return []
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ):
+                self.prepare_calls.append((repo_path, target_branch))
+                return GitWorkState(branch="main", stash_applied=False)
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                self.restore_calls.append(repo_path)
+
+        args = SimpleNamespace(project=None, branch=None, no_switch_branch=False, url=False)
         buffer = io.StringIO()
         with patch("builder.cli.GitManager", FakeGitManager):
             with redirect_stdout(buffer):
@@ -67,17 +93,89 @@ class ListCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("Project", output)
         self.assertIn("demo", output)
-        self.assertIn("abcdef1234567890", output)
+        self.assertIn("abcdef12345", output)
+        self.assertNotIn("https://example.com/demo.git", output)
+        header_line = output.splitlines()[0]
+        self.assertNotIn("URL", header_line)
 
-    def test_list_handles_missing_repository(self) -> None:
+        fake_manager = FakeGitManager.last_instance
+        self.assertIsNotNone(fake_manager)
+        self.assertEqual(len(fake_manager.prepare_calls), 1)
+        self.assertEqual(fake_manager.prepare_calls[0][1], "main")
+        self.assertEqual(len(fake_manager.restore_calls), 1)
+
+    def test_list_with_url_flag_displays_repository_url(self) -> None:
         class FakeGitManager:
             def __init__(self, runner) -> None:
                 self.runner = runner
 
             def get_repository_state(self, repo_path: Path, *, environment=None):
+                return ("dev", "0123456789abcdef")
+
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return []
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ):
+                return GitWorkState(branch="dev", stash_applied=False)
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                pass
+
+        args = SimpleNamespace(project=None, branch=None, no_switch_branch=False, url=True)
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", FakeGitManager):
+            with redirect_stdout(buffer):
+                exit_code = cli._handle_list(args, self.workspace)
+
+        output = buffer.getvalue()
+        self.assertEqual(exit_code, 0)
+        header_line = output.splitlines()[0]
+        self.assertIn("URL", header_line)
+        self.assertIn("https://example.com/demo.git", output)
+
+    def test_list_handles_missing_repository(self) -> None:
+        class FakeGitManager:
+            last_instance = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+                self.prepare_calls: list[tuple[Path, str]] = []
+                FakeGitManager.last_instance = self
+
+            def get_repository_state(self, repo_path: Path, *, environment=None):
                 return (None, None)
 
-        args = SimpleNamespace(project="demo")
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return []
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ):
+                self.prepare_calls.append((repo_path, target_branch))
+                return GitWorkState(branch="main", stash_applied=False)
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                pass
+
+        args = SimpleNamespace(project="demo", branch=None, no_switch_branch=False, url=False)
         repo_dir = self.workspace / "repos" / "demo"
         # Remove the .git directory to simulate missing repo
         if (repo_dir / ".git").exists():
@@ -91,6 +189,65 @@ class ListCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("demo", output)
         self.assertIn("<missing>", output)
+
+        fake_manager = FakeGitManager.last_instance
+        self.assertIsNotNone(fake_manager)
+        self.assertEqual(len(fake_manager.prepare_calls), 0)
+
+    def test_list_displays_submodules_section(self) -> None:
+        class FakeGitManager:
+            last_instance = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+                FakeGitManager.last_instance = self
+
+            def get_repository_state(self, repo_path: Path, *, environment=None):
+                return ("main", "1234567890abcdef")
+
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return [
+                    {
+                        "path": "external/vulkan",
+                        "hash": "fedcba9876543210",
+                        "url": "https://example.com/vulkan.git",
+                    }
+                ]
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ):
+                return GitWorkState(branch="main", stash_applied=False)
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                pass
+
+        args = SimpleNamespace(project=None, branch=None, no_switch_branch=False, url=True)
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", FakeGitManager):
+            with redirect_stdout(buffer):
+                exit_code = cli._handle_list(args, self.workspace)
+
+        output = buffer.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Project", output)
+        self.assertIn("URL", output.splitlines()[0])
+        lines = [line for line in output.splitlines() if "external/vulkan" in line]
+        self.assertEqual(len(lines), 1)
+        submodule_line = lines[0]
+        self.assertIn("fedcba98765", submodule_line)
+        self.assertIn("external/vulkan", submodule_line)
+        self.assertIn("https://example.com/vulkan.git", submodule_line)
+        parts = [part.strip() for part in submodule_line.split("  ") if part.strip()]
+        self.assertEqual(parts, ["fedcba98765", "external/vulkan", "https://example.com/vulkan.git"])
 
 
 if __name__ == "__main__":  # pragma: no cover
