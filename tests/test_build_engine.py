@@ -268,6 +268,7 @@ class BuildEngineTests(unittest.TestCase):
 
         self.assertEqual(plan.source_dir, expected_source)
         self.assertNotEqual(plan.source_dir, component_subdir)
+        self.assertEqual(plan.configure_source_dir, expected_source)
         self.assertEqual(plan.branch, "dev/one")
         self.assertEqual(plan.branch_slug, "dev_one")
         self.assertTrue(plan.steps)
@@ -299,8 +300,10 @@ class BuildEngineTests(unittest.TestCase):
         with patch("builder.build.shutil.which", return_value=None):
             plan = self.engine.plan(options)
 
-        expected_source = self.workspace / "examples" / "component-source-root" / "libs" / "core"
-        self.assertEqual(plan.source_dir, expected_source)
+        repo_root = self.workspace / "examples" / "component-source-root"
+        expected_source = repo_root / "libs" / "core"
+        self.assertEqual(plan.source_dir, repo_root)
+        self.assertEqual(plan.configure_source_dir, expected_source)
         self.assertTrue(plan.steps)
         configure_step = plan.steps[0]
         self.assertIn(str(expected_source), configure_step.command)
