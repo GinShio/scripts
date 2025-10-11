@@ -11,12 +11,22 @@ from .template import TemplateResolver, TemplateError
 class ResolvedPreset:
     environment: Dict[str, str] = field(default_factory=dict)
     definitions: Dict[str, Any] = field(default_factory=dict)
-    extra_args: List[str] = field(default_factory=list)
+    extra_config_args: List[str] = field(default_factory=list)
+    extra_build_args: List[str] = field(default_factory=list)
 
     def merge(self, other: "ResolvedPreset") -> None:
         self.environment.update(other.environment)
         self.definitions.update(other.definitions)
-        self.extra_args.extend(arg for arg in other.extra_args if arg not in self.extra_args)
+        self._extend_unique(self.extra_config_args, other.extra_config_args)
+        self._extend_unique(self.extra_build_args, other.extra_build_args)
+
+    @staticmethod
+    def _extend_unique(target: List[str], values: Iterable[str]) -> None:
+        existing = set(target)
+        for value in values:
+            if value not in existing:
+                target.append(value)
+                existing.add(value)
 
 
 class PresetRepository:
@@ -110,10 +120,23 @@ class PresetRepository:
                 def_values[str(key)] = template_resolver.resolve(value)
             resolved.definitions.update(def_values)
 
-        extra_args = preset_data.get("extra_args")
-        if isinstance(extra_args, Iterable) and not isinstance(extra_args, (str, bytes)):
-            for value in extra_args:
-                converted = template_resolver.resolve(value)
-                resolved.extra_args.append(str(converted))
+        def _collect_args(raw_value: Any) -> List[str]:
+            collected: List[str] = []
+            if isinstance(raw_value, Iterable) and not isinstance(raw_value, (str, bytes)):
+                for value in raw_value:
+                    converted = template_resolver.resolve(value)
+                    collected.append(str(converted))
+            elif isinstance(raw_value, (str, bytes)):
+                converted = template_resolver.resolve(raw_value)
+                collected.append(str(converted))
+            return collected
+
+        config_args = _collect_args(preset_data.get("extra_config_args"))
+        if config_args:
+            ResolvedPreset._extend_unique(resolved.extra_config_args, config_args)
+
+        build_args = _collect_args(preset_data.get("extra_build_args"))
+        if build_args:
+            ResolvedPreset._extend_unique(resolved.extra_build_args, build_args)
 
         return resolved

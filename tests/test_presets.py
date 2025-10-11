@@ -46,6 +46,38 @@ class PresetRepositoryTests(unittest.TestCase):
         self.assertEqual(resolved.environment["CC"], "clang")
         self.assertNotIn("cl", resolved.environment.values())
 
+    def test_collects_extra_args_without_duplicates(self) -> None:
+        repo = PresetRepository(
+            project_presets={
+                "base": {
+                    "extra_config_args": ["-DCONFIG_FROM_BASE", "-Dshared"],
+                    "extra_build_args": ["--build-from-base", "-Dshared"],
+                },
+                "child": {
+                    "extends": ["base"],
+                    "extra_config_args": ["-DCONFIG_FROM_CHILD"],
+                    "extra_build_args": ["--build-from-child"],
+                },
+            }
+        )
+        resolved = repo.resolve(["child"], template_resolver=self.resolver)
+        self.assertEqual(
+            set(resolved.extra_config_args),
+            {
+                "-DCONFIG_FROM_BASE",
+                "-Dshared",
+                "-DCONFIG_FROM_CHILD",
+            },
+        )
+        self.assertEqual(
+            set(resolved.extra_build_args),
+            {
+                "--build-from-base",
+                "-Dshared",
+                "--build-from-child",
+            },
+        )
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

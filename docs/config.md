@@ -19,7 +19,6 @@ The configuration files are organized in the following structure as example:
 ```
 
 ### Key Points:
-presets = ["ci", "asan"]  # Optional presets applied when building the dependency
 - **Shared Base Configuration**: Files such as `company-base.toml`, `company-base.json`, or `company-base.yaml` contain reusable configurations shared across multiple projects.
 - **Project Configuration**: Each project has its own configuration file under `projects/`, named after the project. Only one file per stem is allowed (e.g., don't mix `myapp.toml` and `myapp.yaml`).
 
@@ -99,6 +98,10 @@ component_dir = "packages/my-component"
 # Monorepo build behavior (optional)
 build_at_root = true  # true = build at root, false = build at component level
 
+# Extra arguments forwarded to build tooling (optional)
+extra_config_args = ["-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
+extra_build_args = ["--target", "install"]
+
 [git]
 # Project Git URL (required)
 url = "https://example.com/example/app.git"
@@ -117,6 +120,10 @@ update_script = "{{project.source_dir}}/scripts/update.sh"
 clone_script = "{{project.source_dir}}/scripts/clone.sh"
 ```
 
+Use `extra_config_args` to append arguments only to the configuration command
+(for example additional `-D` definitions for CMake). Use `extra_build_args`
+for flags that should only be passed to the build step (such as `--target`).
+
 ## Project Dependencies
 
 Projects can express relationships with other configured projects using an
@@ -125,18 +132,16 @@ array of tables named `dependencies`:
 ```toml
 [[dependencies]]
 name = "libcore"          # Project name declared in another file
-build = true               # Optional (default: true)
 presets = ["ci", "asan"]  # Optional presets applied when building the dependency
 
 [[dependencies]]
 name = "tools"
-build = false              # Plan but skip build steps for this dependency
 ```
 
 Dependencies are resolved transitively and executed in topological order before
-the requested project. Cycles are rejected during planning. When `build = false`
-the dependency is still planned (allowing variable resolution) but its build
-steps are skipped, which is useful for tooling or runtime-only dependencies.
+the requested project. Cycles are rejected during planning. To track a project
+without executing build steps, omit its `build_dir`; the dependency will still
+be planned so variables resolve, but no configure/build commands will run.
 
 ---
 
@@ -169,7 +174,8 @@ definitions = {
 }
 
 # Additional build arguments (optional)
-extra_args = ["--warn-uninitialized"]
+extra_config_args = ["-DENABLE_WARNINGS=ON"]
+extra_build_args = ["--warn-uninitialized"]
 ```
 
 ### Inheritance Rules:

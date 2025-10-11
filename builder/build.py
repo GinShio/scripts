@@ -35,7 +35,8 @@ class BuildOptions:
     show_vars: bool = False
     no_switch_branch: bool = False
     verbose: bool = False
-    extra_args: List[str] = field(default_factory=list)
+    extra_config_args: List[str] = field(default_factory=list)
+    extra_build_args: List[str] = field(default_factory=list)
     toolchain: str | None = None
     install_dir: str | None = None
     operation: BuildMode = BuildMode.AUTO
@@ -60,7 +61,8 @@ class BuildPlan:
     presets: List[str]
     environment: Dict[str, str]
     definitions: Dict[str, Any]
-    extra_args: List[str]
+    extra_config_args: List[str]
+    extra_build_args: List[str]
 
 
 _TOOLCHAIN_MATRIX: Dict[str, set[str]] = {
@@ -98,6 +100,14 @@ class BuildEngine:
         self._store = store
         self._command_runner = command_runner
         self._workspace = workspace
+
+    @staticmethod
+    def _extend_unique(target: List[str], values: Iterable[str]) -> None:
+        existing = set(target)
+        for value in values:
+            if value not in existing:
+                target.append(value)
+                existing.add(value)
 
     def plan(self, options: BuildOptions) -> BuildPlan:
         project = self._store.get_project(options.project_name)
@@ -179,7 +189,15 @@ class BuildEngine:
 
         environment = dict(resolved_presets.environment)
         definitions = dict(resolved_presets.definitions)
-        extra_args = [*resolved_presets.extra_args, *options.extra_args]
+        project_config_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_config_args]
+        project_build_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_build_args]
+
+        extra_config_args = list(resolved_presets.extra_config_args)
+        extra_build_args = list(resolved_presets.extra_build_args)
+        self._extend_unique(extra_config_args, project_config_args_resolved)
+        self._extend_unique(extra_build_args, project_build_args_resolved)
+        self._extend_unique(extra_config_args, options.extra_config_args)
+        self._extend_unique(extra_build_args, options.extra_build_args)
 
         plan_steps: List[BuildStep] = []
         if build_enabled and build_dir_path is not None:
@@ -228,7 +246,8 @@ class BuildEngine:
                 install_dir=install_dir,
                 environment=environment,
                 definitions=definitions,
-                extra_args=extra_args,
+                extra_config_args=extra_config_args,
+                extra_build_args=extra_build_args,
                 options=options,
             )
 
@@ -242,7 +261,8 @@ class BuildEngine:
             presets=presets_to_resolve,
             environment=environment,
             definitions=definitions,
-            extra_args=extra_args,
+            extra_config_args=extra_config_args,
+            extra_build_args=extra_build_args,
         )
 
     def execute(self, plan: BuildPlan, *, dry_run: bool) -> List[CommandResult]:
@@ -285,7 +305,8 @@ class BuildEngine:
         install_dir: Path | None,
         environment: Dict[str, str],
         definitions: Dict[str, Any],
-        extra_args: List[str],
+        extra_config_args: List[str],
+        extra_build_args: List[str],
         options: BuildOptions,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
@@ -299,7 +320,8 @@ class BuildEngine:
                     install_dir=install_dir,
                     environment=env,
                     definitions=definitions,
-                    extra_args=extra_args,
+                    extra_config_args=extra_config_args,
+                    extra_build_args=extra_build_args,
                     options=options,
                 )
             )
@@ -311,7 +333,8 @@ class BuildEngine:
                     install_dir=install_dir,
                     environment=env,
                     definitions=definitions,
-                    extra_args=extra_args,
+                    extra_config_args=extra_config_args,
+                    extra_build_args=extra_build_args,
                     options=options,
                 )
             )
@@ -321,7 +344,7 @@ class BuildEngine:
                     effective_source_dir=effective_source_dir,
                     environment=env,
                     definitions=definitions,
-                    extra_args=extra_args,
+                    extra_build_args=extra_build_args,
                     options=options,
                 )
             )
@@ -372,7 +395,8 @@ class BuildEngine:
         install_dir: Path | None,
         environment: Dict[str, str],
         definitions: Dict[str, Any],
-        extra_args: List[str],
+        extra_config_args: List[str],
+        extra_build_args: List[str],
         options: BuildOptions,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
@@ -409,7 +433,7 @@ class BuildEngine:
                 typed_flag = self._cmake_definition_flag(name=key, value=value)
                 args.extend(["-D", typed_flag])
             args.extend(["-B", str(build_dir), "-S", str(effective_source_dir)])
-            args.extend(extra_args)
+            args.extend(extra_config_args)
             steps.append(
                 BuildStep(
                     description="Configure project",
@@ -426,7 +450,7 @@ class BuildEngine:
             if is_multi_config:
                 build_type = self._determine_build_type(options=options)
                 cmd.extend(["--config", build_type])
-            cmd.extend(extra_args)
+            cmd.extend(extra_build_args)
             steps.append(
                 BuildStep(
                     description="Build project",
@@ -458,7 +482,8 @@ class BuildEngine:
         install_dir: Path | None,
         environment: Dict[str, str],
         definitions: Dict[str, Any],
-        extra_args: List[str],
+        extra_config_args: List[str],
+        extra_build_args: List[str],
         options: BuildOptions,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
@@ -492,7 +517,7 @@ class BuildEngine:
             for key, value in definitions.items():
                 formatted = self._format_meson_value(value)
                 args.append(f"-D{key}={formatted}")
-            args.extend(extra_args)
+            args.extend(extra_config_args)
             steps.append(
                 BuildStep(
                     description="Configure project",
@@ -506,7 +531,7 @@ class BuildEngine:
             cmd = ["meson", "compile", "-C", str(build_dir)]
             if options.target:
                 cmd.extend(["--target", options.target])
-            cmd.extend(extra_args)
+            cmd.extend(extra_build_args)
             steps.append(
                 BuildStep(
                     description="Build project",
@@ -544,7 +569,7 @@ class BuildEngine:
         effective_source_dir: Path,
         environment: Dict[str, str],
         definitions: Dict[str, Any],
-        extra_args: List[str],
+        extra_build_args: List[str],
         options: BuildOptions,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
@@ -555,7 +580,7 @@ class BuildEngine:
         build_opts = definitions.get("BUILD_OPTS")
         if isinstance(build_opts, str):
             cmd.append(build_opts)
-        cmd.extend(extra_args)
+        cmd.extend(extra_build_args)
         steps.append(
             BuildStep(
                 description="Build project",
@@ -760,6 +785,7 @@ class BuildEngine:
             "presets": plan.presets,
             "environment": plan.environment,
             "definitions": plan.definitions,
-            "extra_args": plan.extra_args,
+                "extra_config_args": plan.extra_config_args,
+                "extra_build_args": plan.extra_build_args,
         }
         return json.dumps(data, indent=2)

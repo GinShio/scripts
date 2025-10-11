@@ -69,7 +69,9 @@ class BuildCommandDryRunTests(unittest.TestCase):
             config_only=False,
             build_only=False,
             reconfig=False,
-            extra_args=[],
+            extra_switches=[],
+            extra_config_args=[],
+            extra_build_args=[],
         )
         buffer = io.StringIO()
         with redirect_stdout(buffer):
@@ -142,7 +144,9 @@ class BuildCommandDryRunTests(unittest.TestCase):
             config_only=False,
             build_only=False,
             reconfig=False,
-            extra_args=[],
+            extra_switches=[],
+            extra_config_args=[],
+            extra_build_args=[],
         )
         buffer = io.StringIO()
         with redirect_stdout(buffer):
@@ -189,7 +193,9 @@ class BuildCommandDryRunTests(unittest.TestCase):
             config_only=False,
             build_only=False,
             reconfig=False,
-            extra_args=[],
+            extra_switches=[],
+            extra_config_args=[],
+            extra_build_args=[],
         )
         buffer = io.StringIO()
         with redirect_stdout(buffer):
@@ -198,6 +204,30 @@ class BuildCommandDryRunTests(unittest.TestCase):
         output = buffer.getvalue()
         self.assertIn("No build steps for project 'meta'", output)
         self.assertNotIn("[dry-run]", output)
+
+
+class ExtraSwitchParsingTests(unittest.TestCase):
+    def test_parse_scoped_switches(self) -> None:
+        config_args, build_args = cli._parse_extra_switches(
+            [
+                "config,-DCONFIG_ONLY",
+                "build,--build-only",
+                "--shared-flag",
+                "build,--multi-a,--multi-b",
+            ]
+        )
+        self.assertEqual(
+            config_args,
+            ["-DCONFIG_ONLY", "--shared-flag"],
+        )
+        self.assertEqual(
+            build_args,
+            ["--build-only", "--shared-flag", "--multi-a", "--multi-b"],
+        )
+
+    def test_flatten_arg_groups(self) -> None:
+        flattened = cli._flatten_arg_groups([["-DA"], ["-DB", "-DC"]])
+        self.assertEqual(flattened, ["-DA", "-DB", "-DC"])
 
 
 if __name__ == "__main__":  # pragma: no cover

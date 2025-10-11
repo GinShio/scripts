@@ -325,6 +325,37 @@ class ConfigurationLoaderTests(unittest.TestCase):
                 self.assertIsNone(project.build_dir)
                 self.assertIsNone(project.build_system)
 
+        def test_project_extra_args_are_kept_separate(self) -> None:
+                (self.config_dir / "config.toml").write_text("[global]\n")
+                (self.projects_dir / "demo.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "demo"
+                                source_dir = "/src/demo"
+                                build_dir = "_build"
+                                build_system = "cmake"
+                                extra_config_args = ["-DCONFIG_FROM_PROJECT", "-Dshared"]
+                                extra_build_args = ["--build-from-project", "--target", "install"]
+
+                                [git]
+                                url = "https://example.com/demo.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                project = store.get_project("demo")
+                self.assertEqual(
+                        project.extra_config_args,
+                        ["-DCONFIG_FROM_PROJECT", "-Dshared"],
+                )
+                self.assertEqual(
+                        project.extra_build_args,
+                        ["--build-from-project", "--target", "install"],
+                )
+
 
 if __name__ == "__main__":  # pragma: no cover
         unittest.main()

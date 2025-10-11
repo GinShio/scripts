@@ -68,7 +68,7 @@ class BuildEngineTests(unittest.TestCase):
                 main_branch = "main"
 
                 [presets.dev]
-                extra_args = ["--default-library=static"]
+                extra_config_args = ["--default-library=static"]
 
                 [presets.dev.environment]
                 CC = "clang"
@@ -394,6 +394,61 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(plan.steps, [])
         results = self.engine.execute(plan, dry_run=False)
         self.assertEqual(results, [])
+
+    def test_extra_args_are_merged_without_duplicates(self) -> None:
+        projects_dir = self.workspace / "config" / "projects"
+        (projects_dir / "split-args.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "split-args"
+                source_dir = "{{builder.path}}/examples/split-args"
+                build_dir = "_build"
+                build_system = "cmake"
+                extra_config_args = ["-DCONFIG_FROM_PROJECT", "-Dshared"]
+                extra_build_args = ["--build-from-project", "-Dshared"]
+
+                [git]
+                url = "https://example.com/split.git"
+                main_branch = "main"
+
+                [presets.extra]
+                extra_config_args = ["-DCONFIG_FROM_PRESET", "-Dshared"]
+                extra_build_args = ["--build-from-preset", "-Dshared"]
+                """
+            )
+        )
+
+        store = ConfigurationStore.from_directory(self.workspace)
+        engine = BuildEngine(store=store, command_runner=self.runner, workspace=self.workspace)
+        options = BuildOptions(
+            project_name="split-args",
+            presets=["extra"],
+            extra_config_args=["-DCONFIG_FROM_CLI", "-Dshared"],
+            extra_build_args=["--build-from-cli", "-Dshared"],
+        )
+        with patch("builder.build.shutil.which", return_value=None):
+            plan = engine.plan(options)
+
+        self.assertIn("split-args", plan.project.name)
+        self.assertEqual(
+            set(plan.extra_config_args),
+            {
+                "-DCONFIG_FROM_PRESET",
+                "-Dshared",
+                "-DCONFIG_FROM_PROJECT",
+                "-DCONFIG_FROM_CLI",
+            },
+        )
+        self.assertEqual(
+            set(plan.extra_build_args),
+            {
+                "--build-from-preset",
+                "-Dshared",
+                "--build-from-project",
+                "--build-from-cli",
+            },
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -11,6 +11,57 @@ from .command_runner import RecordingCommandRunner, SubprocessCommandRunner
 from .config_loader import ConfigurationStore
 from .git_manager import GitManager
 
+
+def _flatten_arg_groups(groups: Iterable[Iterable[str]]) -> List[str]:
+    flattened: List[str] = []
+    for group in groups:
+        for value in group:
+            if value:
+                flattened.append(value)
+    return flattened
+
+
+def _parse_extra_switches(values: Iterable[str]) -> tuple[List[str], List[str]]:
+    config_args: List[str] = []
+    build_args: List[str] = []
+
+    for raw in values:
+        if raw is None:
+            continue
+        text = raw.strip()
+        if not text:
+            continue
+
+        scope: str | None = None
+        payload = text
+
+        if "," in text:
+            prefix, _, remainder = text.partition(",")
+            candidate = prefix.strip().lower()
+            if candidate in {"config", "build"} and remainder:
+                scope = candidate
+                payload = remainder
+            else:
+                payload = text
+
+        parts = [part.strip() for part in payload.split(",") if part.strip()]
+        if not parts:
+            continue
+
+        targets: List[List[str]]
+        if scope == "config":
+            targets = [config_args]
+        elif scope == "build":
+            targets = [build_args]
+        else:
+            targets = [config_args, build_args]
+
+        for part in parts:
+            for target in targets:
+                target.append(part)
+
+    return config_args, build_args
+
 def _emit_dry_run_output(runner: RecordingCommandRunner, *, workspace: Path) -> None:
     for line in runner.iter_formatted(workspace=workspace):
         print(line)
@@ -37,7 +88,32 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
     build_parser.add_argument("--config-only", action="store_true", help="Run configuration only")
     build_parser.add_argument("--build-only", action="store_true", help="Run build only")
     build_parser.add_argument("--reconfig", action="store_true", help="Clean and reconfigure the build directory")
-    build_parser.add_argument("-X", dest="extra_args", action="append", default=[], help="Extra arguments to forward to the build system")
+    build_parser.add_argument(
+        "-X",
+        dest="extra_switches",
+        action="append",
+        default=[],
+        metavar="SCOPE,ARG",
+        help="Extra arguments (use -Xconfig,<arg> or -Xbuild,<arg>; omit scope for both)",
+    )
+    build_parser.add_argument(
+        "--extra-config-args",
+        dest="extra_config_args",
+        action="append",
+        nargs="+",
+        default=[],
+        metavar="ARG",
+        help="Additional arguments appended to configuration commands",
+    )
+    build_parser.add_argument(
+        "--extra-build-args",
+        dest="extra_build_args",
+        action="append",
+        nargs="+",
+        default=[],
+        metavar="ARG",
+        help="Additional arguments appended to build commands",
+    )
 
     validate_parser = subparsers.add_parser("validate", help="Validate configuration files")
     validate_parser.add_argument("--project", help="Validate a single project by name")
@@ -66,6 +142,11 @@ def main(argv: Iterable[str] | None = None) -> int:
 
 def _handle_build(args: Namespace, workspace: Path) -> int:
     store = ConfigurationStore.from_directory(workspace)
+    switch_config_args, switch_build_args = _parse_extra_switches(getattr(args, "extra_switches", []))
+    cli_extra_config_args = _flatten_arg_groups(getattr(args, "extra_config_args", []))
+    cli_extra_build_args = _flatten_arg_groups(getattr(args, "extra_build_args", []))
+    extra_config_args = [*switch_config_args, *cli_extra_config_args]
+    extra_build_args = [*switch_build_args, *cli_extra_build_args]
     dependencies = store.resolve_dependency_chain(args.project)
     presets = _collect_presets(args.preset)
     operation = BuildMode.AUTO
@@ -88,7 +169,8 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
         show_vars=args.show_vars,
         no_switch_branch=args.no_switch_branch,
         verbose=args.verbose,
-        extra_args=args.extra_args,
+        extra_config_args=extra_config_args,
+        extra_build_args=extra_build_args,
         toolchain=args.toolchain,
         install_dir=args.install_dir,
         operation=operation,
@@ -149,7 +231,8 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
             show_vars=False,
             no_switch_branch=build_options.no_switch_branch,
             verbose=build_options.verbose,
-            extra_args=list(build_options.extra_args),
+            extra_config_args=list(build_options.extra_config_args),
+            extra_build_args=list(build_options.extra_build_args),
             toolchain=build_options.toolchain,
             install_dir=None,
             operation=build_options.operation,
@@ -194,6 +277,8 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
             project_name=project.name,
             presets=[],
             branch=args.branch,
+            extra_config_args=[],
+            extra_build_args=[],
             operation=BuildMode.CONFIG_ONLY,
         )
         plan = planning_engine.plan(options)

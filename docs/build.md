@@ -296,9 +296,20 @@ builder build myapp --preset feature-x,feature-y
 ### Additional Build System Arguments
 
 ```shell
-# Add custom build system arguments
-builder build myapp -X'--jobs=8'
+# Forward extra arguments to configuration/build steps
+builder build myapp -Xconfig,-DENABLE_FEATURE -Xbuild,--jobs=8
+
+# Provide multiple arguments in one go
+builder build myapp --extra-config-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                              --extra-build-args --target install --extra-build-args --parallel
 ```
+
+- `-Xscope,arg` forwards a single argument. Use `scope=config` or `scope=build`
+   to target only configuration or build steps. Omit the scope to send the
+   argument to both.
+- `--extra-config-args` and `--extra-build-args` accept one or more arguments
+   per flag for bulk additions. They complement the configuration values of
+   `extra_config_args` and `extra_build_args` in project or preset files.
 
 ---
 

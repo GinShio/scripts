@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Sequence
 import json
 import tomllib
 
@@ -61,6 +61,25 @@ def _collect_config_files(directory: Path) -> Dict[str, Path]:
             )
         files[stem] = path
     return files
+
+
+def _normalize_string_list(value: Any, *, field_name: str) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)):
+        text = str(value).strip()
+        return [text] if text else []
+    if isinstance(value, Sequence):
+        result: List[str] = []
+        for item in value:
+            if isinstance(item, (str, bytes)):
+                text = str(item).strip()
+                if text:
+                    result.append(text)
+            else:
+                raise TypeError(f"{field_name} entries must be strings")
+        return result
+    raise TypeError(f"{field_name} must be a string or sequence of strings")
 
 
 @dataclass(slots=True)
@@ -163,6 +182,8 @@ class ProjectDefinition:
     git: GitSettings
     presets: Dict[str, Mapping[str, Any]] = field(default_factory=dict)
     dependencies: List[ProjectDependency] = field(default_factory=list)
+    extra_config_args: List[str] = field(default_factory=list)
+    extra_build_args: List[str] = field(default_factory=list)
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -195,6 +216,14 @@ class ProjectDefinition:
                 if isinstance(value, Mapping):
                     presets[str(key)] = value
 
+        extra_config_args = _normalize_string_list(
+            project_section.get("extra_config_args"),
+            field_name="project.extra_config_args",
+        )
+        extra_build_args = _normalize_string_list(
+            project_section.get("extra_build_args"),
+            field_name="project.extra_build_args",
+        )
         dependencies_section = data.get("dependencies", [])
         dependencies: List[ProjectDependency] = []
         if dependencies_section:
@@ -216,6 +245,8 @@ class ProjectDefinition:
             git=git,
             presets=presets,
             dependencies=dependencies,
+            extra_config_args=extra_config_args,
+            extra_build_args=extra_build_args,
             raw=data,
         )
 
