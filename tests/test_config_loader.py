@@ -131,6 +131,200 @@ class ConfigurationLoaderTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                         ConfigurationStore.from_directory(self.root)
 
+        def test_parses_dependency_array_of_tables(self) -> None:
+                (self.config_dir / "config.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [global]
+                                default_build_type = "Debug"
+                                """
+                        ).strip()
+                )
+                (self.projects_dir / "lib.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "lib"
+                                source_dir = "{{builder.path}}/lib"
+                                build_dir = "_build/lib"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/lib.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+                (self.projects_dir / "app.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "app"
+                                source_dir = "{{builder.path}}/app"
+                                build_dir = "_build/app"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/app.git"
+                                main_branch = "main"
+
+                                [[dependencies]]
+                                name = "lib"
+                                presets = ["debug"]
+
+                                [[dependencies]]
+                                name = "tools"
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                project = store.get_project("app")
+                self.assertEqual(len(project.dependencies), 2)
+                self.assertEqual(project.dependencies[0].name, "lib")
+                self.assertEqual(project.dependencies[0].presets, ["debug"])
+                self.assertEqual(project.dependencies[1].name, "tools")
+                self.assertEqual(project.dependencies[1].presets, [])
+
+        def test_resolve_dependency_chain_orders_and_merges(self) -> None:
+                (self.config_dir / "config.toml").write_text("[global]\n")
+                (self.projects_dir / "core.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "core"
+                                source_dir = "{{builder.path}}/core"
+                                build_dir = "_build/core"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/core.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+                (self.projects_dir / "lib.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "lib"
+                                source_dir = "{{builder.path}}/lib"
+                                build_dir = "_build/lib"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/lib.git"
+                                main_branch = "main"
+
+                                [[dependencies]]
+                                name = "core"
+                                """
+                        ).strip()
+                )
+                (self.projects_dir / "tools.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "tools"
+                                source_dir = "{{builder.path}}/tools"
+                                build_dir = "_build/tools"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/tools.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+                (self.projects_dir / "app.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "app"
+                                source_dir = "{{builder.path}}/app"
+                                build_dir = "_build/app"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/app.git"
+                                main_branch = "main"
+
+                                [[dependencies]]
+                                name = "lib"
+                                presets = ["release"]
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                chain = store.resolve_dependency_chain("app")
+                self.assertEqual([dep.project.name for dep in chain], ["core", "lib"])
+                self.assertEqual(chain[1].presets, ["release"])
+
+        def test_resolve_dependency_chain_detects_cycles(self) -> None:
+                (self.config_dir / "config.toml").write_text("[global]\n")
+                (self.projects_dir / "lib.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "lib"
+                                source_dir = "{{builder.path}}/lib"
+                                build_dir = "_build/lib"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/lib.git"
+                                main_branch = "main"
+
+                                [[dependencies]]
+                                name = "app"
+                                """
+                        ).strip()
+                )
+                (self.projects_dir / "app.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "app"
+                                source_dir = "{{builder.path}}/app"
+                                build_dir = "_build/app"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/app.git"
+                                main_branch = "main"
+
+                                [[dependencies]]
+                                name = "lib"
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                with self.assertRaises(ValueError):
+                        store.resolve_dependency_chain("app")
+
+        def test_project_without_build_dir_is_allowed(self) -> None:
+                (self.config_dir / "config.toml").write_text("[global]\n")
+                (self.projects_dir / "meta.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "meta"
+                                source_dir = "/src/meta"
+
+                                [git]
+                                url = "https://example.com/meta.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                project = store.get_project("meta")
+                self.assertIsNone(project.build_dir)
+                self.assertIsNone(project.build_system)
+
 
 if __name__ == "__main__":  # pragma: no cover
         unittest.main()

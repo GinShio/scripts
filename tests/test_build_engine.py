@@ -97,6 +97,19 @@ class BuildEngineTests(unittest.TestCase):
                 """
             )
         )
+        (projects_dir / "meta.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "meta"
+                source_dir = "{{builder.path}}/meta"
+
+                [git]
+                url = "https://example.com/meta.git"
+                main_branch = "main"
+                """
+            )
+        )
         self.workspace = root
         self.store = ConfigurationStore.from_directory(self.workspace)
         self.runner = RecordingCommandRunner()
@@ -369,6 +382,18 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(cmd[0], "bazel")
         self.assertIn("//app:all", cmd)
         self.assertIn("--k=1", cmd)
+
+    def test_plan_without_build_dir_has_no_steps(self) -> None:
+        options = BuildOptions(
+            project_name="meta",
+            presets=[],
+            operation=BuildMode.AUTO,
+        )
+        plan = self.engine.plan(options)
+        self.assertIsNone(plan.build_dir)
+        self.assertEqual(plan.steps, [])
+        results = self.engine.execute(plan, dry_run=False)
+        self.assertEqual(results, [])
 
 
 if __name__ == "__main__":  # pragma: no cover

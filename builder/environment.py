@@ -31,7 +31,7 @@ class UserContext:
 class ProjectContext:
     name: str
     source_dir: Path
-    build_dir: Path
+    build_dir: Path | None
     install_dir: Path | None = None
     component_dir: Path | None = None
 
@@ -39,8 +39,9 @@ class ProjectContext:
         data = {
             "name": self.name,
             "source_dir": str(self.source_dir),
-            "build_dir": str(self.build_dir),
         }
+        if self.build_dir is not None:
+            data["build_dir"] = str(self.build_dir)
         if self.install_dir:
             data["install_dir"] = str(self.install_dir)
         if self.component_dir:
@@ -93,7 +94,7 @@ class ContextBuilder:
         *,
         name: str,
         source_dir: Path,
-        build_dir: Path,
+        build_dir: Path | None,
         install_dir: Path | None,
         component_dir: Path | None,
     ) -> ProjectContext:

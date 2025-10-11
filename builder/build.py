@@ -52,7 +52,7 @@ class BuildStep:
 @dataclass(slots=True)
 class BuildPlan:
     project: ProjectDefinition
-    build_dir: Path
+    build_dir: Path | None
     install_dir: Path | None
     source_dir: Path
     steps: List[BuildStep]
@@ -116,11 +116,12 @@ class BuildEngine:
         build_dir_str = project.build_dir
         install_dir_str = options.install_dir or project.install_dir
         component_dir_str = project.component_dir
+        build_enabled = build_dir_str is not None and project.build_system is not None
 
         project_ctx = context_builder.project(
             name=project.name,
             source_dir=Path(source_dir_str),
-            build_dir=Path(build_dir_str),
+            build_dir=Path(build_dir_str) if build_dir_str else None,
             install_dir=Path(install_dir_str) if install_dir_str else None,
             component_dir=Path(component_dir_str) if component_dir_str else None,
         )
@@ -129,7 +130,7 @@ class BuildEngine:
         resolver = TemplateResolver(combined_context)
 
         source_dir = Path(resolver.resolve(source_dir_str)).expanduser()
-        build_dir = Path(resolver.resolve(build_dir_str))
+        build_dir = Path(resolver.resolve(build_dir_str)) if build_dir_str else None
         install_dir = None
         if install_dir_str:
             install_dir = Path(resolver.resolve(install_dir_str))
@@ -141,13 +142,18 @@ class BuildEngine:
         if component_dir:
             effective_source_dir = (source_dir / component_dir).resolve()
 
-        if not project.build_at_root and component_dir:
-            build_root = effective_source_dir
-        else:
-            build_root = source_dir
-        build_dir_path = (build_root / build_dir).resolve()
-        if install_dir and not install_dir.is_absolute():
-            install_dir = (source_dir / install_dir).resolve()
+        build_dir_path: Path | None = None
+        if build_enabled and build_dir is not None:
+            if not project.build_at_root and component_dir:
+                build_root = effective_source_dir
+            else:
+                build_root = source_dir
+            build_dir_path = (build_root / build_dir).resolve()
+        if install_dir:
+            if install_dir.is_absolute():
+                install_dir = install_dir
+            else:
+                install_dir = (source_dir / install_dir).resolve()
 
         updated_project_ctx = context_builder.project(
             name=project.name,
@@ -175,54 +181,56 @@ class BuildEngine:
         definitions = dict(resolved_presets.definitions)
         extra_args = [*resolved_presets.extra_args, *options.extra_args]
 
-        self._apply_cmake_build_type(
-            project=project,
-            definitions=definitions,
-            build_type=build_type,
-            build_type_override=options.build_type,
-            generator=generator,
-        )
+        plan_steps: List[BuildStep] = []
+        if build_enabled and build_dir_path is not None:
+            self._apply_cmake_build_type(
+                project=project,
+                definitions=definitions,
+                build_type=build_type,
+                build_type_override=options.build_type,
+                generator=generator,
+            )
 
-        toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name)
-        self._ensure_toolchain_compatibility(project.build_system, toolchain)
-        if options.toolchain is not None:
-            environment["CC"] = self._default_cc(toolchain)
-            environment["CXX"] = self._default_cxx(toolchain)
-        else:
-            environment.setdefault("CC", self._default_cc(toolchain))
-            environment.setdefault("CXX", self._default_cxx(toolchain))
-
-        linker = self._determine_linker(toolchain=toolchain, os_name=system_ctx.os_name)
-        if linker:
+            toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name)
+            self._ensure_toolchain_compatibility(project.build_system, toolchain)
             if options.toolchain is not None:
-                environment["CC_LD"] = linker
-                environment["CXX_LD"] = linker
+                environment["CC"] = self._default_cc(toolchain)
+                environment["CXX"] = self._default_cxx(toolchain)
             else:
-                environment.setdefault("CC_LD", linker)
-                environment.setdefault("CXX_LD", linker)
-        self._apply_color_diagnostics(
-            project=project,
-            environment=environment,
-            definitions=definitions,
-            toolchain=toolchain,
-        )
-        self._maybe_wrap_with_ccache(environment=environment, toolchain=toolchain)
-        self._apply_cmake_toolchain(
-            build_system=project.build_system,
-            definitions=definitions,
-            environment=environment,
-        )
+                environment.setdefault("CC", self._default_cc(toolchain))
+                environment.setdefault("CXX", self._default_cxx(toolchain))
 
-        plan_steps = self._create_build_steps(
-            project=project,
-            effective_source_dir=effective_source_dir,
-            build_dir=build_dir_path,
-            install_dir=install_dir,
-            environment=environment,
-            definitions=definitions,
-            extra_args=extra_args,
-            options=options,
-        )
+            linker = self._determine_linker(toolchain=toolchain, os_name=system_ctx.os_name)
+            if linker:
+                if options.toolchain is not None:
+                    environment["CC_LD"] = linker
+                    environment["CXX_LD"] = linker
+                else:
+                    environment.setdefault("CC_LD", linker)
+                    environment.setdefault("CXX_LD", linker)
+            self._apply_color_diagnostics(
+                project=project,
+                environment=environment,
+                definitions=definitions,
+                toolchain=toolchain,
+            )
+            self._maybe_wrap_with_ccache(environment=environment, toolchain=toolchain)
+            self._apply_cmake_toolchain(
+                build_system=project.build_system,
+                definitions=definitions,
+                environment=environment,
+            )
+
+            plan_steps = self._create_build_steps(
+                project=project,
+                effective_source_dir=effective_source_dir,
+                build_dir=build_dir_path,
+                install_dir=install_dir,
+                environment=environment,
+                definitions=definitions,
+                extra_args=extra_args,
+                options=options,
+            )
 
         return BuildPlan(
             project=project,
@@ -239,6 +247,8 @@ class BuildEngine:
 
     def execute(self, plan: BuildPlan, *, dry_run: bool) -> List[CommandResult]:
         results: List[CommandResult] = []
+        if not plan.steps:
+            return results
         if dry_run:
             for step in plan.steps:
                 self._command_runner.run(
@@ -251,8 +261,8 @@ class BuildEngine:
                 )
             return results
 
-        build_dir_parent = plan.build_dir.parent
-        build_dir_parent.mkdir(parents=True, exist_ok=True)
+        if plan.build_dir is not None:
+            plan.build_dir.parent.mkdir(parents=True, exist_ok=True)
 
         for step in plan.steps:
             cwd = step.cwd

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Mapping
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 import json
 import tomllib
 
@@ -113,17 +113,56 @@ class GitSettings:
 
 
 @dataclass(slots=True)
+class ProjectDependency:
+    name: str
+    presets: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_value(cls, value: Any) -> "ProjectDependency":
+        if isinstance(value, str):
+            name = value.strip()
+            if not name:
+                raise ValueError("Dependency entries cannot be empty strings")
+            return cls(name=name)
+        if isinstance(value, Mapping):
+            raw_name = value.get("name") or value.get("project")
+            if not raw_name or not str(raw_name).strip():
+                raise ValueError("Dependency entries must include a non-empty 'name'")
+            presets = cls._normalize_presets(value.get("presets"))
+            return cls(name=str(raw_name), presets=presets)
+        raise TypeError("Dependencies must be specified as strings or mappings")
+
+    @staticmethod
+    def _normalize_presets(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            presets: List[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    raise TypeError("Dependency presets must be strings")
+                item = item.strip()
+                if item:
+                    presets.append(item)
+            return presets
+        raise TypeError("Dependency presets must be a string or a sequence of strings")
+
+
+@dataclass(slots=True)
 class ProjectDefinition:
     name: str
     source_dir: str
-    build_dir: str
+    build_dir: str | None
     install_dir: str | None
-    build_system: str
+    build_system: str | None
     generator: str | None
     component_dir: str | None
     build_at_root: bool
     git: GitSettings
     presets: Dict[str, Mapping[str, Any]] = field(default_factory=dict)
+    dependencies: List[ProjectDependency] = field(default_factory=list)
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -136,8 +175,10 @@ class ProjectDefinition:
         build_dir = project_section.get("build_dir")
         install_dir = project_section.get("install_dir")
         build_system = project_section.get("build_system")
-        if not name or not source_dir or not build_dir or not build_system:
-            raise ValueError("project.name, project.source_dir, project.build_dir, and project.build_system are required")
+        if not name or not source_dir:
+            raise ValueError("project.name and project.source_dir are required")
+        if build_dir and not build_system:
+            raise ValueError("project.build_system is required when project.build_dir is specified")
         generator = project_section.get("generator")
         component_dir = project_section.get("component_dir")
         build_at_root = bool(project_section.get("build_at_root", True))
@@ -154,19 +195,35 @@ class ProjectDefinition:
                 if isinstance(value, Mapping):
                     presets[str(key)] = value
 
+        dependencies_section = data.get("dependencies", [])
+        dependencies: List[ProjectDependency] = []
+        if dependencies_section:
+            if isinstance(dependencies_section, Sequence) and not isinstance(dependencies_section, (str, bytes)):
+                for entry in dependencies_section:
+                    dependencies.append(ProjectDependency.from_value(entry))
+            else:
+                raise TypeError("[dependencies] must be an array of tables or strings")
+
         return cls(
             name=str(name),
             source_dir=str(source_dir),
-            build_dir=str(build_dir),
+            build_dir=str(build_dir) if build_dir else None,
             install_dir=str(install_dir) if install_dir else None,
-            build_system=str(build_system).lower(),
+            build_system=str(build_system).lower() if build_system else None,
             generator=str(generator) if generator else None,
             component_dir=str(component_dir) if component_dir else None,
             build_at_root=build_at_root,
             git=git,
             presets=presets,
+            dependencies=dependencies,
             raw=data,
         )
+
+
+@dataclass(slots=True)
+class ResolvedDependency:
+    project: "ProjectDefinition"
+    presets: List[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -220,3 +277,56 @@ class ConfigurationStore:
             available = ", ".join(sorted(self.projects)) or "<none>"
             raise KeyError(f"Project '{name}' not found. Available projects: {available}")
         return self.projects[name]
+
+    def resolve_dependency_chain(self, name: str) -> List[ResolvedDependency]:
+        if name not in self.projects:
+            available = ", ".join(sorted(self.projects)) or "<none>"
+            raise KeyError(f"Project '{name}' not found. Available projects: {available}")
+
+        resolved: Dict[str, ResolvedDependency] = {}
+        visiting: List[str] = []
+        visited: set[str] = set()
+        order: List[str] = []
+
+        def visit(project_name: str) -> None:
+            if project_name in visiting:
+                cycle = " -> ".join([*visiting, project_name])
+                raise ValueError(f"Dependency cycle detected: {cycle}")
+            if project_name in visited:
+                return
+
+            visiting.append(project_name)
+            project = self.get_project(project_name)
+            for dependency in project.dependencies:
+                dep_name = dependency.name
+                if dep_name not in self.projects:
+                    raise KeyError(
+                        f"Dependency '{dep_name}' referenced by project '{project_name}' was not found"
+                    )
+                dep_project = self.projects[dep_name]
+                entry = resolved.get(dep_name)
+                if entry is None:
+                    entry = ResolvedDependency(
+                        project=dep_project,
+                        presets=list(dependency.presets),
+                    )
+                    resolved[dep_name] = entry
+                else:
+                    if dependency.presets:
+                        entry.presets = list(dependency.presets)
+                visit(dep_name)
+            visiting.pop()
+            visited.add(project_name)
+            order.append(project_name)
+
+        visit(name)
+
+        if order and order[-1] == name:
+            order.pop()
+
+        chain: List[ResolvedDependency] = []
+        for dep_name in order:
+            entry = resolved.get(dep_name)
+            if entry is not None:
+                chain.append(entry)
+        return chain

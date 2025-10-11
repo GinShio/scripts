@@ -19,17 +19,17 @@ The configuration files are organized in the following structure as example:
 ```
 
 ### Key Points:
-- **Global Configuration**: `config.*` (TOML/JSON/YAML) serves as the central configuration file for global settings.
+presets = ["ci", "asan"]  # Optional presets applied when building the dependency
 - **Shared Base Configuration**: Files such as `company-base.toml`, `company-base.json`, or `company-base.yaml` contain reusable configurations shared across multiple projects.
 - **Project Configuration**: Each project has its own configuration file under `projects/`, named after the project. Only one file per stem is allowed (e.g., don't mix `myapp.toml` and `myapp.yaml`).
 
----
 
 ## File Naming Conventions
-
-Supported file extensions are `.toml`, `.json`, `.yaml`, and `.yml`. Choose one format per configuration entry.
-
-1. **Project Configuration**:
+Dependencies are resolved transitively and executed in topological order before
+the requested project. Cycles are rejected during planning. To track a project
+without building it, omit its `build_dir` in that project's configuration; the
+dependency will still be planned so variables resolve, but no build steps will
+run.
    - Use the project name as the file name (e.g., `myapp.toml`, `myapp.json`).
    - File names must be concise and avoid special characters.
 2. **Shared Configuration**:
@@ -80,13 +80,14 @@ name = "myapp"
 # Project root directory (required)
 source_dir = "/home/user/projects/{{project.name}}"
 
-# Build directory (required, relative to the project root)
+# Build directory (optional, relative to the project root)
+# Omit to disable build orchestration for this project
 build_dir = "_build/{{user.branch}}_{{user.build_type}}"
 
 # Installation directory (optional, defaults to /usr/local)
 install_dir = "_install/{{user.branch}}_{{user.build_type}}"
 
-# Build system type (required)
+# Build system type (required if build_dir is set)
 build_system = "cmake"  # cmake, meson, cargo, make
 
 # Build generator (optional)
@@ -115,6 +116,27 @@ auto_stash = true
 update_script = "{{project.source_dir}}/scripts/update.sh"
 clone_script = "{{project.source_dir}}/scripts/clone.sh"
 ```
+
+## Project Dependencies
+
+Projects can express relationships with other configured projects using an
+array of tables named `dependencies`:
+
+```toml
+[[dependencies]]
+name = "libcore"          # Project name declared in another file
+build = true               # Optional (default: true)
+presets = ["ci", "asan"]  # Optional presets applied when building the dependency
+
+[[dependencies]]
+name = "tools"
+build = false              # Plan but skip build steps for this dependency
+```
+
+Dependencies are resolved transitively and executed in topological order before
+the requested project. Cycles are rejected during planning. When `build = false`
+the dependency is still planned (allowing variable resolution) but its build
+steps are skipped, which is useful for tooling or runtime-only dependencies.
 
 ---
 
@@ -190,6 +212,8 @@ extra_args = ["--warn-uninitialized"]
 - `project.build_system`: Must specify a supported build system.
 - `git.url`: Remote repository URL must be defined.
 - `git.main_branch`: Main branch must be specified.
+- `project.build_dir`: Optional. When omitted, the project will not run build steps during `builder build`.
+- `project.build_system`: Required only when `project.build_dir` is provided.
 
 ### Preset Validation:
 - Preset names must be unique.
@@ -268,8 +292,8 @@ definitions = {
 
 1. **Dynamic Expression Security**:
    - Currently, the system assumes users provide valid expressions. Future versions may include sandboxing for safer evaluation.
-2. **Dependency Management in Monorepo**:
-   - Dependency relationships between components are not yet handled. Extensions may include DAG-based dependency resolution.
+2. **Dependency Enhancements**:
+   - Future releases may add richer per-dependency options such as custom operations, toolchains, or conditional execution rules.
 
 ---
 

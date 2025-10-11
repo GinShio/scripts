@@ -66,6 +66,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
 def _handle_build(args: Namespace, workspace: Path) -> int:
     store = ConfigurationStore.from_directory(workspace)
+    dependencies = store.resolve_dependency_chain(args.project)
     presets = _collect_presets(args.preset)
     operation = BuildMode.AUTO
     if args.config_only:
@@ -100,34 +101,62 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
         runner = SubprocessCommandRunner()
 
     engine = BuildEngine(store=store, command_runner=runner, workspace=workspace)
-    plan = engine.plan(build_options)
-
-    if args.show_vars:
-        from pprint import pprint
-
-        print("Resolved variables:")
-        pprint(plan.context)
-        if plan.environment:
-            print("Preset environment overrides:")
-            pprint(plan.environment)
-
-    project = plan.project
-    target_branch = build_options.branch or project.git.main_branch
     git_manager = GitManager(runner)
-    state = None
-    if not args.dry_run:
-        state = git_manager.prepare_checkout(
-            repo_path=plan.source_dir,
-            target_branch=target_branch,
-            auto_stash=project.git.auto_stash,
-            no_switch_branch=args.no_switch_branch,
-        )
 
-    try:
-        engine.execute(plan, dry_run=args.dry_run)
-    finally:
-        if state is not None:
-            git_manager.restore_checkout(plan.source_dir, state)
+    def run_project(options: BuildOptions, *, show_vars: bool) -> None:
+        plan = engine.plan(options)
+
+        if show_vars:
+            from pprint import pprint
+
+            print("Resolved variables:")
+            pprint(plan.context)
+            if plan.environment:
+                print("Preset environment overrides:")
+                pprint(plan.environment)
+
+        target_branch = options.branch or plan.project.git.main_branch
+        state = None
+        plan_has_steps = bool(plan.steps)
+        if plan_has_steps and not args.dry_run:
+            state = git_manager.prepare_checkout(
+                repo_path=plan.source_dir,
+                target_branch=target_branch,
+                auto_stash=plan.project.git.auto_stash,
+                no_switch_branch=options.no_switch_branch,
+            )
+
+        if not plan_has_steps:
+            print(f"No build steps for project '{plan.project.name}' (build directory not configured)")
+            return
+
+        try:
+            engine.execute(plan, dry_run=args.dry_run)
+        finally:
+            if state is not None:
+                git_manager.restore_checkout(plan.source_dir, state)
+
+    for dependency in dependencies:
+        dep_options = BuildOptions(
+            project_name=dependency.project.name,
+            presets=list(dependency.presets) if dependency.presets else [],
+            branch=build_options.branch,
+            build_type=build_options.build_type,
+            generator=build_options.generator,
+            target=None,
+            install=False,
+            dry_run=build_options.dry_run,
+            show_vars=False,
+            no_switch_branch=build_options.no_switch_branch,
+            verbose=build_options.verbose,
+            extra_args=list(build_options.extra_args),
+            toolchain=build_options.toolchain,
+            install_dir=None,
+            operation=build_options.operation,
+        )
+        run_project(dep_options, show_vars=False)
+
+    run_project(build_options, show_vars=args.show_vars)
 
     if args.dry_run and isinstance(runner, RecordingCommandRunner):
         _emit_dry_run_output(runner, workspace=workspace)
@@ -188,8 +217,8 @@ def _validate_project(store: ConfigurationStore, name: str) -> None:
     project = store.get_project(name)
     if not project.source_dir:
         raise ValueError(f"Project '{name}' has empty source_dir")
-    if not project.build_dir:
-        raise ValueError(f"Project '{name}' has empty build_dir")
+    if project.build_dir is None:
+        return
     if project.build_system not in {"cmake", "meson", "bazel", "cargo", "make"}:
         raise ValueError(f"Project '{name}' uses unsupported build system '{project.build_system}'")
 
