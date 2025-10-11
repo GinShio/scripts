@@ -21,7 +21,7 @@ class FakeGitRunner(CommandRunner):
         self.dirty = dirty
         self.commits = commits or {initial_branch: "abc123"}
 
-    def run(self, command, *, cwd=None, env=None, check=True, note=None):  # type: ignore[override]
+    def run(self, command, *, cwd=None, env=None, check=True, note=None, stream=False):  # type: ignore[override]
         record = {
             "command": list(command),
             "cwd": cwd,

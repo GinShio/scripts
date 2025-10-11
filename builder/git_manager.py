@@ -209,12 +209,14 @@ class GitManager:
         self,
         command: list[str],
         *,
-        cwd: Path,
+        cwd: Path | None,
         dry_run: bool,
         check: bool = True,
         environment: Mapping[str, str] | None = None,
+        stream: bool | None = None,
     ) -> CommandResult:
-        return self._runner.run(command, cwd=cwd, env=environment, check=check)
+        run_stream = stream if stream is not None else not dry_run
+        return self._runner.run(command, cwd=cwd, env=environment, check=check, stream=run_stream)
 
     def _current_branch(self, repo_path: Path, *, environment: Mapping[str, str] | None = None) -> str:
         result = self._runner.run(
@@ -260,7 +262,8 @@ class GitManager:
             command = ["sh", "-c", script]
         else:
             command = ["sh", "-c", script]
+        run_stream = not dry_run
         if dry_run:
-            self._runner.run(command, cwd=cwd, env=environment)
+            self._runner.run(command, cwd=cwd, env=environment, stream=False)
             return
-        self._runner.run(command, cwd=cwd, env=environment)
+        self._runner.run(command, cwd=cwd, env=environment, stream=run_stream)
