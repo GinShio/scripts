@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Dict, Iterable, Mapping, Sequence
 import ast
 import operator
 import re
@@ -146,6 +146,99 @@ class TemplateResolver:
         except SyntaxError as exc:  # pragma: no cover - invalid syntax guard
             raise TemplateError(f"Invalid expression syntax: {expression}") from exc
         return _ExpressionEvaluator().visit(node)
+
+
+def extract_placeholders(value: Any) -> set[str]:
+    """Collect all template placeholder paths referenced within *value*."""
+
+    placeholders: set[str] = set()
+
+    def _collect(obj: Any) -> None:
+        if isinstance(obj, str):
+            for match in _PLACEHOLDER_PATTERN.finditer(obj):
+                path = match.group(1).strip()
+                if path:
+                    placeholders.add(path)
+            return
+        if isinstance(obj, Mapping):
+            for item in obj.values():
+                _collect(item)
+            return
+        if isinstance(obj, (list, tuple)):
+            for item in obj:
+                _collect(item)
+
+    _collect(value)
+    return placeholders
+
+
+def _find_cycle(dependency_map: Mapping[str, Sequence[str]]) -> list[str]:
+    visited: set[str] = set()
+    active: set[str] = set()
+    path: list[str] = []
+
+    def _dfs(node: str) -> list[str] | None:
+        visited.add(node)
+        active.add(node)
+        path.append(node)
+        for dep in dependency_map.get(node, ()):  # type: ignore[arg-type]
+            if dep not in dependency_map:
+                continue
+            if dep in active:
+                try:
+                    start_index = path.index(dep)
+                except ValueError:
+                    start_index = 0
+                return path[start_index:] + [dep]
+            if dep not in visited:
+                result = _dfs(dep)
+                if result:
+                    return result
+        active.remove(node)
+        path.pop()
+        return None
+
+    for node in dependency_map:
+        if node not in visited:
+            cycle = _dfs(node)
+            if cycle:
+                return cycle
+    return []
+
+
+def topological_order(dependency_map: Mapping[str, Sequence[str]]) -> list[str]:
+    """Return a topological ordering or raise TemplateError on cycles."""
+
+    nodes = list(dependency_map.keys())
+    dependents: Dict[str, set[str]] = {node: set() for node in nodes}
+    indegree: Dict[str, int] = {node: 0 for node in nodes}
+
+    for node, deps in dependency_map.items():
+        filtered_deps = [dep for dep in deps if dep in dependency_map]
+        indegree[node] = len(filtered_deps)
+        for dep in filtered_deps:
+            dependents.setdefault(dep, set()).add(node)
+
+    ready = [node for node, degree in indegree.items() if degree == 0]
+    ready.sort()
+    order: list[str] = []
+
+    while ready:
+        node = ready.pop(0)
+        order.append(node)
+        for dependent in sorted(dependents.get(node, ())):
+            indegree[dependent] -= 1
+            if indegree[dependent] == 0:
+                ready.append(dependent)
+                ready.sort()
+
+    if len(order) != len(nodes):
+        cycle = _find_cycle(dependency_map)
+        if cycle:
+            raise TemplateError(f"Circular dependency detected: {' -> '.join(cycle)}")
+        raise TemplateError("Circular dependency detected")
+
+    return order
 
 
 class _ExpressionEvaluator(ast.NodeVisitor):

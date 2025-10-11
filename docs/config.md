@@ -185,7 +185,8 @@ extra_build_args = ["--warn-uninitialized"]
 > **Tip:** Environment placeholders now include variables introduced by presets.
 > Use `{{env.NAME}}` (or `{{preset.environment.NAME}}`) to reference values defined
 > earlier in the inheritance chain or the same preset, enabling layered configuration
-> without repeating paths.
+> without repeating paths. Circular references (for example `FOO -> BAR -> FOO`) are
+> detected automatically and reported with the full dependency chain.
 
 ### Inheritance Rules:
 - Use the `extends` field to inherit other presets.

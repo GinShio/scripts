@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
-from .template import TemplateResolver, TemplateError
+from .template import TemplateResolver, TemplateError, extract_placeholders, topological_order
 
 
 @dataclass(slots=True)
@@ -87,6 +87,34 @@ class PresetRepository:
         context["preset"] = preset_context
         return TemplateResolver(context)
 
+    @staticmethod
+    def _build_dependency_map(
+        mapping: Mapping[str, Any],
+        *,
+        prefixes: Sequence[str],
+        pre_resolved: Iterable[str] | None = None,
+    ) -> Dict[str, List[str]]:
+        dependency_map: Dict[str, List[str]] = {str(key): [] for key in mapping.keys()}
+        keys_in_scope = set(dependency_map.keys())
+        pre_resolved_keys = {str(key) for key in pre_resolved} if pre_resolved else set()
+        for raw_key, value in mapping.items():
+            key = str(raw_key)
+            deps: set[str] = set()
+            for placeholder in extract_placeholders(value):
+                for prefix in prefixes:
+                    if not placeholder.startswith(prefix):
+                        continue
+                    dep_token = placeholder[len(prefix):].strip()
+                    if not dep_token:
+                        continue
+                    dep_name = dep_token.split(".", 1)[0]
+                    if dep_name in pre_resolved_keys:
+                        continue
+                    if dep_name in keys_in_scope:
+                        deps.add(dep_name)
+            dependency_map[key] = sorted(deps)
+        return dependency_map
+
     def _resolve_environment_map(
         self,
         raw_environment: Mapping[str, Any],
@@ -95,33 +123,33 @@ class PresetRepository:
         base_environment: Mapping[str, str],
         definitions: Mapping[str, Any],
     ) -> Dict[str, str]:
-        pending: Dict[str, Any] = {str(key): value for key, value in raw_environment.items()}
-        resolved: Dict[str, str] = {}
-        combined_env: Dict[str, str] = dict(base_environment)
+        if not raw_environment:
+            return {}
 
-        while pending:
-            progress = False
-            for key in list(pending.keys()):
-                value = pending[key]
-                augmented_resolver = self._augment_resolver(
-                    template_resolver,
-                    environment={**combined_env, **resolved},
-                    definitions=definitions,
-                )
-                try:
-                    result = augmented_resolver.resolve(value)
-                except TemplateError as exc:
-                    if "Cannot resolve path" in str(exc):
-                        continue
-                    raise
-                resolved_value = str(result)
-                resolved[key] = resolved_value
-                combined_env[key] = resolved_value
-                del pending[key]
-                progress = True
-            if not progress:
-                unresolved = ", ".join(sorted(pending))
-                raise TemplateError(f"Unable to resolve environment variables: {unresolved}")
+        normalized_environment: Dict[str, Any] = {str(key): value for key, value in raw_environment.items()}
+
+        resolved: Dict[str, str] = {}
+        base_env: Dict[str, str] = {}
+        base_env.update(template_resolver.context.get("env", {}))
+        base_env.update(base_environment)
+
+        dependency_map = self._build_dependency_map(
+            normalized_environment,
+            prefixes=("env.", "preset.environment."),
+            pre_resolved=base_env.keys(),
+        )
+        order = topological_order(dependency_map)
+
+        for key in order:
+            value = normalized_environment[key]
+            current_env = {**base_env, **resolved}
+            augmented_resolver = self._augment_resolver(
+                template_resolver,
+                environment=current_env,
+                definitions=definitions,
+            )
+            result = augmented_resolver.resolve(value)
+            resolved[key] = str(result)
         return resolved
 
     def _resolve_single(
@@ -174,14 +202,22 @@ class PresetRepository:
 
         definitions = preset_data.get("definitions")
         if isinstance(definitions, Mapping):
-            def_values: Dict[str, Any] = {}
-            augmented_resolver = self._augment_resolver(
-                template_resolver,
-                environment=resolved.environment,
-                definitions=resolved.definitions,
+            normalized_definitions: Dict[str, Any] = {str(key): value for key, value in definitions.items()}
+            dependency_map = self._build_dependency_map(
+                normalized_definitions,
+                prefixes=("preset.definitions.",),
+                pre_resolved=resolved.definitions.keys(),
             )
-            for key, value in definitions.items():
-                def_values[str(key)] = augmented_resolver.resolve(value)
+            order = topological_order(dependency_map)
+            def_values: Dict[str, Any] = {}
+            for key in order:
+                current_definitions = {**resolved.definitions, **def_values}
+                augmented_resolver = self._augment_resolver(
+                    template_resolver,
+                    environment=resolved.environment,
+                    definitions=current_definitions,
+                )
+                def_values[str(key)] = augmented_resolver.resolve(normalized_definitions[key])
             resolved.definitions.update(def_values)
 
         def _collect_args(raw_value: Any) -> List[str]:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from builder.presets import PresetRepository
-from builder.template import TemplateResolver
+from builder.template import TemplateResolver, TemplateError
 
 
 class PresetRepositoryTests(unittest.TestCase):
@@ -94,6 +94,36 @@ class PresetRepositoryTests(unittest.TestCase):
         self.assertEqual(resolved.environment["SDK_ROOT"], "/opt/sdk")
         self.assertEqual(resolved.environment["BIN_DIR"], "/opt/sdk/bin")
         self.assertEqual(resolved.environment["PATH"], "/usr/bin:/opt/sdk/bin")
+
+    def test_environment_cycle_raises_error(self) -> None:
+        repo = PresetRepository(
+            project_presets={
+                "loop": {
+                    "environment": {
+                        "A": "{{env.B}}",
+                        "B": "{{env.A}}",
+                    }
+                }
+            }
+        )
+        with self.assertRaises(TemplateError) as exc_info:
+            repo.resolve(["loop"], template_resolver=self.resolver)
+        self.assertIn("Circular dependency detected", str(exc_info.exception))
+
+    def test_definition_cycle_raises_error(self) -> None:
+        repo = PresetRepository(
+            project_presets={
+                "loop": {
+                    "definitions": {
+                        "A": "{{preset.definitions.B}}",
+                        "B": "{{preset.definitions.A}}",
+                    }
+                }
+            }
+        )
+        with self.assertRaises(TemplateError) as exc_info:
+            repo.resolve(["loop"], template_resolver=self.resolver)
+        self.assertIn("Circular dependency detected", str(exc_info.exception))
 
 
 if __name__ == "__main__":  # pragma: no cover
