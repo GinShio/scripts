@@ -137,6 +137,8 @@ for flags that should only be passed to the build step (such as `--target`).
 
 Project-level environment variables are resolved before presets run and merge into the build environment. They support all template placeholders (including references to other `project.environment` entries) and become available through `{{env.NAME}}` and `{{project.environment.NAME}}`. The optional `[git.environment]` section behaves similarly but applies only to Git operations and custom clone/update scripts.
 
+After presets apply, configuration fields (such as `extra_config_args`, `extra_build_args`, or script paths) can reference preset outputs using `{{preset.environment.NAME}}` and `{{preset.definitions.NAME}}`.
+
 ## Project Dependencies
 
 Projects can express relationships with other configured projects using an

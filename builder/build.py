@@ -167,6 +167,8 @@ class BuildEngine:
         context: Mapping[str, Any],
         environment: Mapping[str, str],
         definitions: Mapping[str, Any],
+        preset_environment: Mapping[str, str] | None = None,
+        preset_definitions: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
         updated_context: Dict[str, Any] = dict(context)
         env_context = dict(updated_context.get("env", {}))
@@ -177,6 +179,14 @@ class BuildEngine:
         project_mapping["environment"] = dict(environment)
         project_mapping["definitions"] = dict(definitions)
         updated_context["project"] = project_mapping
+
+        if preset_environment or preset_definitions:
+            preset_mapping = dict(updated_context.get("preset", {}))
+            if preset_environment:
+                preset_mapping["environment"] = dict(preset_environment)
+            if preset_definitions:
+                preset_mapping["definitions"] = dict(preset_definitions)
+            updated_context["preset"] = preset_mapping
 
         return updated_context
 
@@ -309,6 +319,8 @@ class BuildEngine:
             context=combined_context,
             environment=environment,
             definitions=definitions,
+            preset_environment=resolved_presets.environment,
+            preset_definitions=resolved_presets.definitions,
         )
         resolver = TemplateResolver(combined_context)
 
@@ -376,6 +388,8 @@ class BuildEngine:
             context=combined_context,
             environment=environment,
             definitions=definitions,
+            preset_environment=resolved_presets.environment,
+            preset_definitions=resolved_presets.definitions,
         )
         resolver = TemplateResolver(combined_context)
 
@@ -386,7 +400,10 @@ class BuildEngine:
             namespace="git",
             namespace_base={},
             prefixes=("env.", "project.environment.", "git.environment."),
-            additional_namespaces={"project": dict(environment)},
+            additional_namespaces={
+                "project": dict(environment),
+                "preset": dict(resolved_presets.environment),
+            },
         )
 
         if git_environment:

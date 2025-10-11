@@ -36,6 +36,7 @@ class BuildEngineTests(unittest.TestCase):
                 build_dir = "_build/{{user.branch}}_{{user.build_type}}"
                 build_system = "cmake"
                 generator = "Ninja"
+                extra_config_args = ["-DUSE_PRESET_CC={{preset.environment.CC}}"]
 
                 [git]
                 url = "https://example.com/demo.git"
@@ -201,6 +202,7 @@ class BuildEngineTests(unittest.TestCase):
         self.assertIn("DEMO_FOO:BOOL=ON", configure_str)
         self.assertIn("DEMO_NAME:STRING=demo-name", configure_str)
         self.assertIn("DEMO_THREADS:NUMBER=4", configure_str)
+        self.assertIn("-DUSE_PRESET_CC=clang", configure_str)
 
     def test_context_exposes_toolchain_and_linker(self) -> None:
         options = BuildOptions(
@@ -267,6 +269,20 @@ class BuildEngineTests(unittest.TestCase):
         user_context = plan.context["user"]
         self.assertEqual(user_context.get("branch_raw"), "component/main")
         self.assertEqual(user_context.get("branch"), "component_main")
+
+    def test_context_includes_preset_environment_and_definitions(self) -> None:
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            operation=BuildMode.AUTO,
+        )
+        with patch("builder.build.shutil.which", return_value=None):
+            plan = self.engine.plan(options)
+
+        preset_ctx = plan.context.get("preset")
+        self.assertIsNotNone(preset_ctx)
+        self.assertEqual(preset_ctx.get("environment", {}).get("CC"), "clang")
+        self.assertTrue(preset_ctx.get("definitions", {}).get("DEMO_FOO"))
 
     def test_auto_skips_cmake_config_when_already_configured(self) -> None:
         options = BuildOptions(
