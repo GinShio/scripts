@@ -66,6 +66,8 @@ class BuildPlan:
     git_clone_script: str | None
     git_update_script: str | None
     git_environment: Dict[str, str]
+    branch: str
+    branch_slug: str
 
 
 _TOOLCHAIN_MATRIX: Dict[str, set[str]] = {
@@ -183,7 +185,12 @@ class BuildEngine:
         builder_path = self._workspace
         context_builder = ContextBuilder(builder_path)
 
-        branch = options.branch or project.git.main_branch
+        branch = options.branch
+        if branch is None:
+            if project.git.component_branch and project.component_dir:
+                branch = project.git.component_branch
+            else:
+                branch = project.git.main_branch
         build_type = self._determine_build_type(options=options)
         generator = options.generator if options.generator is not None else project.generator
         if generator is not None:
@@ -233,7 +240,7 @@ class BuildEngine:
             component_dir = Path(resolver.resolve(component_dir_str))
 
         effective_source_dir = source_dir
-        if component_dir:
+        if component_dir and not project.build_at_root:
             effective_source_dir = (source_dir / component_dir).resolve()
 
         build_dir_path: Path | None = None
@@ -415,6 +422,8 @@ class BuildEngine:
             git_clone_script=clone_script,
             git_update_script=update_script,
             git_environment=git_environment,
+            branch=user_ctx.branch_raw,
+            branch_slug=user_ctx.branch_slug,
         )
 
     def execute(self, plan: BuildPlan, *, dry_run: bool) -> List[CommandResult]:

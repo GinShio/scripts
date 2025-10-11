@@ -105,6 +105,41 @@ class BuildEngineTests(unittest.TestCase):
                 """
             )
         )
+        (projects_dir / "branch-override.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "branch-override"
+                source_dir = "{{builder.path}}/examples/branch-override"
+                component_dir = "components/a"
+                build_dir = "_build/{{user.branch}}"
+                build_system = "cmake"
+
+                [git]
+                url = "https://example.com/branch_override.git"
+                main_branch = "monorepo/main"
+                component_branch = "component/main"
+                """
+            )
+        )
+        (projects_dir / "mono-root.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "mono-root"
+                source_dir = "{{builder.path}}/examples/mono-root"
+                component_dir = "components/library"
+                build_dir = "_build/{{user.branch}}"
+                build_system = "cmake"
+                generator = "Ninja"
+                build_at_root = true
+
+                [git]
+                url = "https://example.com/mono-root.git"
+                main_branch = "main"
+                """
+            )
+        )
         (projects_dir / "meta.toml").write_text(
             textwrap.dedent(
                 """
@@ -178,6 +213,60 @@ class BuildEngineTests(unittest.TestCase):
         user_context = plan.context["user"]
         self.assertEqual(user_context.get("toolchain"), "clang")
         self.assertEqual(user_context.get("linker"), "ld")
+
+    def test_branch_placeholder_sanitizes_slashes(self) -> None:
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            branch="feature/awesome",
+            operation=BuildMode.AUTO,
+        )
+        with patch("builder.build.shutil.which", return_value=None):
+            plan = self.engine.plan(options)
+        user_context = plan.context["user"]
+        self.assertEqual(user_context.get("branch"), "feature_awesome")
+        self.assertEqual(user_context.get("branch_slug"), "feature_awesome")
+        self.assertEqual(user_context.get("branch_raw"), "feature/awesome")
+        self.assertEqual(plan.branch, "feature/awesome")
+        self.assertEqual(plan.branch_slug, "feature_awesome")
+        self.assertIn("feature_awesome", str(plan.build_dir))
+
+    def test_build_at_root_uses_repository_source_dir(self) -> None:
+        options = BuildOptions(
+            project_name="mono-root",
+            presets=[],
+            branch="dev/one",
+            operation=BuildMode.AUTO,
+        )
+        with patch("builder.build.shutil.which", return_value=None):
+            plan = self.engine.plan(options)
+
+        expected_source = self.workspace / "examples" / "mono-root"
+        component_subdir = expected_source / "components" / "library"
+
+        self.assertEqual(plan.source_dir, expected_source)
+        self.assertNotEqual(plan.source_dir, component_subdir)
+        self.assertEqual(plan.branch, "dev/one")
+        self.assertEqual(plan.branch_slug, "dev_one")
+        self.assertTrue(plan.steps)
+        configure_step = plan.steps[0]
+        self.assertIn(str(expected_source), configure_step.command)
+        self.assertEqual(configure_step.cwd, expected_source)
+
+    def test_component_branch_overrides_default_branch(self) -> None:
+        options = BuildOptions(
+            project_name="branch-override",
+            presets=[],
+            operation=BuildMode.AUTO,
+        )
+        with patch("builder.build.shutil.which", return_value=None):
+            plan = self.engine.plan(options)
+
+        self.assertEqual(plan.branch, "component/main")
+        self.assertEqual(plan.branch_slug, "component_main")
+        user_context = plan.context["user"]
+        self.assertEqual(user_context.get("branch_raw"), "component/main")
+        self.assertEqual(user_context.get("branch"), "component_main")
 
     def test_auto_skips_cmake_config_when_already_configured(self) -> None:
         options = BuildOptions(

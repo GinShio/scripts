@@ -197,7 +197,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
                 print("Preset environment overrides:")
                 pprint(plan.environment)
 
-        target_branch = options.branch or plan.project.git.main_branch
+        target_branch = plan.branch
         state = None
         plan_has_steps = bool(plan.steps)
         if plan_has_steps and not args.dry_run:
@@ -287,7 +287,7 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
         git_manager.update_repository(
             repo_path=source_dir,
             url=project.git.url,
-            main_branch=args.branch or project.git.main_branch,
+            main_branch=plan.branch,
             component_branch=project.git.component_branch,
             clone_script=plan.git_clone_script,
             update_script=plan.git_update_script,

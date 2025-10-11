@@ -11,6 +11,8 @@ import platform
 @dataclass(slots=True)
 class UserContext:
     branch: str
+    branch_raw: str
+    branch_slug: str
     build_type: str
     generator: str | None = None
     operation: str | None = None
@@ -22,6 +24,8 @@ class UserContext:
     def to_mapping(self) -> Dict[str, Any]:
         data = {
             "branch": self.branch,
+            "branch_raw": self.branch_raw,
+            "branch_slug": self.branch_slug,
             "build_type": self.build_type,
         }
         if self.generator:
@@ -99,8 +103,11 @@ class ContextBuilder:
         cc: str | None = None,
         cxx: str | None = None,
     ) -> UserContext:
+        sanitized_branch = branch.replace("/", "_")
         return UserContext(
-            branch=branch,
+            branch=sanitized_branch,
+            branch_raw=branch,
+            branch_slug=sanitized_branch,
             build_type=build_type,
             generator=generator,
             operation=operation,
