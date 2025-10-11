@@ -119,8 +119,23 @@ class BuildEngine:
         generator = options.generator if options.generator is not None else project.generator
         if generator is not None:
             options.generator = generator
-        user_ctx = context_builder.user(branch=branch, build_type=build_type, generator=generator, operation=options.operation.value)
         system_ctx = context_builder.system()
+
+        toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name)
+        cc = self._default_cc(toolchain)
+        cxx = self._default_cxx(toolchain)
+        linker = self._determine_linker(toolchain=toolchain, os_name=system_ctx.os_name)
+
+        user_ctx = context_builder.user(
+            branch=branch,
+            build_type=build_type,
+            generator=generator,
+            operation=options.operation.value,
+            toolchain=toolchain,
+            linker=linker,
+            cc=cc,
+            cxx=cxx,
+        )
 
         source_dir_str = project.source_dir
         build_dir_str = project.build_dir
@@ -209,16 +224,14 @@ class BuildEngine:
                 generator=generator,
             )
 
-            toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name)
             self._ensure_toolchain_compatibility(project.build_system, toolchain)
             if options.toolchain is not None:
-                environment["CC"] = self._default_cc(toolchain)
-                environment["CXX"] = self._default_cxx(toolchain)
+                environment["CC"] = cc
+                environment["CXX"] = cxx
             else:
-                environment.setdefault("CC", self._default_cc(toolchain))
-                environment.setdefault("CXX", self._default_cxx(toolchain))
+                environment.setdefault("CC", cc)
+                environment.setdefault("CXX", cxx)
 
-            linker = self._determine_linker(toolchain=toolchain, os_name=system_ctx.os_name)
             if linker:
                 if options.toolchain is not None:
                     environment["CC_LD"] = linker

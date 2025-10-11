@@ -14,6 +14,10 @@ class UserContext:
     build_type: str
     generator: str | None = None
     operation: str | None = None
+    toolchain: str | None = None
+    linker: str | None = None
+    cc: str | None = None
+    cxx: str | None = None
 
     def to_mapping(self) -> Dict[str, Any]:
         data = {
@@ -24,6 +28,14 @@ class UserContext:
             data["generator"] = self.generator
         if self.operation:
             data["operation"] = self.operation
+        if self.toolchain:
+            data["toolchain"] = self.toolchain
+        if self.linker:
+            data["linker"] = self.linker
+        if self.cc:
+            data["cc"] = self.cc
+        if self.cxx:
+            data["cxx"] = self.cxx
         return data
 
 
@@ -72,8 +84,28 @@ class ContextBuilder:
         self._builder_path = builder_path
         self._env = dict(env) if env is not None else dict(os.environ)
 
-    def user(self, branch: str, build_type: str, generator: str | None, operation: str | None) -> UserContext:
-        return UserContext(branch=branch, build_type=build_type, generator=generator, operation=operation)
+    def user(
+        self,
+        branch: str,
+        build_type: str,
+        generator: str | None,
+        operation: str | None,
+        *,
+        toolchain: str | None = None,
+        linker: str | None = None,
+        cc: str | None = None,
+        cxx: str | None = None,
+    ) -> UserContext:
+        return UserContext(
+            branch=branch,
+            build_type=build_type,
+            generator=generator,
+            operation=operation,
+            toolchain=toolchain,
+            linker=linker,
+            cc=cc,
+            cxx=cxx,
+        )
 
     def system(self) -> SystemContext:
         os_name = platform.system().lower()

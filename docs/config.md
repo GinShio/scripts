@@ -193,6 +193,10 @@ extra_build_args = ["--warn-uninitialized"]
    - `{{user.branch}}`: Current Git branch.
    - `{{user.build_type}}`: Build type (Debug/Release).
    - `{{user.generator}}`: Build generator name.
+   - `{{user.toolchain}}`: Selected toolchain identifier.
+   - `{{user.linker}}`: Preferred linker executable (if available).
+   - `{{user.cc}}`: Default C compiler for the active toolchain.
+   - `{{user.cxx}}`: Default C++ compiler for the active toolchain.
 2. **Project Variables**:
    - `{{project.name}}`: Project name.
    - `{{project.source_dir}}`: Project source directory.
