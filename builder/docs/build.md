@@ -27,6 +27,13 @@ This document describes the technical design and usage of the build system, incl
 5. Apply template variables and conditional expressions.
 6. Determine the actual main branch to be used for the project.
 
+### Layered Configuration Sources
+
+The loader accepts additional configuration directories in priority order. The default repository `config/` directory
+is always included. Directories listed in the `BUILDER_CONFIG_DIR` environment variable are processed next, followed by
+any paths supplied via the `--config-dir` CLI option. Later directories override earlier ones when files share a stem,
+allowing per-user or per-machine customizations without modifying shared configuration.
+
 ---
 
 ## Git Integration

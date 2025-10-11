@@ -27,10 +27,10 @@ If you prefer not to install the package, invoke the CLI module directly from th
 python -m builder.cli build myapp --preset development
 ```
 
-You can also call the script file explicitly:
+Alternatively, use the repository entry script which wires up the `src` layout automatically:
 
 ```sh
-python builder/cli.py build myapp --preset development
+python builder.py build myapp --preset development
 ```
 
 ## Usage
@@ -84,7 +84,20 @@ builder list myapp --presets --dependencies
 The project targets Python 3.11 and ships with a small unit test suite. Run tests from the repository root:
 
 ```sh
-python -m unittest discover -s tests
+python -m unittest discover -s builder/tests
 ```
+
+### Repository Layout
+
+```
+builder/
+├── src/builder/        # Package sources
+├── tests/              # Unit tests
+├── docs/               # Architecture and usage documentation
+├── config/             # Example configuration bundles
+└── builder.py          # Entry script helper for local runs
+```
+
+The package uses a `src` layout; editable installs (`pip install -e .`) and the included `builder.py` ensure the CLI remains discoverable without modifying `PYTHONPATH`.
 
 Refer to `docs/build.md`, `docs/config.md`, and `docs/git.md` for the authoritative design documentation that guided this implementation.

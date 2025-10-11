@@ -23,3 +23,7 @@ dependencies = [
 
 [project.scripts]
 builder = "builder.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "builder/src"}
+packages = {find = {where = ["builder/src"]}}

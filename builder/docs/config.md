@@ -6,7 +6,17 @@ This document describes the technical details of the configuration system, inclu
 
 ## Directory Layout
 
-The configuration files are organized in the following structure as example:
+By default the tool reads configuration content from the repository `config/` directory. You can layer additional
+locations using the `BUILDER_CONFIG_DIR` environment variable or the `--config-dir` CLI option; later entries win
+when files share the same stem. The priority order is:
+
+1. Repository `config/`
+2. Each path in `BUILDER_CONFIG_DIR` (supports the platform path separator and relative entries)
+3. Paths provided via `--config-dir` (repeat flag or separate paths with the platform path separator)
+
+All directories are merged, so shared configuration files and projects can be overridden in higher-priority layers.
+
+The configuration files are organized in the following structure as example within each directory:
 
 ```text
 /config
@@ -19,8 +29,9 @@ The configuration files are organized in the following structure as example:
 ```
 
 ### Key Points:
-- **Shared Base Configuration**: Files such as `company-base.toml`, `company-base.json`, or `company-base.yaml` contain reusable configurations shared across multiple projects.
+- **Shared Base Configuration**: Files such as `company-base.toml`, `company-base.json`, or `company-base.yaml` contain reusable configurations shared across multiple projects. Higher-priority directories can override these entries with updated values.
 - **Project Configuration**: Each project has its own configuration file under `projects/`, named after the project. Only one file per stem is allowed (e.g., don't mix `myapp.toml` and `myapp.yaml`).
+- **Layered Overrides**: Project files discovered later in the precedence chain replace earlier definitions for the same project name, enabling local or user-specific overrides without editing the shared repository copy.
 
 
 ## File Naming Conventions
