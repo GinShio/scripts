@@ -61,6 +61,18 @@ Update a project and its submodules:
 builder update myapp --branch feature-x
 ```
 
+List the current branch and commit for all configured projects:
+
+```sh
+builder list
+```
+
+Inspect a single project:
+
+```sh
+builder list myapp
+```
+
 ## Development
 
 The project targets Python 3.11 and ships with a small unit test suite. Run tests from the repository root:

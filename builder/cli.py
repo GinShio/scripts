@@ -124,6 +124,9 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
     update_parser.add_argument("--submodule", choices=["default", "latest", "skip"], default="default", help="Submodule update strategy")
     update_parser.add_argument("--dry-run", action="store_true", help="Preview git commands without executing them")
 
+    list_parser = subparsers.add_parser("list", help="List project repositories and their current commit")
+    list_parser.add_argument("project", nargs="?", help="Project to inspect; omit to list all projects")
+
     return parser.parse_args(list(argv))
 
 
@@ -137,6 +140,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         return _handle_validate(args, workspace)
     if args.command == "update":
         return _handle_update(args, workspace)
+    if args.command == "list":
+        return _handle_list(args, workspace)
     raise ValueError(f"Unknown command: {args.command}")
 
 
@@ -297,6 +302,59 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
         )
     if args.dry_run and isinstance(runner, RecordingCommandRunner):
         _emit_dry_run_output(runner, workspace=workspace)
+    return 0
+
+
+def _handle_list(args: Namespace, workspace: Path) -> int:
+    store = ConfigurationStore.from_directory(workspace)
+    runner = SubprocessCommandRunner()
+    git_manager = GitManager(runner)
+    planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
+
+    if args.project:
+        project_names = [args.project]
+    else:
+        project_names = sorted(store.list_projects())
+
+    rows: List[tuple[str, str, str, str]] = []
+
+    for name in project_names:
+        try:
+            project = store.get_project(name)
+        except KeyError as exc:
+            print(str(exc))
+            continue
+
+        options = BuildOptions(
+            project_name=project.name,
+            presets=[],
+            operation=BuildMode.CONFIG_ONLY,
+        )
+        plan = planning_engine.plan(options)
+        repo_path = plan.source_dir
+        branch, commit = git_manager.get_repository_state(repo_path, environment=plan.git_environment)
+
+        branch_display = branch or "-"
+        commit_display = commit or "<missing>"
+        rows.append((project.name, branch_display, commit_display, str(repo_path)))
+
+    if not rows:
+        print("No projects found")
+        return 0
+
+    headers = ("Project", "Branch", "Commit", "Path")
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for idx, value in enumerate(row):
+            widths[idx] = max(widths[idx], len(value))
+
+    def _format(values: tuple[str, str, str, str]) -> str:
+        return "  ".join(value.ljust(widths[idx]) for idx, value in enumerate(values))
+
+    print(_format(headers))
+    print("  ".join("-" * width for width in widths))
+    for row in rows:
+        print(_format(row))
     return 0
 
 

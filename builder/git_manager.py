@@ -18,6 +18,31 @@ class GitManager:
     def __init__(self, runner: CommandRunner) -> None:
         self._runner = runner
 
+    def get_repository_state(
+        self,
+        repo_path: Path,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> tuple[str | None, str | None]:
+        repo_path = repo_path.resolve()
+        if not repo_path.exists() or not (repo_path / ".git").exists():
+            return (None, None)
+
+        branch: str | None = None
+        commit: str | None = None
+
+        try:
+            branch = self._current_branch(repo_path, environment=environment)
+        except CommandError:
+            branch = None
+
+        try:
+            commit = self._current_commit(repo_path, environment=environment)
+        except CommandError:
+            commit = None
+
+        return (branch, commit)
+
     def prepare_checkout(
         self,
         *,
