@@ -106,6 +106,21 @@ class BuildEngineTests(unittest.TestCase):
                 """
             )
         )
+        (projects_dir / "cargo-app.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "cargo-app"
+                source_dir = "{{builder.path}}/examples/cargo-app"
+                build_dir = "_build/{{user.branch}}"
+                build_system = "cargo"
+
+                [git]
+                url = "https://example.com/cargo-app.git"
+                main_branch = "main"
+                """
+            )
+        )
         (projects_dir / "branch-override.toml").write_text(
             textwrap.dedent(
                 """
@@ -235,6 +250,41 @@ class BuildEngineTests(unittest.TestCase):
         user_context = plan.context["user"]
         self.assertEqual(user_context.get("toolchain"), "clang")
         self.assertEqual(user_context.get("linker"), "ld")
+
+    def test_plan_generates_cargo_commands(self) -> None:
+        options = BuildOptions(
+            project_name="cargo-app",
+            presets=[],
+            operation=BuildMode.AUTO,
+        )
+        plan = self.engine.plan(options)
+
+        self.assertIsNotNone(plan.build_dir)
+        expected_target_dir = str(plan.build_dir)
+        self.assertEqual(plan.environment.get("CARGO_TARGET_DIR"), expected_target_dir)
+        self.assertEqual(plan.context["user"].get("toolchain"), "rustc")
+
+        self.assertEqual(len(plan.steps), 1)
+        build_cmd = plan.steps[0].command
+        self.assertEqual(build_cmd[0], "cargo")
+        self.assertEqual(build_cmd[1], "build")
+        self.assertIn("--target-dir", build_cmd)
+        self.assertIn(expected_target_dir, build_cmd)
+        self.assertIn("--release", build_cmd)
+
+    def test_cargo_config_only_runs_fetch(self) -> None:
+        options = BuildOptions(
+            project_name="cargo-app",
+            presets=[],
+            operation=BuildMode.CONFIG_ONLY,
+        )
+        plan = self.engine.plan(options)
+
+        self.assertEqual(len(plan.steps), 1)
+        fetch_cmd = plan.steps[0].command
+        self.assertEqual(fetch_cmd[0], "cargo")
+        self.assertEqual(fetch_cmd[1], "fetch")
+        self.assertEqual(plan.steps[0].env.get("CARGO_TARGET_DIR"), str(plan.build_dir))
 
     def test_branch_placeholder_sanitizes_slashes(self) -> None:
         options = BuildOptions(

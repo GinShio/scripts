@@ -208,7 +208,7 @@ class BuildEngine:
             options.generator = generator
         system_ctx = context_builder.system()
 
-        toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name)
+        toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name, project.build_system)
         cc = self._default_cc(toolchain)
         cxx = self._default_cxx(toolchain)
         linker = self._determine_linker(toolchain=toolchain, os_name=system_ctx.os_name)
@@ -345,13 +345,20 @@ class BuildEngine:
                 generator=generator,
             )
 
+            if project.build_system == "cargo":
+                environment.setdefault("CARGO_TARGET_DIR", str(build_dir_path))
+
             self._ensure_toolchain_compatibility(project.build_system, toolchain)
-            if options.toolchain is not None:
-                environment["CC"] = cc
-                environment["CXX"] = cxx
-            else:
-                environment.setdefault("CC", cc)
-                environment.setdefault("CXX", cxx)
+            if cc:
+                if options.toolchain is not None:
+                    environment["CC"] = cc
+                else:
+                    environment.setdefault("CC", cc)
+            if cxx:
+                if options.toolchain is not None:
+                    environment["CXX"] = cxx
+                else:
+                    environment.setdefault("CXX", cxx)
 
             if linker:
                 if options.toolchain is not None:
@@ -524,6 +531,17 @@ class BuildEngine:
                     effective_source_dir=effective_source_dir,
                     environment=env,
                     definitions=definitions,
+                    extra_build_args=extra_build_args,
+                    options=options,
+                )
+            )
+        elif project.build_system == "cargo":
+            steps.extend(
+                self._cargo_steps(
+                    effective_source_dir=effective_source_dir,
+                    build_dir=build_dir,
+                    environment=env,
+                    extra_config_args=extra_config_args,
                     extra_build_args=extra_build_args,
                     options=options,
                 )
@@ -771,6 +789,71 @@ class BuildEngine:
         )
         return steps
 
+    def _cargo_steps(
+        self,
+        *,
+        effective_source_dir: Path,
+        build_dir: Path,
+        environment: Dict[str, str],
+        extra_config_args: List[str],
+        extra_build_args: List[str],
+        options: BuildOptions,
+    ) -> List[BuildStep]:
+        steps: List[BuildStep] = []
+        mode = options.operation
+
+        if options.target:
+            raise ValueError(
+                "Cargo builds do not support --target; pass cargo-specific flags via --extra-build-args instead"
+            )
+
+        if mode is BuildMode.RECONFIG:
+            steps.append(
+                BuildStep(
+                    description="Clean cargo workspace",
+                    command=["cargo", "clean", "--target-dir", str(build_dir)],
+                    cwd=effective_source_dir,
+                    env=environment,
+                )
+            )
+
+        should_configure = mode in {BuildMode.CONFIG_ONLY, BuildMode.RECONFIG}
+        if should_configure:
+            cmd = ["cargo", "fetch"]
+            cmd.extend(extra_config_args)
+            steps.append(
+                BuildStep(
+                    description="Fetch cargo dependencies",
+                    command=cmd,
+                    cwd=effective_source_dir,
+                    env=environment,
+                )
+            )
+
+        should_build = mode in {BuildMode.AUTO, BuildMode.BUILD_ONLY}
+        if should_build:
+            cmd = ["cargo", "build", "--target-dir", str(build_dir)]
+            build_type = self._determine_build_type(options=options)
+            normalized = build_type.lower()
+            if normalized == "release":
+                cmd.append("--release")
+            elif normalized not in {"debug"}:
+                cmd.extend(["--profile", normalized])
+            cmd.extend(extra_build_args)
+            steps.append(
+                BuildStep(
+                    description="Build cargo project",
+                    command=cmd,
+                    cwd=effective_source_dir,
+                    env=environment,
+                )
+            )
+
+        if options.install:
+            raise ValueError("Install mode is not supported for cargo projects")
+
+        return steps
+
     def _ensure_toolchain_compatibility(self, build_system: str, toolchain: str) -> None:
         allowed = _TOOLCHAIN_MATRIX.get(build_system)
         if not allowed:
@@ -781,14 +864,16 @@ class BuildEngine:
                 f"Allowed: {', '.join(sorted(allowed))}"
             )
 
-    def _default_toolchain(self, os_name: str) -> str:
+    def _default_toolchain(self, os_name: str, build_system: str | None) -> str:
+        if build_system == "cargo":
+            return "rustc"
         return "msvc" if os_name == "windows" else "clang"
 
     def _default_cc(self, toolchain: str) -> str:
-        return _TOOLCHAIN_DEFAULTS.get(toolchain, {}).get("CC", "clang")
+        return _TOOLCHAIN_DEFAULTS.get(toolchain, {}).get("CC")
 
     def _default_cxx(self, toolchain: str) -> str:
-        return _TOOLCHAIN_DEFAULTS.get(toolchain, {}).get("CXX", "clang++")
+        return _TOOLCHAIN_DEFAULTS.get(toolchain, {}).get("CXX")
 
     def _determine_linker(self, *, toolchain: str, os_name: str) -> str | None:
         if os_name == "windows" or toolchain == "msvc":
