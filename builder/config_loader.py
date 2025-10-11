@@ -186,6 +186,7 @@ class ProjectDefinition:
     generator: str | None
     component_dir: str | None
     build_at_root: bool
+    source_at_root: bool
     git: GitSettings
     presets: Dict[str, Mapping[str, Any]] = field(default_factory=dict)
     dependencies: List[ProjectDependency] = field(default_factory=list)
@@ -211,6 +212,16 @@ class ProjectDefinition:
         generator = project_section.get("generator")
         component_dir = project_section.get("component_dir")
         build_at_root = bool(project_section.get("build_at_root", True))
+        raw_source_at_root = project_section.get("source_at_root")
+        if raw_source_at_root is None:
+            if component_dir:
+                source_at_root = bool(build_at_root)
+            else:
+                source_at_root = True
+        elif isinstance(raw_source_at_root, bool):
+            source_at_root = raw_source_at_root
+        else:
+            raise TypeError("project.source_at_root must be a boolean if specified")
         environment_section = project_section.get("environment")
         project_environment: Dict[str, Any] = {}
         if isinstance(environment_section, Mapping):
@@ -255,6 +266,7 @@ class ProjectDefinition:
             generator=str(generator) if generator else None,
             component_dir=str(component_dir) if component_dir else None,
             build_at_root=build_at_root,
+            source_at_root=source_at_root,
             git=git,
             presets=presets,
             dependencies=dependencies,

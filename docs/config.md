@@ -96,7 +96,10 @@ generator = "Ninja"  # e.g., Ninja, Visual Studio 17 2022
 component_dir = "packages/my-component"
 
 # Monorepo build behavior (optional)
-build_at_root = true  # true = build at root, false = build at component level
+build_at_root = true  # true = place _build inside project root, false = inside component_dir
+
+# Monorepo source layout override (optional)
+source_at_root = true  # true = keep {{project.source_dir}} as-is, false = append component_dir for configuration tools
 
 # Extra arguments forwarded to build tooling (optional)
 extra_config_args = ["-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
@@ -273,6 +276,12 @@ extra_build_args = ["--warn-uninitialized"]
 - Controlled via `build_at_root`:
   - `true`: Build at the root-level `_build` directory.
   - `false`: Build at the component-level directory.
+- `source_at_root` (optional) determines where configuration tools such as CMake point their `-S` directory:
+   - `true` (default for `build_at_root = true`): use `{{project.source_dir}}`.
+   - `false`: use `{{project.source_dir}}/{{project.component_dir}}`.
+- `build_at_root` controls where the build directory is created:
+   - `true`: `{{project.build_dir}}` resolves relative to `{{project.source_dir}}`.
+   - `false`: the build directory resolves relative to `{{project.source_dir}}/{{project.component_dir}}` regardless of `source_at_root`.
 - Projects can define their own presets or inherit global ones.
 
 ---

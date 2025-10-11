@@ -249,14 +249,14 @@ class BuildEngine:
         if component_dir_str:
             component_dir = Path(resolver.resolve(component_dir_str))
 
-        effective_source_dir = source_dir
-        if component_dir and not project.build_at_root:
-            effective_source_dir = (source_dir / component_dir).resolve()
+        target_source_dir = source_dir
+        if component_dir and not project.source_at_root:
+            target_source_dir = (source_dir / component_dir).resolve()
 
         build_dir_path: Path | None = None
         if build_enabled and build_dir is not None:
             if not project.build_at_root and component_dir:
-                build_root = effective_source_dir
+                build_root = (source_dir / component_dir).resolve()
             else:
                 build_root = source_dir
             build_dir_path = (build_root / build_dir).resolve()
@@ -374,7 +374,7 @@ class BuildEngine:
 
             plan_steps = self._create_build_steps(
                 project=project,
-                effective_source_dir=effective_source_dir,
+                effective_source_dir=target_source_dir,
                 build_dir=build_dir_path,
                 install_dir=install_dir,
                 environment=environment,
@@ -428,7 +428,7 @@ class BuildEngine:
             project=project,
             build_dir=build_dir_path,
             install_dir=install_dir,
-            source_dir=effective_source_dir,
+            source_dir=target_source_dir,
             steps=plan_steps,
             context=combined_context,
             presets=presets_to_resolve,

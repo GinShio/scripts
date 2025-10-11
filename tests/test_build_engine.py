@@ -134,9 +134,29 @@ class BuildEngineTests(unittest.TestCase):
                 build_system = "cmake"
                 generator = "Ninja"
                 build_at_root = true
+                source_at_root = true
 
                 [git]
                 url = "https://example.com/mono-root.git"
+                main_branch = "main"
+                """
+            )
+        )
+        (projects_dir / "component-source-root.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "component-source-root"
+                source_dir = "{{builder.path}}/examples/component-source-root"
+                component_dir = "libs/core"
+                build_dir = "_build/{{user.branch}}"
+                build_system = "cmake"
+                generator = "Ninja"
+                build_at_root = true
+                source_at_root = false
+
+                [git]
+                url = "https://example.com/component-source-root.git"
                 main_branch = "main"
                 """
             )
@@ -233,7 +253,7 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(plan.branch_slug, "feature_awesome")
         self.assertIn("feature_awesome", str(plan.build_dir))
 
-    def test_build_at_root_uses_repository_source_dir(self) -> None:
+    def test_build_at_root_true_uses_project_source_dir(self) -> None:
         options = BuildOptions(
             project_name="mono-root",
             presets=[],
@@ -269,6 +289,22 @@ class BuildEngineTests(unittest.TestCase):
         user_context = plan.context["user"]
         self.assertEqual(user_context.get("branch_raw"), "component/main")
         self.assertEqual(user_context.get("branch"), "component_main")
+
+    def test_source_at_root_false_uses_component_directory(self) -> None:
+        options = BuildOptions(
+            project_name="component-source-root",
+            presets=[],
+            operation=BuildMode.AUTO,
+        )
+        with patch("builder.build.shutil.which", return_value=None):
+            plan = self.engine.plan(options)
+
+        expected_source = self.workspace / "examples" / "component-source-root" / "libs" / "core"
+        self.assertEqual(plan.source_dir, expected_source)
+        self.assertTrue(plan.steps)
+        configure_step = plan.steps[0]
+        self.assertIn(str(expected_source), configure_step.command)
+        self.assertEqual(configure_step.cwd, expected_source)
 
     def test_context_includes_preset_environment_and_definitions(self) -> None:
         options = BuildOptions(
