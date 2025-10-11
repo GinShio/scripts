@@ -71,6 +71,15 @@ class BuildPlan:
     branch_slug: str
 
 
+@dataclass(slots=True)
+class _ResolvedPaths:
+    source_dir: Path
+    build_dir: Path | None
+    install_dir: Path | None
+    component_dir: Path | None
+    target_source_dir: Path
+
+
 _TOOLCHAIN_MATRIX: Dict[str, set[str]] = {
     "cmake": {"clang", "gcc", "msvc"},
     "meson": {"clang", "gcc", "msvc"},
@@ -106,6 +115,97 @@ class BuildEngine:
         self._store = store
         self._command_runner = command_runner
         self._workspace = workspace
+
+    @staticmethod
+    def _select_branch(project: ProjectDefinition, options: BuildOptions) -> str:
+        if options.branch:
+            return options.branch
+        if project.git.component_branch and project.component_dir:
+            return project.git.component_branch
+        return project.git.main_branch
+
+    def _apply_toolchain_environment(
+        self,
+        *,
+        project: ProjectDefinition,
+        environment: Dict[str, str],
+        options: BuildOptions,
+        toolchain: str,
+        cc: str | None,
+        cxx: str | None,
+        linker: str | None,
+    ) -> None:
+        self._ensure_toolchain_compatibility(project.build_system, toolchain)
+
+        def update(key: str, value: str | None) -> None:
+            if not value:
+                return
+            if options.toolchain is not None:
+                environment[key] = value
+            else:
+                environment.setdefault(key, value)
+
+        update("CC", cc)
+        update("CXX", cxx)
+
+        if linker:
+            if options.toolchain is not None:
+                environment["CC_LD"] = linker
+                environment["CXX_LD"] = linker
+            else:
+                environment.setdefault("CC_LD", linker)
+                environment.setdefault("CXX_LD", linker)
+
+    @staticmethod
+    def _resolve_generator(options: BuildOptions, project: ProjectDefinition) -> str | None:
+        if options.generator is not None:
+            return options.generator
+        generator = project.generator
+        if generator is not None:
+            options.generator = generator
+        return generator
+
+    @staticmethod
+    def _resolve_paths(
+        *,
+        project: ProjectDefinition,
+        resolver: TemplateResolver,
+        source_dir_str: str,
+        build_dir_str: str | None,
+        install_dir_str: str | None,
+        component_dir_str: str | None,
+        build_enabled: bool,
+    ) -> _ResolvedPaths:
+        source_dir = Path(resolver.resolve(source_dir_str)).expanduser()
+        build_dir = Path(resolver.resolve(build_dir_str)) if build_dir_str else None
+        install_dir = Path(resolver.resolve(install_dir_str)) if install_dir_str else None
+        component_dir = Path(resolver.resolve(component_dir_str)) if component_dir_str else None
+
+        target_source_dir = source_dir
+        if component_dir and not project.source_at_root:
+            target_source_dir = (source_dir / component_dir).resolve()
+
+        build_dir_path: Path | None = None
+        if build_enabled and build_dir is not None:
+            if not project.build_at_root and component_dir:
+                build_root = (source_dir / component_dir).resolve()
+            else:
+                build_root = source_dir
+            build_dir_path = (build_root / build_dir).resolve()
+
+        if install_dir:
+            if install_dir.is_absolute():
+                install_dir = install_dir
+            else:
+                install_dir = (source_dir / install_dir).resolve()
+
+        return _ResolvedPaths(
+            source_dir=source_dir,
+            build_dir=build_dir_path,
+            install_dir=install_dir,
+            component_dir=component_dir,
+            target_source_dir=target_source_dir,
+        )
 
     @staticmethod
     def _extend_unique(target: List[str], values: Iterable[str]) -> None:
@@ -196,16 +296,9 @@ class BuildEngine:
         builder_path = self._workspace
         context_builder = ContextBuilder(builder_path)
 
-        branch = options.branch
-        if branch is None:
-            if project.git.component_branch and project.component_dir:
-                branch = project.git.component_branch
-            else:
-                branch = project.git.main_branch
+        branch = self._select_branch(project, options)
         build_type = self._determine_build_type(options=options)
-        generator = options.generator if options.generator is not None else project.generator
-        if generator is not None:
-            options.generator = generator
+        generator = self._resolve_generator(options, project)
         system_ctx = context_builder.system()
 
         toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name, project.build_system)
@@ -241,38 +334,22 @@ class BuildEngine:
         combined_context = context_builder.combined_context(user=user_ctx, project=project_ctx, system=system_ctx)
         resolver = TemplateResolver(combined_context)
 
-        source_dir = Path(resolver.resolve(source_dir_str)).expanduser()
-        build_dir = Path(resolver.resolve(build_dir_str)) if build_dir_str else None
-        install_dir = None
-        if install_dir_str:
-            install_dir = Path(resolver.resolve(install_dir_str))
-        component_dir = None
-        if component_dir_str:
-            component_dir = Path(resolver.resolve(component_dir_str))
-
-        target_source_dir = source_dir
-        if component_dir and not project.source_at_root:
-            target_source_dir = (source_dir / component_dir).resolve()
-
-        build_dir_path: Path | None = None
-        if build_enabled and build_dir is not None:
-            if not project.build_at_root and component_dir:
-                build_root = (source_dir / component_dir).resolve()
-            else:
-                build_root = source_dir
-            build_dir_path = (build_root / build_dir).resolve()
-        if install_dir:
-            if install_dir.is_absolute():
-                install_dir = install_dir
-            else:
-                install_dir = (source_dir / install_dir).resolve()
+        paths = self._resolve_paths(
+            project=project,
+            resolver=resolver,
+            source_dir_str=source_dir_str,
+            build_dir_str=build_dir_str,
+            install_dir_str=install_dir_str,
+            component_dir_str=component_dir_str,
+            build_enabled=build_enabled,
+        )
 
         updated_project_ctx = context_builder.project(
             name=project.name,
-            source_dir=source_dir,
-            build_dir=build_dir_path,
-            install_dir=install_dir,
-            component_dir=component_dir,
+            source_dir=paths.source_dir,
+            build_dir=paths.build_dir,
+            install_dir=paths.install_dir,
+            component_dir=paths.component_dir,
         )
         combined_context = context_builder.combined_context(user=user_ctx, project=updated_project_ctx, system=system_ctx)
         resolver = TemplateResolver(combined_context)
@@ -336,7 +413,7 @@ class BuildEngine:
         self._extend_unique(extra_build_args, options.extra_build_args)
 
         plan_steps: List[BuildStep] = []
-        if build_enabled and build_dir_path is not None:
+        if build_enabled and paths.build_dir is not None:
             self._apply_cmake_build_type(
                 project=project,
                 definitions=definitions,
@@ -346,27 +423,17 @@ class BuildEngine:
             )
 
             if project.build_system == "cargo":
-                environment.setdefault("CARGO_TARGET_DIR", str(build_dir_path))
+                environment.setdefault("CARGO_TARGET_DIR", str(paths.build_dir))
 
-            self._ensure_toolchain_compatibility(project.build_system, toolchain)
-            if cc:
-                if options.toolchain is not None:
-                    environment["CC"] = cc
-                else:
-                    environment.setdefault("CC", cc)
-            if cxx:
-                if options.toolchain is not None:
-                    environment["CXX"] = cxx
-                else:
-                    environment.setdefault("CXX", cxx)
-
-            if linker:
-                if options.toolchain is not None:
-                    environment["CC_LD"] = linker
-                    environment["CXX_LD"] = linker
-                else:
-                    environment.setdefault("CC_LD", linker)
-                    environment.setdefault("CXX_LD", linker)
+            self._apply_toolchain_environment(
+                project=project,
+                environment=environment,
+                options=options,
+                toolchain=toolchain,
+                cc=cc,
+                cxx=cxx,
+                linker=linker,
+            )
             self._apply_color_diagnostics(
                 project=project,
                 environment=environment,
@@ -382,9 +449,9 @@ class BuildEngine:
 
             plan_steps = self._create_build_steps(
                 project=project,
-                effective_source_dir=target_source_dir,
-                build_dir=build_dir_path,
-                install_dir=install_dir,
+                effective_source_dir=paths.target_source_dir,
+                build_dir=paths.build_dir,
+                install_dir=paths.install_dir,
                 environment=environment,
                 definitions=definitions,
                 extra_config_args=extra_config_args,
@@ -434,10 +501,10 @@ class BuildEngine:
 
         return BuildPlan(
             project=project,
-            build_dir=build_dir_path,
-            install_dir=install_dir,
-            source_dir=source_dir,
-            configure_source_dir=target_source_dir,
+            build_dir=paths.build_dir,
+            install_dir=paths.install_dir,
+            source_dir=paths.source_dir,
+            configure_source_dir=paths.target_source_dir,
             steps=plan_steps,
             context=combined_context,
             presets=presets_to_resolve,

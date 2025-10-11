@@ -28,18 +28,17 @@ class UserContext:
             "branch_slug": self.branch_slug,
             "build_type": self.build_type,
         }
-        if self.generator:
-            data["generator"] = self.generator
-        if self.operation:
-            data["operation"] = self.operation
-        if self.toolchain:
-            data["toolchain"] = self.toolchain
-        if self.linker:
-            data["linker"] = self.linker
-        if self.cc:
-            data["cc"] = self.cc
-        if self.cxx:
-            data["cxx"] = self.cxx
+        optional = {
+            "generator": self.generator,
+            "operation": self.operation,
+            "toolchain": self.toolchain,
+            "linker": self.linker,
+            "cc": self.cc,
+            "cxx": self.cxx,
+        }
+        for key, value in optional.items():
+            if value is not None:
+                data[key] = value
         return data
 
 
@@ -57,12 +56,14 @@ class ProjectContext:
             "name": self.name,
             "source_dir": str(self.source_dir),
         }
-        if self.build_dir is not None:
-            data["build_dir"] = str(self.build_dir)
-        if self.install_dir:
-            data["install_dir"] = str(self.install_dir)
-        if self.component_dir:
-            data["component_dir"] = str(self.component_dir)
+        optional = {
+            "build_dir": self.build_dir,
+            "install_dir": self.install_dir,
+            "component_dir": self.component_dir,
+        }
+        for key, value in optional.items():
+            if value is not None:
+                data[key] = str(value)
         if self.environment:
             data["environment"] = dict(self.environment)
         return data

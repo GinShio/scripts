@@ -12,6 +12,10 @@ from .config_loader import ConfigurationStore
 from .git_manager import GitManager
 
 
+def _make_runner(dry_run: bool) -> SubprocessCommandRunner | RecordingCommandRunner:
+    return RecordingCommandRunner() if dry_run else SubprocessCommandRunner()
+
+
 def _flatten_arg_groups(groups: Iterable[Iterable[str]]) -> List[str]:
     flattened: List[str] = []
     for group in groups:
@@ -205,11 +209,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
         operation=operation,
     )
 
-    runner: SubprocessCommandRunner | RecordingCommandRunner
-    if args.dry_run:
-        runner = RecordingCommandRunner()
-    else:
-        runner = SubprocessCommandRunner()
+    runner = _make_runner(args.dry_run)
 
     engine = BuildEngine(store=store, command_runner=runner, workspace=workspace)
     git_manager = GitManager(runner)
@@ -307,11 +307,7 @@ def _handle_validate(args: Namespace, workspace: Path) -> int:
 
 def _handle_update(args: Namespace, workspace: Path) -> int:
     store = ConfigurationStore.from_directory(workspace)
-    runner: SubprocessCommandRunner | RecordingCommandRunner
-    if args.dry_run:
-        runner = RecordingCommandRunner()
-    else:
-        runner = SubprocessCommandRunner()
+    runner = _make_runner(args.dry_run)
     git_manager = GitManager(runner)
     planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
 

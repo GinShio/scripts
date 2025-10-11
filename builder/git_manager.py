@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Mapping, Optional
+from typing import Dict, Mapping, Optional, Sequence
 
 from .command_runner import CommandRunner, CommandResult, CommandError
 
@@ -97,21 +97,25 @@ class GitManager:
         dirty = self._is_dirty(repo_path, environment=environment)
         if dirty and branch_switch_needed:
             if auto_stash:
-                self._runner.run(
+                self._run_repo_command(
+                    repo_path,
                     ["git", "stash", "push", "-m", "builder auto-stash"],
-                    cwd=repo_path,
-                    env=environment,
+                    dry_run=False,
+                    environment=environment,
+                    stream=False,
                 )
                 stash_applied = True
             else:
                 raise RuntimeError("Working tree has uncommitted changes and auto_stash is disabled")
 
         if branch_switch_needed:
-            result = self._runner.run(
+            result = self._run_repo_command(
+                repo_path,
                 ["git", "switch", target_branch],
-                cwd=repo_path,
-                env=environment,
+                dry_run=False,
+                environment=environment,
                 check=False,
+                stream=False,
             )
             if result.returncode != 0:
                 raise RuntimeError(
@@ -128,10 +132,11 @@ class GitManager:
                     component_path = None
                 component_state_branch = restored_branch
             else:
-                self._runner.run(
-                    ["git", "submodule", "update", "--recursive"],
-                    cwd=repo_path,
-                    env=environment,
+                self._update_submodules(
+                    repo_path,
+                    dry_run=False,
+                    environment=environment,
+                    stream=False,
                 )
         else:
             component_path = None
@@ -154,12 +159,30 @@ class GitManager:
         current_branch = self._current_branch(repo_path, environment=environment)
         branch_restored = current_branch == state.branch
         if not branch_restored:
-            self._runner.run(["git", "checkout", state.branch], cwd=repo_path, env=environment)
+            self._run_repo_command(
+                repo_path,
+                ["git", "checkout", state.branch],
+                dry_run=False,
+                environment=environment,
+                stream=False,
+            )
             branch_restored = True
         if branch_restored:
-            self._runner.run(["git", "submodule", "update", "--recursive"], cwd=repo_path, env=environment)
+            self._update_submodules(
+                repo_path,
+                dry_run=False,
+                environment=environment,
+                stream=False,
+            )
         if state.stash_applied:
-            self._runner.run(["git", "stash", "pop"], cwd=repo_path, env=environment, check=False)
+            self._run_repo_command(
+                repo_path,
+                ["git", "stash", "pop"],
+                dry_run=False,
+                environment=environment,
+                check=False,
+                stream=False,
+            )
         if state.component_path and state.component_branch:
             try:
                 component_current = self._current_branch(state.component_path, environment=environment)
@@ -167,11 +190,13 @@ class GitManager:
                 return
             component_restored = component_current == state.component_branch
             if not component_restored:
-                result = self._runner.run(
+                result = self._run_repo_command(
+                    state.component_path,
                     ["git", "switch", state.component_branch],
-                    cwd=state.component_path,
-                    env=environment,
+                    dry_run=False,
+                    environment=environment,
                     check=False,
+                    stream=False,
                 )
                 if result.returncode != 0:
                     raise RuntimeError(
@@ -179,10 +204,11 @@ class GitManager:
                     )
                 component_restored = True
             if component_restored:
-                self._runner.run(
-                    ["git", "submodule", "update", "--recursive"],
-                    cwd=state.component_path,
-                    env=environment,
+                self._update_submodules(
+                    state.component_path,
+                    dry_run=False,
+                    environment=environment,
+                    stream=False,
                 )
 
     def update_repository(
@@ -225,95 +251,98 @@ class GitManager:
         dirty = self._is_dirty(repo_path, environment=environment)
         stash_applied = False
         if dirty and auto_stash:
-            self._run_command(
+            self._run_repo_command(
+                repo_path,
                 ["git", "stash", "push", "-m", "builder auto-stash"],
-                cwd=repo_path,
-                environment=environment,
                 dry_run=dry_run,
+                environment=environment,
             )
             stash_applied = True
         elif dirty:
             raise RuntimeError("Working tree has uncommitted changes; enable auto_stash to proceed")
 
-        self._run_command(["git", "fetch", "--all"], cwd=repo_path, environment=environment, dry_run=dry_run)
-        result = self._run_command(
+        self._run_repo_command(
+            repo_path,
+            ["git", "fetch", "--all"],
+            dry_run=dry_run,
+            environment=environment,
+        )
+        result = self._run_repo_command(
+            repo_path,
             ["git", "switch", main_branch],
-            cwd=repo_path,
+            dry_run=dry_run,
             environment=environment,
             check=False,
-            dry_run=dry_run,
         )
         if result.returncode != 0:
-            self._run_command(
+            self._run_repo_command(
+                repo_path,
                 ["git", "switch", "-c", main_branch, f"origin/{main_branch}"],
-                cwd=repo_path,
-                environment=environment,
                 dry_run=dry_run,
+                environment=environment,
             )
-        self._run_command(
+        self._run_repo_command(
+            repo_path,
             ["git", "pull", "--ff-only", "origin", main_branch],
-            cwd=repo_path,
-            environment=environment,
             dry_run=dry_run,
+            environment=environment,
         )
-        self._run_command(
-            ["git", "submodule", "update", "--recursive"],
-            cwd=repo_path,
-            environment=environment,
+        self._update_submodules(
+            repo_path,
             dry_run=dry_run,
+            environment=environment,
         )
 
         if component_branch:
             component_path = repo_path
-            self._run_command(
+            self._run_repo_command(
+                component_path,
                 ["git", "fetch", "--all"],
-                cwd=component_path,
-                environment=environment,
                 dry_run=dry_run,
+                environment=environment,
             )
-            result = self._run_command(
+            result = self._run_repo_command(
+                component_path,
                 ["git", "switch", component_branch],
-                cwd=component_path,
+                dry_run=dry_run,
                 environment=environment,
                 check=False,
-                dry_run=dry_run,
             )
             if result.returncode != 0:
                 raise RuntimeError(f"Component branch '{component_branch}' does not exist")
-            self._run_command(
+            self._run_repo_command(
+                component_path,
                 ["git", "pull", "--ff-only", "origin", component_branch],
-                cwd=component_path,
-                environment=environment,
                 dry_run=dry_run,
+                environment=environment,
             )
-            self._run_command(
-                ["git", "submodule", "update", "--recursive"],
-                cwd=component_path,
-                environment=environment,
+            self._update_submodules(
+                component_path,
                 dry_run=dry_run,
+                environment=environment,
             )
 
         if stash_applied:
-            self._run_command(
+            self._run_repo_command(
+                repo_path,
                 ["git", "switch", main_branch],
-                cwd=repo_path,
-                environment=environment,
                 dry_run=dry_run,
+                environment=environment,
             )
-            self._run_command(
+            self._run_repo_command(
+                repo_path,
                 ["git", "stash", "pop"],
-                cwd=repo_path,
+                dry_run=dry_run,
                 environment=environment,
                 check=False,
-                dry_run=dry_run,
             )
 
         if restore_branch:
-            self._run_command(
+            self._run_repo_command(
+                repo_path,
                 ["git", "switch", restore_branch],
-                cwd=repo_path,
-                environment=environment,
                 dry_run=dry_run,
+                environment=environment,
             )
 
     def _run_command(
@@ -328,6 +357,41 @@ class GitManager:
     ) -> CommandResult:
         run_stream = stream if stream is not None else not dry_run
         return self._runner.run(command, cwd=cwd, env=environment, check=check, stream=run_stream)
+
+    def _run_repo_command(
+        self,
+        repo_path: Path,
+        command: Sequence[str],
+        *,
+        dry_run: bool,
+        environment: Mapping[str, str] | None = None,
+        check: bool = True,
+        stream: bool | None = None,
+    ) -> CommandResult:
+        return self._run_command(
+            list(command),
+            cwd=repo_path,
+            dry_run=dry_run,
+            environment=environment,
+            check=check,
+            stream=stream,
+        )
+
+    def _update_submodules(
+        self,
+        repo_path: Path,
+        *,
+        dry_run: bool,
+        environment: Mapping[str, str] | None = None,
+        stream: bool | None = None,
+    ) -> CommandResult:
+        return self._run_repo_command(
+            repo_path,
+            ["git", "submodule", "update", "--recursive"],
+            dry_run=dry_run,
+            environment=environment,
+            stream=stream,
+        )
 
     def _is_git_directory(self, path: Path) -> bool:
         git_dir = path / ".git"
@@ -383,20 +447,23 @@ class GitManager:
         branch_switch_needed = current_branch != target_branch and (current_commit != target_commit)
 
         if branch_switch_needed:
-            result = self._runner.run(
+            result = self._run_repo_command(
+                component_path,
                 ["git", "switch", target_branch],
-                cwd=component_path,
-                env=environment,
+                dry_run=False,
+                environment=environment,
                 check=False,
+                stream=False,
             )
             if result.returncode != 0:
                 raise RuntimeError(
                     f"Unable to switch component repository at '{component_path}' to branch '{target_branch}'. Run 'builder update' first."
                 )
-            self._runner.run(
-                ["git", "submodule", "update", "--recursive"],
-                cwd=component_path,
-                env=environment,
+            self._update_submodules(
+                component_path,
+                dry_run=False,
+                environment=environment,
+                stream=False,
             )
             if original_branch and original_branch != target_branch:
                 return original_branch

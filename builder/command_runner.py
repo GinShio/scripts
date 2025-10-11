@@ -59,6 +59,19 @@ class CommandRunner:
 class SubprocessCommandRunner(CommandRunner):
     """Command runner that executes commands via :mod:`subprocess`."""
 
+    @staticmethod
+    def _merge_environment(env: Mapping[str, str] | None) -> Dict[str, str] | None:
+        if env is None:
+            return None
+        merged = os.environ.copy()
+        merged.update(env)
+        return merged
+
+    def _finalize(self, result: CommandResult, *, check: bool) -> CommandResult:
+        if check and result.returncode != 0:
+            raise CommandError(result)
+        return result
+
     def run(
         self,
         command: Sequence[str],
@@ -69,10 +82,7 @@ class SubprocessCommandRunner(CommandRunner):
         note: str | None = None,
         stream: bool = False,
     ) -> CommandResult:
-        merged_env: Dict[str, str] | None = None
-        if env is not None:
-            merged_env = os.environ.copy()
-            merged_env.update(env)
+        merged_env = self._merge_environment(env)
         if not stream:
             process = subprocess.run(
                 command,
@@ -82,15 +92,15 @@ class SubprocessCommandRunner(CommandRunner):
                 text=True,
                 check=False,
             )
-            result = CommandResult(
+            return self._finalize(
+                CommandResult(
                 command=command,
                 returncode=process.returncode,
                 stdout=process.stdout,
                 stderr=process.stderr,
+                ),
+                check=check,
             )
-            if check and process.returncode != 0:
-                raise CommandError(result)
-            return result
 
         process = subprocess.run(
             command,
@@ -99,23 +109,49 @@ class SubprocessCommandRunner(CommandRunner):
             check=False,
         )
 
-        result = CommandResult(
-            command=command,
-            returncode=process.returncode,
-            stdout="",
-            stderr="",
-            streamed=True,
+        return self._finalize(
+            CommandResult(
+                command=command,
+                returncode=process.returncode,
+                stdout="",
+                stderr="",
+                streamed=True,
+            ),
+            check=check,
         )
-        if check and process.returncode != 0:
-            raise CommandError(result)
-        return result
+
+
+@dataclass(slots=True)
+class RecordedCommand:
+    command: List[str]
+    cwd: str | None
+    env: Dict[str, str]
+    note: str | None
+    stream: bool
 
 
 class RecordingCommandRunner(CommandRunner):
     """Command runner that records commands instead of executing them."""
 
     def __init__(self) -> None:
-        self.commands: List[dict] = []
+        self.commands: List[RecordedCommand] = []
+
+    @staticmethod
+    def _record_entry(
+        *,
+        command: Sequence[str],
+        cwd: Path | None,
+        env: Mapping[str, str] | None,
+        note: str | None,
+        stream: bool,
+    ) -> RecordedCommand:
+        return RecordedCommand(
+            command=list(command),
+            cwd=str(cwd) if cwd else None,
+            env=dict(env) if env else {},
+            note=note,
+            stream=stream,
+        )
 
     def run(
         self,
@@ -127,25 +163,20 @@ class RecordingCommandRunner(CommandRunner):
         note: str | None = None,
         stream: bool = False,
     ) -> CommandResult:
-        record = {
-            "command": list(command),
-            "cwd": str(cwd) if cwd else None,
-            "env": dict(env) if env else {},
-            "note": note,
-            "stream": stream,
-        }
-        self.commands.append(record)
+        self.commands.append(
+            self._record_entry(command=command, cwd=cwd, env=env, note=note, stream=stream)
+        )
         return CommandResult(command=command, returncode=0, stdout="", stderr="")
 
-    def iter_commands(self) -> Iterable[dict]:
+    def iter_commands(self) -> Iterable[RecordedCommand]:
         return iter(self.commands)
 
     def iter_formatted(self, *, workspace: Path | None = None) -> Iterable[str]:
         default_cwd = str(workspace) if workspace else None
         for record in self.commands:
-            cmd = self.format_command(record["command"])
-            cwd = record["cwd"] or default_cwd
-            note = record.get("note")
+            cmd = self.format_command(record.command)
+            cwd = record.cwd or default_cwd
+            note = record.note
             parts: List[str] = ["[dry-run]"]
             if note:
                 parts.append(note)
