@@ -90,14 +90,11 @@ class GitManager:
         repo_path = repo_path.resolve()
         if not repo_path.exists():
             if clone_script:
-                self._run_script(clone_script, repo_path, environment=environment, dry_run=dry_run)
+                self._run_script(clone_script, None, environment=environment, dry_run=dry_run)
             else:
-                parent = repo_path.parent
-                if not dry_run:
-                    parent.mkdir(parents=True, exist_ok=True)
                 self._run_command(
                     ["git", "clone", url, str(repo_path), "--recursive"],
-                    cwd=parent,
+                    cwd=None,
                     environment=environment,
                     dry_run=dry_run,
                 )
@@ -254,7 +251,7 @@ class GitManager:
     def _run_script(
         self,
         script: str,
-        cwd: Path,
+        cwd: Path | None,
         *,
         environment: Mapping[str, str] | None,
         dry_run: bool,

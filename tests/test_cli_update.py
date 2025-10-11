@@ -109,6 +109,7 @@ class UpdateCommandTests(unittest.TestCase):
         output = buffer.getvalue()
         expected_path = self.workspace / "repos" / "demo"
         self.assertIn(f"echo clone {expected_path.as_posix()}", output)
+        self.assertNotIn(f"(cwd={expected_path.as_posix()})", output)
 
 
 if __name__ == "__main__":  # pragma: no cover
