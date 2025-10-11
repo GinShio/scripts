@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Mapping, Sequence, List
+from typing import Any, Dict, Iterable, Mapping, Sequence, List, Callable, Optional
 import ast
 import operator
 import re
@@ -50,6 +50,25 @@ _ALLOWED_COMPARISONS: dict[type[ast.AST], Any] = {
     ast.NotIn: lambda a, b: a not in b,
     ast.Is: operator.is_,
     ast.IsNot: operator.is_not,
+}
+
+@dataclass(frozen=True)
+class _AllowedCallSpec:
+    func: Callable[..., Any]
+    min_args: int = 1
+    max_args: Optional[int] = 1
+
+
+_ALLOWED_CALLS: dict[str, _AllowedCallSpec] = {
+    "str": _AllowedCallSpec(str, 1, 1),
+    "int": _AllowedCallSpec(int, 1, 1),
+    "float": _AllowedCallSpec(float, 1, 1),
+    "bool": _AllowedCallSpec(bool, 1, 1),
+    "min": _AllowedCallSpec(min, 1, None),
+    "max": _AllowedCallSpec(max, 1, None),
+    "abs": _AllowedCallSpec(abs, 1, 1),
+    "round": _AllowedCallSpec(round, 1, 2),
+    "sum": _AllowedCallSpec(sum, 1, 2),
 }
 
 
@@ -324,6 +343,28 @@ class _ExpressionEvaluator(ast.NodeVisitor):
             keys = [self.visit(key) for key in node.keys]
             values = [self.visit(value) for value in node.values]
             return dict(zip(keys, values))
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name):
+                raise TemplateError("Only simple function names are allowed in expressions")
+            func_name = node.func.id
+            if func_name not in _ALLOWED_CALLS:
+                raise TemplateError(f"Function '{func_name}' is not allowed in expressions")
+            if node.keywords:
+                raise TemplateError(f"Keyword arguments are not allowed for function '{func_name}'")
+            spec = _ALLOWED_CALLS[func_name]
+            args = [self.visit(arg) for arg in node.args]
+            if len(args) < spec.min_args:
+                raise TemplateError(
+                    f"Function '{func_name}' expects at least {spec.min_args} argument{'s' if spec.min_args != 1 else ''}"
+                )
+            if spec.max_args is not None and len(args) > spec.max_args:
+                raise TemplateError(
+                    f"Function '{func_name}' expects at most {spec.max_args} argument{'s' if spec.max_args != 1 else ''}"
+                )
+            try:
+                return spec.func(*args)
+            except (TypeError, ValueError) as exc:
+                raise TemplateError(f"Function '{func_name}' could not convert value: {exc}") from exc
         raise TemplateError(f"Expression node '{type(node).__name__}' is not allowed")
 
 

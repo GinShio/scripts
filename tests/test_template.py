@@ -14,6 +14,7 @@ class TemplateResolverTests(unittest.TestCase):
             "project": {"name": "demo", "source_dir": "/src/demo", "build_dir": "_build"},
             "system": {"os": "linux", "architecture": "x86_64", "memory": {"total_gb": 16}},
             "env": {"CC": "clang"},
+            "values": {"string_number": "42", "float_value": "3.25", "zero": 0},
         }
         self.resolver = TemplateResolver(self.context)
 
@@ -68,6 +69,49 @@ class TemplateResolverTests(unittest.TestCase):
         resolver = TemplateResolver(context)
         with self.assertRaises(TemplateError):
             resolver.resolve("{{variables.alpha}}")
+
+    def test_expression_supports_basic_type_conversions(self) -> None:
+        result_int = self.resolver.resolve("[[ int({{values.string_number}}) + 1 ]]")
+        self.assertEqual(result_int, 43)
+
+        result_float = self.resolver.resolve("[[ float({{values.string_number}}) / 2 ]]")
+        self.assertEqual(result_float, 21.0)
+
+        result_str = self.resolver.resolve("[[ str({{system.memory.total_gb}}) ]]")
+        self.assertEqual(result_str, "16")
+
+        result_bool = self.resolver.resolve("[[ bool({{values.zero}}) ]]")
+        self.assertFalse(result_bool)
+
+    def test_expression_disallows_unknown_functions(self) -> None:
+        with self.assertRaises(TemplateError):
+            self.resolver.resolve("[[ len({{project.name}}) ]]")
+
+    def test_expression_supports_min_function(self) -> None:
+        result = self.resolver.resolve("[[ min({{system.memory.total_gb}}, 32, 8) ]]")
+        self.assertEqual(result, 8)
+
+        list_context = TemplateResolver({"numbers": [5, 3, 7]})
+        list_result = list_context.resolve("[[ min({{numbers}}) ]]")
+        self.assertEqual(list_result, 3)
+
+    def test_expression_supports_additional_math_functions(self) -> None:
+        max_result = self.resolver.resolve("[[ max({{system.memory.total_gb}}, 4) ]]")
+        self.assertEqual(max_result, 16)
+
+        abs_context = TemplateResolver({"values": {"negative": -12}})
+        abs_result = abs_context.resolve("[[ abs({{values.negative}}) ]]")
+        self.assertEqual(abs_result, 12)
+
+        round_context = TemplateResolver({"values": {"pi": 3.14159}})
+        round_result = round_context.resolve("[[ round({{values.pi}}, 2) ]]")
+        self.assertEqual(round_result, 3.14)
+
+        sum_context = TemplateResolver({"values": {"items": [1, 2, 3]}})
+        sum_result = sum_context.resolve("[[ sum({{values.items}}) ]]")
+        self.assertEqual(sum_result, 6)
+        sum_with_start = sum_context.resolve("[[ sum({{values.items}}, 5) ]]")
+        self.assertEqual(sum_with_start, 11)
 
 
 if __name__ == "__main__":  # pragma: no cover
