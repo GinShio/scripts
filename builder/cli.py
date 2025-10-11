@@ -288,8 +288,8 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
             url=project.git.url,
             main_branch=args.branch or project.git.main_branch,
             component_branch=project.git.component_branch,
-            clone_script=project.git.clone_script,
-            update_script=project.git.update_script,
+            clone_script=plan.git_clone_script,
+            update_script=plan.git_update_script,
             auto_stash=project.git.auto_stash,
             dry_run=args.dry_run,
         )

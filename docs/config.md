@@ -166,6 +166,10 @@ environment = {
     CFLAGS = "-O2 -Wall"
 }
 
+# Newly defined environment variables can reference other entries using the
+# `{{env.NAME}}` placeholder. Resolution happens after each preset merges, so
+# variables created earlier in the chain are available to later ones.
+
 # Build system parameters (optional)
 definitions = {
     CMAKE_BUILD_TYPE = "Release",
@@ -177,6 +181,11 @@ definitions = {
 extra_config_args = ["-DENABLE_WARNINGS=ON"]
 extra_build_args = ["--warn-uninitialized"]
 ```
+
+> **Tip:** Environment placeholders now include variables introduced by presets.
+> Use `{{env.NAME}}` (or `{{preset.environment.NAME}}`) to reference values defined
+> earlier in the inheritance chain or the same preset, enabling layered configuration
+> without repeating paths.
 
 ### Inheritance Rules:
 - Use the `extends` field to inherit other presets.

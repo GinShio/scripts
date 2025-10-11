@@ -78,6 +78,38 @@ class UpdateCommandTests(unittest.TestCase):
         self.assertIn("git pull --ff-only origin main", output)
         self.assertNotIn("git clone", output)
 
+    def test_update_clone_script_template_is_resolved(self) -> None:
+        config_path = self.workspace / "config" / "projects" / "demo.toml"
+        config_path.write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "demo"
+                source_dir = "{{builder.path}}/repos/demo"
+                build_dir = "_build/demo"
+                build_system = "cmake"
+
+                [git]
+                url = "https://example.com/demo.git"
+                main_branch = "main"
+                clone_script = "echo clone {{project.source_dir}}"
+                """
+            )
+        )
+
+        args = SimpleNamespace(
+            project="demo",
+            branch=None,
+            submodule="default",
+            dry_run=True,
+        )
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            cli._handle_update(args, self.workspace)
+        output = buffer.getvalue()
+        expected_path = self.workspace / "repos" / "demo"
+        self.assertIn(f"echo clone {expected_path.as_posix()}", output)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -12,7 +12,7 @@ class PresetRepositoryTests(unittest.TestCase):
             "user": {"branch": "main", "build_type": "Debug"},
             "project": {"name": "demo", "source_dir": "/src/demo", "build_dir": "/src/demo/_build"},
             "system": {"os": "linux", "architecture": "x86_64"},
-            "env": {},
+            "env": {"PATH": "/usr/bin"},
         }
         self.resolver = TemplateResolver(self.context)
 
@@ -77,6 +77,23 @@ class PresetRepositoryTests(unittest.TestCase):
                 "--build-from-child",
             },
         )
+
+    def test_environment_supports_nested_references(self) -> None:
+        repo = PresetRepository(
+            project_presets={
+                "tooling": {
+                    "environment": {
+                        "SDK_ROOT": "/opt/sdk",
+                        "BIN_DIR": "{{env.SDK_ROOT}}/bin",
+                        "PATH": "{{env.PATH}}:{{env.BIN_DIR}}",
+                    }
+                }
+            }
+        )
+        resolved = repo.resolve(["tooling"], template_resolver=self.resolver)
+        self.assertEqual(resolved.environment["SDK_ROOT"], "/opt/sdk")
+        self.assertEqual(resolved.environment["BIN_DIR"], "/opt/sdk/bin")
+        self.assertEqual(resolved.environment["PATH"], "/usr/bin:/opt/sdk/bin")
 
 
 if __name__ == "__main__":  # pragma: no cover

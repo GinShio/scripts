@@ -197,6 +197,11 @@ clone_script = "{{project.source_dir}}/scripts/bootstrap.sh"
 update_script = "{{project.source_dir}}/scripts/bootstrap.sh --update"
 ```
 
+Both script entries support the full templating language. You can reference values
+from `user.*`, `project.*`, `system.*`, `env.*`, or any preset-provided
+environment/definition (for example `{{env.SDK_ROOT}}`), and they will be
+resolved before execution.
+
 #### Script Execution Workflow:
 1. If a custom script is configured, execute it.
 2. If the script fails, handle the failure as a Git operation failure (e.g., `git fetch`).

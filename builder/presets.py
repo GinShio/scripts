@@ -67,6 +67,63 @@ class PresetRepository:
                 resolved.merge(preset_resolution)
         return resolved
 
+    @staticmethod
+    def _augment_resolver(
+        template_resolver: TemplateResolver,
+        *,
+        environment: Mapping[str, str],
+        definitions: Mapping[str, Any],
+    ) -> TemplateResolver:
+        context: Dict[str, Any] = {
+            key: value for key, value in template_resolver.context.items()
+        }
+        env_context = dict(context.get("env", {}))
+        env_context.update(environment)
+        context["env"] = env_context
+
+        preset_context = dict(context.get("preset", {}))
+        preset_context["environment"] = dict(environment)
+        preset_context["definitions"] = dict(definitions)
+        context["preset"] = preset_context
+        return TemplateResolver(context)
+
+    def _resolve_environment_map(
+        self,
+        raw_environment: Mapping[str, Any],
+        *,
+        template_resolver: TemplateResolver,
+        base_environment: Mapping[str, str],
+        definitions: Mapping[str, Any],
+    ) -> Dict[str, str]:
+        pending: Dict[str, Any] = {str(key): value for key, value in raw_environment.items()}
+        resolved: Dict[str, str] = {}
+        combined_env: Dict[str, str] = dict(base_environment)
+
+        while pending:
+            progress = False
+            for key in list(pending.keys()):
+                value = pending[key]
+                augmented_resolver = self._augment_resolver(
+                    template_resolver,
+                    environment={**combined_env, **resolved},
+                    definitions=definitions,
+                )
+                try:
+                    result = augmented_resolver.resolve(value)
+                except TemplateError as exc:
+                    if "Cannot resolve path" in str(exc):
+                        continue
+                    raise
+                resolved_value = str(result)
+                resolved[key] = resolved_value
+                combined_env[key] = resolved_value
+                del pending[key]
+                progress = True
+            if not progress:
+                unresolved = ", ".join(sorted(pending))
+                raise TemplateError(f"Unable to resolve environment variables: {unresolved}")
+        return resolved
+
     def _resolve_single(
         self,
         name: str,
@@ -107,17 +164,24 @@ class PresetRepository:
 
         environment = preset_data.get("environment")
         if isinstance(environment, Mapping):
-            env_values = {
-                str(key): str(template_resolver.resolve(value))
-                for key, value in environment.items()
-            }
+            env_values = self._resolve_environment_map(
+                environment,
+                template_resolver=template_resolver,
+                base_environment=resolved.environment,
+                definitions=resolved.definitions,
+            )
             resolved.environment.update(env_values)
 
         definitions = preset_data.get("definitions")
         if isinstance(definitions, Mapping):
             def_values: Dict[str, Any] = {}
+            augmented_resolver = self._augment_resolver(
+                template_resolver,
+                environment=resolved.environment,
+                definitions=resolved.definitions,
+            )
             for key, value in definitions.items():
-                def_values[str(key)] = template_resolver.resolve(value)
+                def_values[str(key)] = augmented_resolver.resolve(value)
             resolved.definitions.update(def_values)
 
         def _collect_args(raw_value: Any) -> List[str]:

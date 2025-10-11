@@ -63,6 +63,8 @@ class BuildPlan:
     definitions: Dict[str, Any]
     extra_config_args: List[str]
     extra_build_args: List[str]
+    git_clone_script: str | None
+    git_update_script: str | None
 
 
 _TOOLCHAIN_MATRIX: Dict[str, set[str]] = {
@@ -264,6 +266,13 @@ class BuildEngine:
                 options=options,
             )
 
+        clone_script = None
+        if project.git.clone_script:
+            clone_script = str(resolver.resolve(project.git.clone_script))
+        update_script = None
+        if project.git.update_script:
+            update_script = str(resolver.resolve(project.git.update_script))
+
         return BuildPlan(
             project=project,
             build_dir=build_dir_path,
@@ -276,6 +285,8 @@ class BuildEngine:
             definitions=definitions,
             extra_config_args=extra_config_args,
             extra_build_args=extra_build_args,
+            git_clone_script=clone_script,
+            git_update_script=update_script,
         )
 
     def execute(self, plan: BuildPlan, *, dry_run: bool) -> List[CommandResult]:
