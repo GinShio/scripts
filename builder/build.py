@@ -12,7 +12,7 @@ from .command_runner import CommandRunner, CommandResult
 from .config_loader import ConfigurationStore, ProjectDefinition
 from .environment import ContextBuilder
 from .presets import PresetRepository
-from .template import TemplateResolver
+from .template import TemplateResolver, build_dependency_map, topological_order
 
 
 class BuildMode(str, Enum):
@@ -65,6 +65,7 @@ class BuildPlan:
     extra_build_args: List[str]
     git_clone_script: str | None
     git_update_script: str | None
+    git_environment: Dict[str, str]
 
 
 _TOOLCHAIN_MATRIX: Dict[str, set[str]] = {
@@ -110,6 +111,72 @@ class BuildEngine:
             if value not in existing:
                 target.append(value)
                 existing.add(value)
+
+    def _resolve_environment_mapping(
+        self,
+        *,
+        mapping: Mapping[str, Any],
+        resolver: TemplateResolver,
+        base_env: Mapping[str, str],
+        namespace: str,
+        namespace_base: Mapping[str, str] | None,
+        prefixes: Sequence[str],
+        additional_namespaces: Mapping[str, Mapping[str, str]] | None = None,
+    ) -> Dict[str, str]:
+        if not mapping:
+            return {}
+
+        normalized: Dict[str, Any] = {str(key): value for key, value in mapping.items()}
+        dependency_map = build_dependency_map(
+            normalized,
+            prefixes=prefixes,
+            pre_resolved=base_env.keys(),
+        )
+        order = topological_order(dependency_map)
+
+        resolved: Dict[str, str] = {}
+        namespace_base = namespace_base or {}
+        additional_namespaces = additional_namespaces or {}
+
+        for key in order:
+            current_env = {**base_env, **resolved}
+            context: Dict[str, Any] = {k: v for k, v in resolver.context.items()}
+            env_context = dict(context.get("env", {}))
+            env_context.update(current_env)
+            context["env"] = env_context
+
+            ns_context = dict(context.get(namespace, {}))
+            ns_context["environment"] = {**namespace_base, **resolved}
+            context[namespace] = ns_context
+
+            for other_namespace, values in additional_namespaces.items():
+                other_context = dict(context.get(other_namespace, {}))
+                other_context["environment"] = dict(values)
+                context[other_namespace] = other_context
+
+            resolved_value = TemplateResolver(context).resolve(normalized[key])
+            resolved[key] = str(resolved_value)
+
+        return resolved
+
+    def _apply_environment_to_context(
+        self,
+        *,
+        context: Mapping[str, Any],
+        environment: Mapping[str, str],
+        definitions: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        updated_context: Dict[str, Any] = dict(context)
+        env_context = dict(updated_context.get("env", {}))
+        env_context.update(environment)
+        updated_context["env"] = env_context
+
+        project_mapping = dict(updated_context.get("project", {}))
+        project_mapping["environment"] = dict(environment)
+        project_mapping["definitions"] = dict(definitions)
+        updated_context["project"] = project_mapping
+
+        return updated_context
 
     def plan(self, options: BuildOptions) -> BuildPlan:
         project = self._store.get_project(options.project_name)
@@ -192,6 +259,29 @@ class BuildEngine:
         combined_context = context_builder.combined_context(user=user_ctx, project=updated_project_ctx, system=system_ctx)
         resolver = TemplateResolver(combined_context)
 
+        base_env_context = {str(key): str(value) for key, value in resolver.context.get("env", {}).items()}
+        project_environment = self._resolve_environment_mapping(
+            mapping=project.environment,
+            resolver=resolver,
+            base_env=base_env_context,
+            namespace="project",
+            namespace_base={},
+            prefixes=("env.", "project.environment."),
+        )
+
+        if project_environment:
+            updated_context: Dict[str, Any] = dict(combined_context)
+            env_context = dict(updated_context.get("env", {}))
+            env_context.update(project_environment)
+            updated_context["env"] = env_context
+            project_mapping = dict(updated_context.get("project", {}))
+            project_mapping["environment"] = dict(project_environment)
+            updated_context["project"] = project_mapping
+            combined_context = updated_context
+            resolver = TemplateResolver(combined_context)
+        else:
+            project_environment = {}
+
         preset_repo = PresetRepository(
             project_presets=project.presets,
             shared_presets=[cfg.get("presets", {}) for cfg in self._store.shared_configs.values()],
@@ -204,8 +294,17 @@ class BuildEngine:
         )
         resolved_presets = preset_repo.resolve(presets_to_resolve, template_resolver=resolver)
 
-        environment = dict(resolved_presets.environment)
+        environment = dict(project_environment)
+        environment.update(resolved_presets.environment)
         definitions = dict(resolved_presets.definitions)
+
+        combined_context = self._apply_environment_to_context(
+            context=combined_context,
+            environment=environment,
+            definitions=definitions,
+        )
+        resolver = TemplateResolver(combined_context)
+
         project_config_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_config_args]
         project_build_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_build_args]
 
@@ -266,6 +365,34 @@ class BuildEngine:
                 options=options,
             )
 
+        combined_context = self._apply_environment_to_context(
+            context=combined_context,
+            environment=environment,
+            definitions=definitions,
+        )
+        resolver = TemplateResolver(combined_context)
+
+        git_environment = self._resolve_environment_mapping(
+            mapping=project.git.environment,
+            resolver=resolver,
+            base_env={str(key): str(value) for key, value in resolver.context.get("env", {}).items()},
+            namespace="git",
+            namespace_base={},
+            prefixes=("env.", "project.environment.", "git.environment."),
+            additional_namespaces={"project": dict(environment)},
+        )
+
+        if git_environment:
+            updated_context = dict(combined_context)
+            env_context = dict(updated_context.get("env", {}))
+            env_context.update(git_environment)
+            updated_context["env"] = env_context
+            git_mapping = dict(updated_context.get("git", {}))
+            git_mapping["environment"] = dict(git_environment)
+            updated_context["git"] = git_mapping
+            combined_context = updated_context
+            resolver = TemplateResolver(combined_context)
+
         clone_script = None
         if project.git.clone_script:
             clone_script = str(resolver.resolve(project.git.clone_script))
@@ -287,6 +414,7 @@ class BuildEngine:
             extra_build_args=extra_build_args,
             git_clone_script=clone_script,
             git_update_script=update_script,
+            git_environment=git_environment,
         )
 
     def execute(self, plan: BuildPlan, *, dry_run: bool) -> List[CommandResult]:

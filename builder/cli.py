@@ -206,6 +206,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
                 target_branch=target_branch,
                 auto_stash=plan.project.git.auto_stash,
                 no_switch_branch=options.no_switch_branch,
+                environment=plan.git_environment,
             )
 
         if not plan_has_steps:
@@ -291,6 +292,7 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
             clone_script=plan.git_clone_script,
             update_script=plan.git_update_script,
             auto_stash=project.git.auto_stash,
+            environment=plan.git_environment,
             dry_run=args.dry_run,
         )
     if args.dry_run and isinstance(runner, RecordingCommandRunner):

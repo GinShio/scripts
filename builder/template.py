@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Mapping, Sequence
+from typing import Any, Dict, Iterable, Mapping, Sequence, List
 import ast
 import operator
 import re
@@ -170,6 +170,35 @@ def extract_placeholders(value: Any) -> set[str]:
 
     _collect(value)
     return placeholders
+
+
+def build_dependency_map(
+    mapping: Mapping[str, Any],
+    *,
+    prefixes: Sequence[str],
+    pre_resolved: Iterable[str] | None = None,
+) -> Dict[str, List[str]]:
+    """Construct a dependency graph for placeholder resolution."""
+
+    dependency_map: Dict[str, List[str]] = {str(key): [] for key in mapping.keys()}
+    keys_in_scope = set(dependency_map.keys())
+    pre_resolved_set = {str(key) for key in pre_resolved} if pre_resolved else set()
+
+    for raw_key, value in mapping.items():
+        key = str(raw_key)
+        deps: set[str] = set()
+        for placeholder in extract_placeholders(value):
+            for prefix in prefixes:
+                if not placeholder.startswith(prefix):
+                    continue
+                dep_token = placeholder[len(prefix):].strip()
+                if not dep_token:
+                    continue
+                dep_name = dep_token.split(".", 1)[0]
+                if dep_name in keys_in_scope and dep_name not in pre_resolved_set and dep_name != key:
+                    deps.add(dep_name)
+        dependency_map[key] = sorted(deps)
+    return dependency_map
 
 
 def _find_cycle(dependency_map: Mapping[str, Sequence[str]]) -> list[str]:

@@ -108,6 +108,7 @@ class GitSettings:
     auto_stash: bool = False
     update_script: str | None = None
     clone_script: str | None = None
+    environment: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "GitSettings":
@@ -121,6 +122,11 @@ class GitSettings:
         auto_stash = bool(data.get("auto_stash", False))
         update_script = data.get("update_script")
         clone_script = data.get("clone_script")
+        environment_section = data.get("environment") if isinstance(data, Mapping) else None
+        environment: Dict[str, Any] = {}
+        if isinstance(environment_section, Mapping):
+            for key, value in environment_section.items():
+                environment[str(key)] = value
         return cls(
             url=str(url),
             main_branch=str(main_branch),
@@ -128,6 +134,7 @@ class GitSettings:
             auto_stash=auto_stash,
             update_script=str(update_script) if update_script else None,
             clone_script=str(clone_script) if clone_script else None,
+            environment=environment,
         )
 
 
@@ -184,6 +191,7 @@ class ProjectDefinition:
     dependencies: List[ProjectDependency] = field(default_factory=list)
     extra_config_args: List[str] = field(default_factory=list)
     extra_build_args: List[str] = field(default_factory=list)
+    environment: Dict[str, Any] = field(default_factory=dict)
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -203,6 +211,11 @@ class ProjectDefinition:
         generator = project_section.get("generator")
         component_dir = project_section.get("component_dir")
         build_at_root = bool(project_section.get("build_at_root", True))
+        environment_section = project_section.get("environment")
+        project_environment: Dict[str, Any] = {}
+        if isinstance(environment_section, Mapping):
+            for key, value in environment_section.items():
+                project_environment[str(key)] = value
 
         git_section = data.get("git")
         if not isinstance(git_section, Mapping):
@@ -247,6 +260,7 @@ class ProjectDefinition:
             dependencies=dependencies,
             extra_config_args=extra_config_args,
             extra_build_args=extra_build_args,
+            environment=project_environment,
             raw=data,
         )
 

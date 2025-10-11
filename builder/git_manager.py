@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Mapping, Optional
 
 from .command_runner import CommandRunner, CommandResult, CommandError
 
@@ -25,30 +25,45 @@ class GitManager:
         target_branch: str,
         auto_stash: bool,
         no_switch_branch: bool,
+        environment: Mapping[str, str] | None = None,
     ) -> GitWorkState:
         repo_path = repo_path.resolve()
         if no_switch_branch:
-            return GitWorkState(branch=self._current_branch(repo_path), stash_applied=False)
+            branch = self._current_branch(repo_path, environment=environment)
+            return GitWorkState(branch=branch, stash_applied=False)
 
         self._ensure_repository(repo_path)
-        current_branch = self._current_branch(repo_path)
+        current_branch = self._current_branch(repo_path, environment=environment)
         stash_applied = False
-        current_commit = self._current_commit(repo_path)
-        target_commit = self._commit_for_branch(repo_path, target_branch)
+        current_commit = self._current_commit(repo_path, environment=environment)
+        target_commit = self._commit_for_branch(repo_path, target_branch, environment=environment)
         branch_switch_needed = current_branch != target_branch and current_commit != target_commit
-        dirty = self._is_dirty(repo_path)
+        dirty = self._is_dirty(repo_path, environment=environment)
         if dirty and branch_switch_needed:
             if auto_stash:
-                self._runner.run(["git", "stash", "push", "-m", "builder auto-stash"], cwd=repo_path)
+                self._runner.run(
+                    ["git", "stash", "push", "-m", "builder auto-stash"],
+                    cwd=repo_path,
+                    env=environment,
+                )
                 stash_applied = True
             else:
                 raise RuntimeError("Working tree has uncommitted changes and auto_stash is disabled")
 
         if branch_switch_needed:
-            self._runner.run(["git", "fetch", "--all"], cwd=repo_path)
-            result = self._runner.run(["git", "switch", target_branch], cwd=repo_path, check=False)
+            self._runner.run(["git", "fetch", "--all"], cwd=repo_path, env=environment)
+            result = self._runner.run(
+                ["git", "switch", target_branch],
+                cwd=repo_path,
+                env=environment,
+                check=False,
+            )
             if result.returncode != 0:
-                self._runner.run(["git", "switch", "-c", target_branch, f"origin/{target_branch}"], cwd=repo_path)
+                self._runner.run(
+                    ["git", "switch", "-c", target_branch, f"origin/{target_branch}"],
+                    cwd=repo_path,
+                    env=environment,
+                )
         return GitWorkState(branch=current_branch, stash_applied=stash_applied)
 
     def restore_checkout(self, repo_path: Path, state: GitWorkState) -> None:
@@ -69,60 +84,129 @@ class GitManager:
         clone_script: Optional[str] = None,
         update_script: Optional[str] = None,
         auto_stash: bool = False,
+        environment: Mapping[str, str] | None = None,
         dry_run: bool = False,
     ) -> None:
         repo_path = repo_path.resolve()
         if not repo_path.exists():
             if clone_script:
-                self._run_script(clone_script, repo_path, dry_run=dry_run)
+                self._run_script(clone_script, repo_path, environment=environment, dry_run=dry_run)
             else:
                 parent = repo_path.parent
                 if not dry_run:
                     parent.mkdir(parents=True, exist_ok=True)
-                self._run_command(["git", "clone", url, str(repo_path), "--recursive"], cwd=parent, dry_run=dry_run)
+                self._run_command(
+                    ["git", "clone", url, str(repo_path), "--recursive"],
+                    cwd=parent,
+                    environment=environment,
+                    dry_run=dry_run,
+                )
             return
 
         if update_script:
-            self._run_script(update_script, repo_path, dry_run=dry_run)
+            self._run_script(update_script, repo_path, environment=environment, dry_run=dry_run)
             return
 
         self._ensure_repository(repo_path)
         restore_branch: Optional[str] = None
         if not dry_run:
-            current_branch = self._current_branch(repo_path)
+            current_branch = self._current_branch(repo_path, environment=environment)
             if current_branch and current_branch not in {"", "HEAD", main_branch}:
                 restore_branch = current_branch
 
-        dirty = self._is_dirty(repo_path)
+        dirty = self._is_dirty(repo_path, environment=environment)
         stash_applied = False
         if dirty and auto_stash:
-            self._run_command(["git", "stash", "push", "-m", "builder auto-stash"], cwd=repo_path, dry_run=dry_run)
+            self._run_command(
+                ["git", "stash", "push", "-m", "builder auto-stash"],
+                cwd=repo_path,
+                environment=environment,
+                dry_run=dry_run,
+            )
             stash_applied = True
         elif dirty:
             raise RuntimeError("Working tree has uncommitted changes; enable auto_stash to proceed")
 
-        self._run_command(["git", "fetch", "--all"], cwd=repo_path, dry_run=dry_run)
-        result = self._run_command(["git", "switch", main_branch], cwd=repo_path, check=False, dry_run=dry_run)
+        self._run_command(["git", "fetch", "--all"], cwd=repo_path, environment=environment, dry_run=dry_run)
+        result = self._run_command(
+            ["git", "switch", main_branch],
+            cwd=repo_path,
+            environment=environment,
+            check=False,
+            dry_run=dry_run,
+        )
         if result.returncode != 0:
-            self._run_command(["git", "switch", "-c", main_branch, f"origin/{main_branch}"], cwd=repo_path, dry_run=dry_run)
-        self._run_command(["git", "pull", "--ff-only", "origin", main_branch], cwd=repo_path, dry_run=dry_run)
-        self._run_command(["git", "submodule", "update", "--recursive"], cwd=repo_path, dry_run=dry_run)
+            self._run_command(
+                ["git", "switch", "-c", main_branch, f"origin/{main_branch}"],
+                cwd=repo_path,
+                environment=environment,
+                dry_run=dry_run,
+            )
+        self._run_command(
+            ["git", "pull", "--ff-only", "origin", main_branch],
+            cwd=repo_path,
+            environment=environment,
+            dry_run=dry_run,
+        )
+        self._run_command(
+            ["git", "submodule", "update", "--recursive"],
+            cwd=repo_path,
+            environment=environment,
+            dry_run=dry_run,
+        )
 
         if component_branch:
             component_path = repo_path
-            self._run_command(["git", "fetch", "--all"], cwd=component_path, dry_run=dry_run)
-            result = self._run_command(["git", "switch", component_branch], cwd=component_path, check=False, dry_run=dry_run)
+            self._run_command(
+                ["git", "fetch", "--all"],
+                cwd=component_path,
+                environment=environment,
+                dry_run=dry_run,
+            )
+            result = self._run_command(
+                ["git", "switch", component_branch],
+                cwd=component_path,
+                environment=environment,
+                check=False,
+                dry_run=dry_run,
+            )
             if result.returncode != 0:
                 raise RuntimeError(f"Component branch '{component_branch}' does not exist")
-            self._run_command(["git", "pull", "--ff-only", "origin", component_branch], cwd=component_path, dry_run=dry_run)
-            self._run_command(["git", "submodule", "update", "--recursive"], cwd=component_path, dry_run=dry_run)
+            self._run_command(
+                ["git", "pull", "--ff-only", "origin", component_branch],
+                cwd=component_path,
+                environment=environment,
+                dry_run=dry_run,
+            )
+            self._run_command(
+                ["git", "submodule", "update", "--recursive"],
+                cwd=component_path,
+                environment=environment,
+                dry_run=dry_run,
+            )
 
         if stash_applied:
-            self._run_command(["git", "switch", main_branch], cwd=repo_path, dry_run=dry_run)
-            self._run_command(["git", "stash", "pop"], cwd=repo_path, check=False, dry_run=dry_run)
+            self._run_command(
+                ["git", "switch", main_branch],
+                cwd=repo_path,
+                environment=environment,
+                dry_run=dry_run,
+            )
+            self._run_command(
+                ["git", "stash", "pop"],
+                cwd=repo_path,
+                environment=environment,
+                check=False,
+                dry_run=dry_run,
+            )
 
         if restore_branch:
-            self._run_command(["git", "switch", restore_branch], cwd=repo_path, dry_run=dry_run)
+            self._run_command(
+                ["git", "switch", restore_branch],
+                cwd=repo_path,
+                environment=environment,
+                dry_run=dry_run,
+            )
 
     def _run_command(
         self,
@@ -131,37 +215,55 @@ class GitManager:
         cwd: Path,
         dry_run: bool,
         check: bool = True,
+        environment: Mapping[str, str] | None = None,
     ) -> CommandResult:
-        return self._runner.run(command, cwd=cwd, check=check)
+        return self._runner.run(command, cwd=cwd, env=environment, check=check)
 
-    def _current_branch(self, repo_path: Path) -> str:
-        result = self._runner.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path)
+    def _current_branch(self, repo_path: Path, *, environment: Mapping[str, str] | None = None) -> str:
+        result = self._runner.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_path,
+            env=environment,
+        )
         return result.stdout.strip() or "HEAD"
 
-    def _current_commit(self, repo_path: Path) -> str:
-        result = self._runner.run(["git", "rev-parse", "HEAD"], cwd=repo_path)
+    def _current_commit(self, repo_path: Path, *, environment: Mapping[str, str] | None = None) -> str:
+        result = self._runner.run(["git", "rev-parse", "HEAD"], cwd=repo_path, env=environment)
         return result.stdout.strip()
 
-    def _commit_for_branch(self, repo_path: Path, branch: str) -> str | None:
-        result = self._runner.run(["git", "rev-parse", branch], cwd=repo_path, check=False)
+    def _commit_for_branch(
+        self,
+        repo_path: Path,
+        branch: str,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> str | None:
+        result = self._runner.run(["git", "rev-parse", branch], cwd=repo_path, check=False, env=environment)
         if result.returncode != 0:
             return None
         return result.stdout.strip()
 
-    def _is_dirty(self, repo_path: Path) -> bool:
-        result = self._runner.run(["git", "status", "--porcelain"], cwd=repo_path)
+    def _is_dirty(self, repo_path: Path, *, environment: Mapping[str, str] | None = None) -> bool:
+        result = self._runner.run(["git", "status", "--porcelain"], cwd=repo_path, env=environment)
         return bool(result.stdout.strip())
 
     def _ensure_repository(self, repo_path: Path) -> None:
         if not (repo_path / ".git").exists():
             raise RuntimeError(f"Directory '{repo_path}' is not a git repository")
 
-    def _run_script(self, script: str, cwd: Path, *, dry_run: bool) -> None:
+    def _run_script(
+        self,
+        script: str,
+        cwd: Path,
+        *,
+        environment: Mapping[str, str] | None,
+        dry_run: bool,
+    ) -> None:
         if script.startswith(".") or script.startswith("/"):
             command = ["sh", "-c", script]
         else:
             command = ["sh", "-c", script]
         if dry_run:
-            self._runner.run(command, cwd=cwd)
+            self._runner.run(command, cwd=cwd, env=environment)
             return
-        self._runner.run(command, cwd=cwd)
+        self._runner.run(command, cwd=cwd, env=environment)

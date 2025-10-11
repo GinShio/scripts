@@ -42,6 +42,14 @@ class BuildEngineTests(unittest.TestCase):
                 main_branch = "main"
                 auto_stash = true
 
+                [project.environment]
+                TOOLS_ROOT = "{{builder.path}}/env/tools"
+                BIN_DIR = "{{project.environment.TOOLS_ROOT}}/bin"
+                CUSTOM_PATH = "{{env.PATH}}:{{project.environment.BIN_DIR}}"
+
+                [git.environment]
+                BOOTSTRAP_ROOT = "{{project.environment.TOOLS_ROOT}}"
+
                 [presets.dev]
                 environment = { CC = "clang" }
                 definitions = { CMAKE_BUILD_TYPE = "Debug", DEMO_FOO = true, DEMO_NAME = "demo-name", DEMO_THREADS = 4 }
@@ -138,6 +146,15 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "ld")
         self.assertEqual(plan.steps[0].env.get("CFLAGS"), "-fcolor-diagnostics")
         self.assertEqual(plan.steps[0].env.get("CXXFLAGS"), "-fcolor-diagnostics")
+        expected_tools_root = str(self.workspace / "env" / "tools")
+        expected_bin_dir = str(self.workspace / "env" / "tools" / "bin")
+        self.assertEqual(plan.environment.get("TOOLS_ROOT"), expected_tools_root)
+        self.assertEqual(plan.environment.get("BIN_DIR"), expected_bin_dir)
+        self.assertTrue(
+            plan.environment.get("CUSTOM_PATH", "").endswith(f":{expected_bin_dir}"),
+            msg="CUSTOM_PATH should append the resolved BIN_DIR",
+        )
+        self.assertEqual(plan.git_environment.get("BOOTSTRAP_ROOT"), expected_tools_root)
         configure_cmd = plan.steps[0].command
         configure_str = " ".join(configure_cmd)
         self.assertIn("-G", configure_cmd)

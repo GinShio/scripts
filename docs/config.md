@@ -102,6 +102,13 @@ build_at_root = true  # true = build at root, false = build at component level
 extra_config_args = ["-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
 extra_build_args = ["--target", "install"]
 
+[project.environment]
+# Optional project-scoped environment overrides. Values can reference
+# other project entries or existing OS variables (e.g. {{env.PATH}}).
+TOOLS_ROOT = "{{builder.path}}/env/tools"
+BIN_DIR = "{{project.environment.TOOLS_ROOT}}/bin"
+CUSTOM_PATH = "{{env.PATH}}:{{project.environment.BIN_DIR}}"
+
 [git]
 # Project Git URL (required)
 url = "https://example.com/example/app.git"
@@ -118,11 +125,17 @@ auto_stash = true
 # Custom update and clone scripts (optional)
 update_script = "{{project.source_dir}}/scripts/update.sh"
 clone_script = "{{project.source_dir}}/scripts/clone.sh"
+
+[git.environment]
+# Environment overrides used for git commands and custom scripts (optional)
+SSH_COMMAND = "ssh -i {{project.environment.TOOLS_ROOT}}/keys/deploy_rsa"
 ```
 
 Use `extra_config_args` to append arguments only to the configuration command
 (for example additional `-D` definitions for CMake). Use `extra_build_args`
 for flags that should only be passed to the build step (such as `--target`).
+
+Project-level environment variables are resolved before presets run and merge into the build environment. They support all template placeholders (including references to other `project.environment` entries) and become available through `{{env.NAME}}` and `{{project.environment.NAME}}`. The optional `[git.environment]` section behaves similarly but applies only to Git operations and custom clone/update scripts.
 
 ## Project Dependencies
 
@@ -285,10 +298,18 @@ install_dir = "_install/main_Debug"
 build_system = "cmake"
 generator = "Ninja"
 
+[project.environment]
+TOOLS_ROOT = "{{builder.path}}/env/tools"
+BIN_DIR = "{{project.environment.TOOLS_ROOT}}/bin"
+CUSTOM_PATH = "{{env.PATH}}:{{project.environment.BIN_DIR}}"
+
 [git]
 url = "https://github.com/example/myapp.git"
 main_branch = "main"
 auto_stash = true
+
+[git.environment]
+SSH_COMMAND = "ssh -i {{project.environment.TOOLS_ROOT}}/keys/deploy_rsa"
 ```
 
 ### Preset Configuration:

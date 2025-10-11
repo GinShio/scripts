@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping
 
-from .template import TemplateResolver, TemplateError, extract_placeholders, topological_order
+from .template import TemplateResolver, TemplateError, build_dependency_map, topological_order
 
 
 @dataclass(slots=True)
@@ -87,34 +87,6 @@ class PresetRepository:
         context["preset"] = preset_context
         return TemplateResolver(context)
 
-    @staticmethod
-    def _build_dependency_map(
-        mapping: Mapping[str, Any],
-        *,
-        prefixes: Sequence[str],
-        pre_resolved: Iterable[str] | None = None,
-    ) -> Dict[str, List[str]]:
-        dependency_map: Dict[str, List[str]] = {str(key): [] for key in mapping.keys()}
-        keys_in_scope = set(dependency_map.keys())
-        pre_resolved_keys = {str(key) for key in pre_resolved} if pre_resolved else set()
-        for raw_key, value in mapping.items():
-            key = str(raw_key)
-            deps: set[str] = set()
-            for placeholder in extract_placeholders(value):
-                for prefix in prefixes:
-                    if not placeholder.startswith(prefix):
-                        continue
-                    dep_token = placeholder[len(prefix):].strip()
-                    if not dep_token:
-                        continue
-                    dep_name = dep_token.split(".", 1)[0]
-                    if dep_name in pre_resolved_keys:
-                        continue
-                    if dep_name in keys_in_scope:
-                        deps.add(dep_name)
-            dependency_map[key] = sorted(deps)
-        return dependency_map
-
     def _resolve_environment_map(
         self,
         raw_environment: Mapping[str, Any],
@@ -133,7 +105,7 @@ class PresetRepository:
         base_env.update(template_resolver.context.get("env", {}))
         base_env.update(base_environment)
 
-        dependency_map = self._build_dependency_map(
+        dependency_map = build_dependency_map(
             normalized_environment,
             prefixes=("env.", "preset.environment."),
             pre_resolved=base_env.keys(),
@@ -203,7 +175,7 @@ class PresetRepository:
         definitions = preset_data.get("definitions")
         if isinstance(definitions, Mapping):
             normalized_definitions: Dict[str, Any] = {str(key): value for key, value in definitions.items()}
-            dependency_map = self._build_dependency_map(
+            dependency_map = build_dependency_map(
                 normalized_definitions,
                 prefixes=("preset.definitions.",),
                 pre_resolved=resolved.definitions.keys(),

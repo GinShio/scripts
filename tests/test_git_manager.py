@@ -138,12 +138,30 @@ class GitManagerTests(unittest.TestCase):
             target_branch="main",
             auto_stash=True,
             no_switch_branch=False,
+            environment={"CUSTOM": "VALUE"},
         )
         history_commands = [entry["command"] for entry in runner.history]
         self.assertNotIn(["git", "switch", "main"], history_commands)
         self.assertNotIn(["git", "stash", "push", "-m", "builder auto-stash"], history_commands)
         self.assertFalse(state.stash_applied)
         self.assertEqual(runner.branch, "feature")
+        env_records = [entry["env"] for entry in runner.history if entry["command"][0] == "git"]
+        self.assertTrue(all(record.get("CUSTOM") == "VALUE" for record in env_records))
+
+    def test_update_repository_passes_environment(self) -> None:
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m1"})
+        manager = GitManager(runner)
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+            auto_stash=False,
+            environment={"GIT_TRACE": "1"},
+            dry_run=False,
+        )
+        env_records = [entry["env"] for entry in runner.history if entry["command"][0] == "git"]
+        self.assertTrue(env_records)
+        self.assertTrue(all(record.get("GIT_TRACE") == "1" for record in env_records))
 
 
 if __name__ == "__main__":  # pragma: no cover
