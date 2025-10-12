@@ -241,23 +241,34 @@ class BuildEngine:
         namespace_base = namespace_base or {}
         additional_namespaces = additional_namespaces or {}
 
+        context_template: Dict[str, Any] = dict(resolver.context)
+        env_context: Dict[str, str] = dict(context_template.get("env", {}))
+        context_template["env"] = env_context
+
+        namespace_context: Dict[str, Any] = dict(context_template.get(namespace, {}))
+        namespace_environment: Dict[str, str] = dict(namespace_base)
+        namespace_context["environment"] = namespace_environment
+        context_template[namespace] = namespace_context
+
+        for other_namespace, values in additional_namespaces.items():
+            other_context = dict(context_template.get(other_namespace, {}))
+            other_env = dict(values)
+            other_context["environment"] = other_env
+            context_template[other_namespace] = other_context
+
+        reusable_resolver = TemplateResolver(context_template)
+
         for key in order:
-            current_env = {**base_env, **resolved}
-            context: Dict[str, Any] = {k: v for k, v in resolver.context.items()}
-            env_context = dict(context.get("env", {}))
-            env_context.update(current_env)
-            context["env"] = env_context
+            env_context.clear()
+            env_context.update(base_env)
+            env_context.update(resolved)
 
-            ns_context = dict(context.get(namespace, {}))
-            ns_context["environment"] = {**namespace_base, **resolved}
-            context[namespace] = ns_context
+            namespace_environment.clear()
+            namespace_environment.update(namespace_base)
+            namespace_environment.update(resolved)
 
-            for other_namespace, values in additional_namespaces.items():
-                other_context = dict(context.get(other_namespace, {}))
-                other_context["environment"] = dict(values)
-                context[other_namespace] = other_context
-
-            resolved_value = TemplateResolver(context).resolve(normalized[key])
+            reusable_resolver.clear_cache()
+            resolved_value = reusable_resolver.resolve(normalized[key])
             resolved[key] = str(resolved_value)
 
         return resolved

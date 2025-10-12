@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, Mapping, Sequence, List, Callable, Optional
 import ast
+import heapq
 import operator
 import re
 
@@ -85,6 +86,10 @@ class TemplateResolver:
 
     def resolve(self, value: Any) -> Any:
         return self._resolve_value(value, stack=[])
+
+    def clear_cache(self) -> None:
+        """Reset any memoized path lookups."""
+        self._cache.clear()
 
     def _resolve_value(self, value: Any, *, stack: list[str]) -> Any:
         if isinstance(value, str):
@@ -258,27 +263,30 @@ def topological_order(dependency_map: Mapping[str, Sequence[str]]) -> list[str]:
     """Return a topological ordering or raise TemplateError on cycles."""
 
     nodes = list(dependency_map.keys())
-    dependents: Dict[str, set[str]] = {node: set() for node in nodes}
+    dependents: Dict[str, List[str]] = {node: [] for node in nodes}
     indegree: Dict[str, int] = {node: 0 for node in nodes}
 
     for node, deps in dependency_map.items():
         filtered_deps = [dep for dep in deps if dep in dependency_map]
         indegree[node] = len(filtered_deps)
         for dep in filtered_deps:
-            dependents.setdefault(dep, set()).add(node)
+            dependents.setdefault(dep, []).append(node)
+
+    for dependent_list in dependents.values():
+        if dependent_list:
+            dependent_list.sort()
 
     ready = [node for node, degree in indegree.items() if degree == 0]
-    ready.sort()
+    heapq.heapify(ready)
     order: list[str] = []
 
     while ready:
-        node = ready.pop(0)
+        node = heapq.heappop(ready)
         order.append(node)
-        for dependent in sorted(dependents.get(node, ())):
+        for dependent in dependents.get(node, ()):  # already sorted
             indegree[dependent] -= 1
             if indegree[dependent] == 0:
-                ready.append(dependent)
-                ready.sort()
+                heapq.heappush(ready, dependent)
 
     if len(order) != len(nodes):
         cycle = _find_cycle(dependency_map)
