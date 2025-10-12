@@ -77,6 +77,155 @@ class TemplateError(ValueError):
     """Raised when template resolution fails."""
 
 
+class _ExpressionSyntaxChecker(ast.NodeVisitor):
+    """Ensure template expressions use only supported AST constructs."""
+
+    def visit(self, node: ast.AST) -> Any:  # type: ignore[override]
+        method = "visit_" + node.__class__.__name__
+        visitor = getattr(self, method, None)
+        if visitor is None:
+            raise TemplateError(f"Expression node '{node.__class__.__name__}' is not allowed")
+        return visitor(node)
+
+    def visit_Expression(self, node: ast.Expression) -> Any:  # pragma: no cover - simple delegator
+        return self.visit(node.body)
+
+    def visit_Constant(self, node: ast.Constant) -> Any:  # pragma: no cover - constants always ok
+        return node.value
+
+    def visit_Name(self, node: ast.Name) -> Any:
+        if node.id in {"True", "False", "None"}:
+            return {"True": True, "False": False, "None": None}[node.id]
+        raise TemplateError(f"Name '{node.id}' is not allowed in expressions")
+
+    def visit_BinOp(self, node: ast.BinOp) -> Any:
+        op_type = type(node.op)
+        if op_type not in _ALLOWED_BIN_OPS:
+            raise TemplateError(f"Operator '{op_type.__name__}' is not allowed")
+        self.visit(node.left)
+        self.visit(node.right)
+        return None
+
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> Any:
+        op_type = type(node.op)
+        if op_type not in _ALLOWED_UNARY_OPS:
+            raise TemplateError(f"Unary operator '{op_type.__name__}' is not allowed")
+        self.visit(node.operand)
+        return None
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> Any:
+        op_type = type(node.op)
+        if op_type not in _ALLOWED_BOOL_OPS:
+            raise TemplateError(f"Boolean operator '{op_type.__name__}' is not allowed")
+        for value in node.values:
+            self.visit(value)
+        return None
+
+    def visit_Compare(self, node: ast.Compare) -> Any:
+        self.visit(node.left)
+        for op, comparator in zip(node.ops, node.comparators):
+            op_type = type(op)
+            if op_type not in _ALLOWED_COMPARISONS:
+                raise TemplateError(f"Comparison operator '{op_type.__name__}' is not allowed")
+            self.visit(comparator)
+        return None
+
+    def visit_IfExp(self, node: ast.IfExp) -> Any:
+        self.visit(node.test)
+        self.visit(node.body)
+        self.visit(node.orelse)
+        return None
+
+    def visit_List(self, node: ast.List) -> Any:  # pragma: no cover - uncommon but supported
+        for element in node.elts:
+            self.visit(element)
+        return None
+
+    def visit_Tuple(self, node: ast.Tuple) -> Any:  # pragma: no cover - uncommon but supported
+        for element in node.elts:
+            self.visit(element)
+        return None
+
+    def visit_Dict(self, node: ast.Dict) -> Any:  # pragma: no cover - uncommon but supported
+        for key in node.keys:
+            if key is not None:
+                self.visit(key)
+        for value in node.values:
+            self.visit(value)
+        return None
+
+    def visit_Call(self, node: ast.Call) -> Any:
+        if not isinstance(node.func, ast.Name):
+            raise TemplateError("Only simple function names are allowed in expressions")
+        func_name = node.func.id
+        if func_name not in _ALLOWED_CALLS:
+            raise TemplateError(f"Function '{func_name}' is not allowed in expressions")
+        if node.keywords:
+            raise TemplateError(f"Keyword arguments are not allowed for function '{func_name}'")
+        for arg in node.args:
+            self.visit(arg)
+        return None
+
+
+def validate_expression_syntax(expression: str) -> None:
+    """Ensure *expression* is syntactically valid for template usage."""
+
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise TemplateError(f"Invalid expression syntax: {exc.msg}") from exc
+    _ExpressionSyntaxChecker().visit(tree)
+
+
+def validate_variables(
+    *,
+    context: Mapping[str, Any],
+    values: Mapping[str, Any],
+    usable_prefixes: Sequence[str] | None = None,
+) -> None:
+    """Validate template placeholders and expressions within *values*.
+
+    Parameters
+    ----------
+    context:
+        Mapping exposed to template placeholders during resolution.
+    values:
+        Mapping of items whose placeholders should be validated.
+    usable_prefixes:
+        Optional prefixes that limit which placeholder paths are considered
+        violations. When omitted, any unresolved placeholder will surface a
+        :class:`TemplateError`.
+
+    Notes
+    -----
+    Validation executes a dry resolution pass for the provided *values* using
+    :class:`TemplateResolver`. Any missing variables, circular dependencies, or
+    disallowed expression constructs raise :class:`TemplateError`.
+    """
+
+    placeholders = extract_placeholders(values)
+    prefixes = tuple(usable_prefixes or ())
+    if prefixes:
+        for placeholder in placeholders:
+            if not any(placeholder.startswith(prefix) for prefix in prefixes):
+                raise TemplateError(f"Placeholder '{placeholder}' is not allowed")
+
+    resolver = TemplateResolver(context)
+
+    def _resolve(obj: Any) -> None:
+        if isinstance(obj, Mapping):
+            for value in obj.values():
+                _resolve(value)
+            return
+        if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
+            for item in obj:
+                _resolve(item)
+            return
+        resolver.resolve(obj)
+
+    _resolve(values)
+
+
 @dataclass(slots=True)
 class TemplateResolver:
     """Resolves templates and expressions using a nested mapping context."""
@@ -168,7 +317,7 @@ class TemplateResolver:
         try:
             node = ast.parse(expression, mode="eval")
         except SyntaxError as exc:  # pragma: no cover - invalid syntax guard
-            raise TemplateError(f"Invalid expression syntax: {expression}") from exc
+            raise TemplateError(f"Invalid expression syntax: {exc.msg}") from exc
         return _ExpressionEvaluator().visit(node)
 
 

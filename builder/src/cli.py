@@ -11,6 +11,7 @@ from .build import BuildEngine, BuildMode, BuildOptions
 from .command_runner import RecordingCommandRunner, SubprocessCommandRunner
 from .config_loader import ConfigurationStore
 from .git_manager import GitManager
+from .validation import validate_project, validate_project_templates, validate_store_structure
 
 
 def _make_runner(dry_run: bool) -> SubprocessCommandRunner | RecordingCommandRunner:
@@ -339,15 +340,27 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
 
 def _handle_validate(args: Namespace, workspace: Path) -> int:
     store = _load_configuration_store(args, workspace)
+    global_errors = validate_store_structure(store)
     if args.project:
         project_names = [args.project]
     else:
         project_names = sorted(store.list_projects())
 
     errors: List[tuple[str, str]] = []
+    for message in global_errors:
+        errors.append(("config", message))
     for project_name in project_names:
         try:
-            _validate_project(store, project_name)
+            validate_project(
+                store,
+                project_name,
+                workspace=workspace,
+            )
+            validate_project_templates(
+                store,
+                project_name,
+                workspace=workspace,
+            )
         except Exception as exc:
             message = exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
             errors.append((project_name, message))
@@ -571,38 +584,6 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
     for row in rows:
         print(_format(row))
     return 0
-
-
-def _validate_project(store: ConfigurationStore, name: str) -> None:
-    project = store.get_project(name)
-    errors: List[str] = []
-
-    if not project.source_dir:
-        errors.append("project.source_dir must be defined")
-
-    build_system = project.build_system
-    allowed_systems = {"cmake", "meson", "bazel", "cargo", "make"}
-
-    if build_system is not None and build_system not in allowed_systems:
-        errors.append(
-            f"project.build_system '{build_system}' is not supported (allowed: {', '.join(sorted(allowed_systems))})"
-        )
-
-    if project.build_dir:
-        build_dir_path = Path(project.build_dir)
-        if build_dir_path.is_absolute():
-            errors.append("project.build_dir must be a relative path")
-    required_build_dir_systems = {"cmake", "meson", "cargo", "make"}
-    if build_system in required_build_dir_systems and not project.build_dir:
-        errors.append(f"project.build_dir is required for build_system '{build_system}'")
-
-    if project.component_dir:
-        component_path = Path(project.component_dir)
-        if component_path.is_absolute():
-            errors.append("project.component_dir must be a relative path")
-
-    if errors:
-        raise ValueError("; ".join(errors))
 
 
 def _collect_presets(values: List[str]) -> List[str]:

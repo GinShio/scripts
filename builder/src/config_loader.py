@@ -211,6 +211,35 @@ class ProjectDefinition:
             raw=data,
         )
 
+    def validate_structure(self) -> list[str]:
+        """Return a list of structural validation errors for the project."""
+
+        errors: list[str] = []
+
+        if not self.source_dir:
+            errors.append("project.source_dir must be defined")
+
+        allowed_systems = {"cmake", "meson", "bazel", "cargo", "make"}
+        if self.build_system is not None and self.build_system not in allowed_systems:
+            allowed = ", ".join(sorted(allowed_systems))
+            errors.append(f"project.build_system '{self.build_system}' is not supported (allowed: {allowed})")
+
+        if self.build_dir:
+            build_dir_path = Path(self.build_dir)
+            if build_dir_path.is_absolute():
+                errors.append("project.build_dir must be a relative path")
+
+        required_build_dir = {"cmake", "meson", "cargo", "make"}
+        if self.build_system in required_build_dir and not self.build_dir:
+            errors.append(f"project.build_dir is required for build_system '{self.build_system}'")
+
+        if self.component_dir:
+            component_path = Path(self.component_dir)
+            if component_path.is_absolute():
+                errors.append("project.component_dir must be a relative path")
+
+        return errors
+
 
 @dataclass(slots=True)
 class ResolvedDependency:
