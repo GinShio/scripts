@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from builder.build import BuildEngine, BuildMode, BuildOptions
-from builder.command_runner import RecordingCommandRunner
+from core.command_runner import RecordingCommandRunner
 from builder.config_loader import ConfigurationStore
 
 

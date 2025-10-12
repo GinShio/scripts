@@ -25,5 +25,5 @@ dependencies = [
 builder = "builder.cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "builder/src"}
-packages = {find = {where = ["builder/src"]}}
+package-dir = {"builder" = "builder/src", "core" = "core"}
+packages = ["builder", "core"]

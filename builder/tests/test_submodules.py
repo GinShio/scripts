@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 from pathlib import Path
 from builder.git_manager import GitManager
-from builder.command_runner import CommandResult
+from core.command_runner import CommandResult
 
 
 class TestSubmodulesList(unittest.TestCase):

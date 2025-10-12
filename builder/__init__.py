@@ -1,19 +1,23 @@
-"""Compatibility shim for accessing the builder package from a nested src layout."""
+"""Builder CLI package entry point with dynamic source discovery."""
 from __future__ import annotations
 
 from importlib import import_module
 from pathlib import Path
-from pkgutil import extend_path
+import sys
 
-__path__ = extend_path(__path__, __name__)
+_pkg_root = Path(__file__).resolve().parent
+_src_root = _pkg_root / "src"
 
-_src_root = Path(__file__).resolve().parent / "src" / __name__
 if _src_root.is_dir():
-    src_str = str(_src_root)
-    if src_str not in __path__:
-        __path__.append(src_str)
+	src_path = str(_src_root)
+	if src_path not in sys.path:
+		sys.path.append(src_path)
+	if src_path not in __path__:
+		__path__.append(src_path)
 
-_cli_module = import_module(f"{__name__}.cli")
+from core.template import TemplateError, TemplateResolver  # noqa: E402
+
+_cli_module = import_module("builder.cli")
 main = _cli_module.main
 
-__all__ = ["main"]
+__all__ = ["main", "TemplateError", "TemplateResolver"]

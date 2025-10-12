@@ -94,10 +94,10 @@ class SubprocessCommandRunner(CommandRunner):
             )
             return self._finalize(
                 CommandResult(
-                command=command,
-                returncode=process.returncode,
-                stdout=process.stdout,
-                stderr=process.stderr,
+                    command=command,
+                    returncode=process.returncode,
+                    stdout=process.stdout,
+                    stderr=process.stderr,
                 ),
                 check=check,
             )

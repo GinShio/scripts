@@ -1,96 +1,20 @@
-"""Configuration loading and validation logic."""
+"""Configuration loading and validation logic for the builder CLI."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
-import json
-import tomllib
+from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
-try:  # Optional dependency for YAML support
-    import yaml
-except ModuleNotFoundError:  # pragma: no cover - exercised when PyYAML absent
-    yaml = None
+from core.config_loader import (
+    ConfigLoader as SharedConfigLoader,
+    collect_config_files,
+    load_config_file,
+    merge_mappings,
+    normalize_string_list,
+    resolve_config_paths,
+)
 
-
-ConfigLoader = Callable[[Any], Mapping[str, Any]]
-
-
-def _raise_yaml_missing() -> None:
-    raise RuntimeError("PyYAML is required to load YAML configuration files. Install with `pip install PyYAML`.")
-
-
-_FILE_LOADERS: Dict[str, ConfigLoader] = {
-    ".toml": lambda stream: tomllib.load(stream),
-    ".json": lambda stream: json.load(stream),
-    ".yaml": lambda stream: yaml.safe_load(stream) if yaml else _raise_yaml_missing(),
-    ".yml": lambda stream: yaml.safe_load(stream) if yaml else _raise_yaml_missing(),
-}
-
-
-def _load_config_file(path: Path) -> Mapping[str, Any]:
-    suffix = path.suffix.lower()
-    loader = _FILE_LOADERS.get(suffix)
-    if loader is None:
-        raise ValueError(f"Unsupported configuration file extension: {suffix}")
-    mode = "rb" if suffix == ".toml" else "r"
-    kwargs: Dict[str, Any] = {}
-    if mode == "r":
-        kwargs["encoding"] = "utf-8"
-    with path.open(mode, **kwargs) as handle:
-        data = loader(handle)
-    if not isinstance(data, Mapping):
-        raise TypeError(f"Configuration file '{path}' must contain a mapping at the root")
-    return data
-
-
-def _collect_config_files(directory: Path) -> Dict[str, Path]:
-    files: Dict[str, Path] = {}
-    for path in directory.iterdir():
-        if not path.is_file():
-            continue
-        suffix = path.suffix.lower()
-        if suffix not in _FILE_LOADERS:
-            continue
-        stem = path.stem
-        if stem in files:
-            other = files[stem]
-            raise ValueError(
-                f"Multiple configuration files found for '{stem}': '{other.name}' and '{path.name}'. "
-                "Only one format per configuration entry is allowed."
-            )
-        files[stem] = path
-    return files
-
-
-def _merge_mappings(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> Dict[str, Any]:
-    result: Dict[str, Any] = {key: value for key, value in base.items()}
-    for key, value in overlay.items():
-        existing = result.get(key)
-        if isinstance(existing, Mapping) and isinstance(value, Mapping):
-            result[key] = _merge_mappings(existing, value)
-        else:
-            result[key] = value
-    return result
-
-
-def _normalize_string_list(value: Any, *, field_name: str) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, (str, bytes)):
-        text = str(value).strip()
-        return [text] if text else []
-    if isinstance(value, Sequence):
-        result: List[str] = []
-        for item in value:
-            if isinstance(item, (str, bytes)):
-                text = str(item).strip()
-                if text:
-                    result.append(text)
-            else:
-                raise TypeError(f"{field_name} entries must be strings")
-        return result
-    raise TypeError(f"{field_name} must be a string or sequence of strings")
+ConfigLoader = SharedConfigLoader
 
 
 @dataclass(slots=True)
@@ -251,11 +175,11 @@ class ProjectDefinition:
                 if isinstance(value, Mapping):
                     presets[str(key)] = value
 
-        extra_config_args = _normalize_string_list(
+        extra_config_args = normalize_string_list(
             project_section.get("extra_config_args"),
             field_name="project.extra_config_args",
         )
-        extra_build_args = _normalize_string_list(
+        extra_build_args = normalize_string_list(
             project_section.get("extra_build_args"),
             field_name="project.extra_build_args",
         )
@@ -308,32 +232,10 @@ class ConfigurationStore:
 
     @classmethod
     def from_directories(cls, root: Path, directories: Iterable[Path]) -> "ConfigurationStore":
-        resolved_dirs: List[Path] = []
-        seen: set[Path] = set()
-        missing: List[Path] = []
-
-        for raw_dir in directories:
-            path = raw_dir
-            if not path.is_absolute():
-                path = (root / path).resolve()
-            else:
-                path = path.resolve()
-
-            if path in seen:
-                resolved_dirs = [existing for existing in resolved_dirs if existing != path]
-            else:
-                seen.add(path)
-
-            if not path.exists():
-                missing.append(path)
-                continue
-
-            resolved_dirs.append(path)
-
-        if missing and not resolved_dirs:
-            missing_display = ", ".join(str(path) for path in missing)
+        resolved_dirs, missing_dirs = resolve_config_paths(root, directories)
+        if missing_dirs and not resolved_dirs:
+            missing_display = ", ".join(str(path) for path in missing_dirs)
             raise FileNotFoundError(f"No configuration directories found. Missing: {missing_display}")
-
         if not resolved_dirs:
             raise FileNotFoundError("No configuration directories were provided")
 
@@ -343,23 +245,23 @@ class ConfigurationStore:
         have_projects_dir = False
 
         for config_dir in resolved_dirs:
-            top_level_files = _collect_config_files(config_dir)
+            top_level_files = collect_config_files(config_dir)
             global_path = top_level_files.pop("config", None)
             if global_path is not None:
-                data = _load_config_file(global_path)
-                global_data = _merge_mappings(global_data, data)
+                data = load_config_file(global_path)
+                global_data = merge_mappings(global_data, data)
 
             for stem, path in sorted(top_level_files.items()):
-                shared_configs[stem] = _load_config_file(path)
+                shared_configs[stem] = load_config_file(path)
 
             projects_dir = config_dir / "projects"
             if not projects_dir.exists():
                 continue
 
             have_projects_dir = True
-            project_files = _collect_config_files(projects_dir)
+            project_files = collect_config_files(projects_dir)
             for _, path in sorted(project_files.items()):
-                data = _load_config_file(path)
+                data = load_config_file(path)
                 project = ProjectDefinition.from_mapping(data)
                 projects[project.name] = project
 
@@ -370,7 +272,7 @@ class ConfigurationStore:
 
         return cls(
             root=root,
-            config_dirs=tuple(resolved_dirs),
+            config_dirs=resolved_dirs,
             global_config=global_config,
             shared_configs=shared_configs,
             projects=projects,
@@ -390,50 +292,64 @@ class ConfigurationStore:
             available = ", ".join(sorted(self.projects)) or "<none>"
             raise KeyError(f"Project '{name}' not found. Available projects: {available}")
 
-        resolved: Dict[str, ResolvedDependency] = {}
+        requested_presets: Dict[str, List[str]] = {}
         visiting: List[str] = []
         visited: set[str] = set()
         order: List[str] = []
 
+        def record_presets(target: str, presets: Iterable[str]) -> None:
+            if not presets:
+                requested_presets.setdefault(target, [])
+                return
+            bucket = requested_presets.setdefault(target, [])
+            for preset in presets:
+                if preset not in bucket:
+                    bucket.append(preset)
+
         def visit(project_name: str) -> None:
             if project_name in visiting:
                 cycle = " -> ".join([*visiting, project_name])
-                raise ValueError(f"Dependency cycle detected: {cycle}")
+                raise ValueError(f"Circular dependency detected: {cycle}")
             if project_name in visited:
                 return
 
             visiting.append(project_name)
-            project = self.get_project(project_name)
-            for dependency in project.dependencies:
-                dep_name = dependency.name
-                if dep_name not in self.projects:
-                    raise KeyError(
-                        f"Dependency '{dep_name}' referenced by project '{project_name}' was not found"
-                    )
-                dep_project = self.projects[dep_name]
-                entry = resolved.get(dep_name)
-                if entry is None:
-                    entry = ResolvedDependency(
-                        project=dep_project,
-                        presets=list(dependency.presets),
-                    )
-                    resolved[dep_name] = entry
-                else:
-                    if dependency.presets:
-                        entry.presets = list(dependency.presets)
-                visit(dep_name)
+            project_def = self.projects.get(project_name)
+            if project_def is None:
+                available_projects = ", ".join(sorted(self.projects)) or "<none>"
+                raise KeyError(f"Dependency '{project_name}' not found. Available projects: {available_projects}")
+
+            for dependency in project_def.dependencies:
+                record_presets(dependency.name, dependency.presets)
+                visit(dependency.name)
+
             visiting.pop()
             visited.add(project_name)
             order.append(project_name)
 
         visit(name)
 
-        if order and order[-1] == name:
-            order.pop()
+        resolved_chain: List[ResolvedDependency] = []
+        for project_name in order:
+            if project_name == name:
+                continue
+            project_def = self.projects[project_name]
+            resolved_chain.append(
+                ResolvedDependency(
+                    project=project_def,
+                    presets=list(requested_presets.get(project_name, [])),
+                )
+            )
 
-        chain: List[ResolvedDependency] = []
-        for dep_name in order:
-            entry = resolved.get(dep_name)
-            if entry is not None:
-                chain.append(entry)
-        return chain
+        return resolved_chain
+
+
+__all__ = [
+    "ConfigurationStore",
+    "ConfigLoader",
+    "GlobalConfig",
+    "GitSettings",
+    "ProjectDefinition",
+    "ProjectDependency",
+    "ResolvedDependency",
+]

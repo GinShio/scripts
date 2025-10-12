@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
-from .template import TemplateResolver, TemplateError, build_dependency_map, topological_order
+from core.template import TemplateResolver, TemplateError, build_dependency_map, topological_order
 
 
 @dataclass(slots=True)

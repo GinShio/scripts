@@ -4,7 +4,7 @@ import unittest
 
 from unittest.mock import patch
 
-from builder.template import TemplateError, TemplateResolver
+from builder import TemplateError, TemplateResolver
 
 
 class TemplateResolverTests(unittest.TestCase):

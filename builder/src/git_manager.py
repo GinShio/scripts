@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
-from .command_runner import CommandRunner, CommandResult, CommandError
+from core.command_runner import CommandRunner, CommandResult, CommandError
 
 
 @dataclass(slots=True)

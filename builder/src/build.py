@@ -8,11 +8,11 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 import json
 import shutil
 
-from .command_runner import CommandRunner, CommandResult
+from core.command_runner import CommandRunner, CommandResult
 from .config_loader import ConfigurationStore, ProjectDefinition
 from .environment import ContextBuilder
 from .presets import PresetRepository
-from .template import TemplateResolver, build_dependency_map, topological_order
+from core.template import TemplateResolver, build_dependency_map, topological_order
 
 
 class BuildMode(str, Enum):

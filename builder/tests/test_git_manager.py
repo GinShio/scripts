@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from builder.command_runner import CommandResult, CommandRunner
+from core.command_runner import CommandResult, CommandRunner
 from builder.git_manager import GitManager
 
 

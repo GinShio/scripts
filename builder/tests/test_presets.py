@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from builder.presets import PresetRepository
-from builder.template import TemplateResolver, TemplateError
+from builder import TemplateResolver, TemplateError
 
 
 class PresetRepositoryTests(unittest.TestCase):

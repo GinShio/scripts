@@ -147,7 +147,7 @@ class TemplateResolver:
 
     def _lookup_raw(self, path: str) -> Any:
         current: Any = self.context
-        for part in path.split("."):
+        for part in path.split('.'):
             if isinstance(current, Mapping) and part in current:
                 current = current[part]
                 continue
@@ -218,7 +218,7 @@ def build_dependency_map(
                 dep_token = placeholder[len(prefix):].strip()
                 if not dep_token:
                     continue
-                dep_name = dep_token.split(".", 1)[0]
+                dep_name = dep_token.split('.', 1)[0]
                 if dep_name in keys_in_scope and dep_name not in pre_resolved_set and dep_name != key:
                     deps.add(dep_name)
         dependency_map[key] = sorted(deps)
