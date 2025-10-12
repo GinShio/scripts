@@ -90,7 +90,11 @@ class ArchiveManager:
             if hasattr(os, "sysconf"):
                 page_size = os.sysconf("SC_PAGE_SIZE")
                 phys_pages = os.sysconf("SC_PHYS_PAGES")
-                if isinstance(page_size, int) and isinstance(phys_pages, int) and page_size > 0 and phys_pages > 0:
+                if isinstance(
+                        page_size,
+                        int) and isinstance(
+                        phys_pages,
+                        int) and page_size > 0 and phys_pages > 0:
                     return page_size * phys_pages
         except (ValueError, OSError, AttributeError):
             pass
@@ -165,7 +169,8 @@ class ArchiveManager:
         return max(10, min(base_log, 29))
 
     @classmethod
-    def _zstd_compression_params(cls, source_size: int) -> zstd.ZstdCompressionParameters:
+    def _zstd_compression_params(
+            cls, source_size: int) -> zstd.ZstdCompressionParameters:
         size = max(1, source_size)
         window_log = cls._zstd_window_log(size)
         threads = cls._zstd_thread_count(size)
@@ -242,9 +247,14 @@ class ArchiveManager:
         mem_bytes = cls._available_memory_bytes()
         if mem_bytes > 0:
             max_dict_bytes = min(1 << max_power, max(1 << 20, mem_bytes // 6))
-            max_power = max(min_power, int(math.floor(math.log2(max_dict_bytes))))
+            max_power = max(
+                min_power, int(
+                    math.floor(
+                        math.log2(max_dict_bytes))))
 
-        target_power = max(min_power, min(max_power, (input_size - 1).bit_length()))
+        target_power = max(
+            min_power, min(
+                max_power, (input_size - 1).bit_length()))
         return 1 << target_power
 
     @classmethod
@@ -290,9 +300,11 @@ class ArchiveManager:
         source_dir = Path(artifact.source_dir).expanduser()
 
         if not source_dir.exists():
-            raise FileNotFoundError(f"Archive source directory '{source_dir}' does not exist")
+            raise FileNotFoundError(
+                f"Archive source directory '{source_dir}' does not exist")
 
-        archive_format = self._resolve_archive_format(target=target, format_hint=format_hint)
+        archive_format = self._resolve_archive_format(
+            target=target, format_hint=format_hint)
 
         if self._console.dry_run:
             label = artifact.label or source_dir.name
@@ -310,15 +322,22 @@ class ArchiveManager:
             source_dir=source_dir,
         )
 
-    def _resolve_archive_format(self, *, target: Path, format_hint: str | None) -> str:
+    def _resolve_archive_format(
+            self,
+            *,
+            target: Path,
+            format_hint: str | None) -> str:
         if format_hint:
             normalized = format_hint.strip().lower()
             if normalized in _FORMAT_ALIASES:
                 return _FORMAT_ALIASES[normalized]
-            raise ValueError(f"Unsupported archive format hint '{format_hint}'")
+            raise ValueError(
+                f"Unsupported archive format hint '{format_hint}'")
 
         filename = target.name.lower()
-        for suffix, fmt in sorted(_SUFFIX_FORMATS, key=lambda item: len(item[0]), reverse=True):
+        for suffix, fmt in sorted(
+            _SUFFIX_FORMATS, key=lambda item: len(
+                item[0]), reverse=True):
             if filename.endswith(suffix):
                 return fmt
 
@@ -326,7 +345,6 @@ class ArchiveManager:
             "Unable to determine archive format from target path. "
             "Provide an explicit format_hint or use a supported suffix."
         )
-
 
     def _emit_dry(self, message: str) -> None:
         dry_method = getattr(self._console, "dry", None)
@@ -344,17 +362,29 @@ class ArchiveManager:
         source_dir: Path,
     ) -> Path:
         if archive_format == "zst":
-            return self._make_zst_archive(target_path=target_path, source_dir=source_dir)
+            return self._make_zst_archive(
+                target_path=target_path,
+                source_dir=source_dir)
         if archive_format == "gztar":
-            return self._make_gzip_archive(target_path=target_path, source_dir=source_dir)
+            return self._make_gzip_archive(
+                target_path=target_path,
+                source_dir=source_dir)
         if archive_format == "bztar":
-            return self._make_bz2_archive(target_path=target_path, source_dir=source_dir)
+            return self._make_bz2_archive(
+                target_path=target_path,
+                source_dir=source_dir)
         if archive_format == "xztar":
-            return self._make_xz_archive(target_path=target_path, source_dir=source_dir)
+            return self._make_xz_archive(
+                target_path=target_path,
+                source_dir=source_dir)
         if archive_format == "tar":
-            return self._make_tar_archive(target_path=target_path, source_dir=source_dir)
+            return self._make_tar_archive(
+                target_path=target_path,
+                source_dir=source_dir)
         if archive_format == "zip":
-            return self._make_zip_archive(target_path=target_path, source_dir=source_dir)
+            return self._make_zip_archive(
+                target_path=target_path,
+                source_dir=source_dir)
 
         raise RuntimeError(f"Unsupported archive format '{archive_format}'")
 
@@ -364,7 +394,9 @@ class ArchiveManager:
         target_path: Path,
         source_dir: Path,
     ) -> Path:
-        temp_tar = self._create_pax_tar(root_dir=source_dir, temp_dir=target_path.parent)
+        temp_tar = self._create_pax_tar(
+            root_dir=source_dir,
+            temp_dir=target_path.parent)
 
         try:
             params = self._zstd_compression_params(temp_tar.stat().st_size)
@@ -382,7 +414,9 @@ class ArchiveManager:
         target_path: Path,
         source_dir: Path,
     ) -> Path:
-        temp_tar = self._create_pax_tar(root_dir=source_dir, temp_dir=target_path.parent)
+        temp_tar = self._create_pax_tar(
+            root_dir=source_dir,
+            temp_dir=target_path.parent)
 
         try:
             with temp_tar.open("rb") as src, gzip.open(target_path, "wb", compresslevel=9, mtime=0) as dst:
@@ -398,7 +432,9 @@ class ArchiveManager:
         target_path: Path,
         source_dir: Path,
     ) -> Path:
-        temp_tar = self._create_pax_tar(root_dir=source_dir, temp_dir=target_path.parent)
+        temp_tar = self._create_pax_tar(
+            root_dir=source_dir,
+            temp_dir=target_path.parent)
 
         try:
             with temp_tar.open("rb") as src, bz2.open(target_path, "wb", compresslevel=9) as dst:
@@ -414,7 +450,9 @@ class ArchiveManager:
         target_path: Path,
         source_dir: Path,
     ) -> Path:
-        temp_tar = self._create_pax_tar(root_dir=source_dir, temp_dir=target_path.parent)
+        temp_tar = self._create_pax_tar(
+            root_dir=source_dir,
+            temp_dir=target_path.parent)
 
         try:
             filters = self._xz_filters(temp_tar.stat().st_size)
@@ -446,7 +484,9 @@ class ArchiveManager:
         target_path: Path,
         source_dir: Path,
     ) -> Path:
-        temp_tar = self._create_pax_tar(root_dir=source_dir, temp_dir=target_path.parent)
+        temp_tar = self._create_pax_tar(
+            root_dir=source_dir,
+            temp_dir=target_path.parent)
 
         try:
             temp_tar.rename(target_path)
@@ -471,40 +511,105 @@ class ArchiveManager:
             strict_timestamps=False,
         ) as archive:
             root_dir_path = Path(source_dir)
-            for dirpath, dirnames, filenames in os.walk(source_dir, topdown=True):
+            for dirpath, dirnames, filenames in os.walk(
+                    source_dir, topdown=True):
                 dirnames.sort()
                 filenames.sort()
 
                 current_dir = Path(dirpath)
                 relative_dir = current_dir.relative_to(root_dir_path)
 
-                if relative_dir != Path("."):
-                    arc_dir = relative_dir.as_posix()
-                    if not arc_dir.endswith("/"):
-                        arc_dir += "/"
-                    info = zipfile.ZipInfo(arc_dir)
-                    info.external_attr = 0o755 << 16
-                    archive.writestr(info, b"")
-
                 for filename in filenames:
                     file_path = current_dir / filename
-                    arcname_path = relative_dir / filename if relative_dir != Path(".") else Path(filename)
+                    if relative_dir != Path("."):
+                        arcname_path = relative_dir / filename
+                    else:
+                        arcname_path = Path(filename)
+
                     archive.write(file_path, arcname_path.as_posix())
 
         return target_path
 
-    def _create_pax_tar(self, *, root_dir: Path, temp_dir: Path) -> Path:
+    def _create_pax_tar(
+            self,
+            *,
+            root_dir: Path,
+            temp_dir: Path) -> Path:
         with tempfile.NamedTemporaryFile(dir=temp_dir, suffix=".tar", delete=False) as temp_handle:
             temp_path = Path(temp_handle.name)
 
         try:
             with tarfile.open(temp_path, mode="w", format=tarfile.PAX_FORMAT) as tar:
-                tar.add(root_dir, arcname=".")
+                # Add contents of root_dir to archive root
+                for item in root_dir.iterdir():
+                    tar.add(item, arcname=item.name)
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise
 
         return temp_path
+
+    def extract_archive(
+        self,
+        *,
+        archive_path: Path | str,
+        destination_dir: Path | str,
+        format_hint: str | None = None,
+    ) -> None:
+        """Extract an archive to a destination directory.
+
+        Parameters
+        ----------
+        archive_path:
+            Path to the archive file.
+        destination_dir:
+            Directory where contents should be extracted.
+        format_hint:
+            Optional explicit archive format.
+        """
+        archive = Path(archive_path).expanduser()
+        dest = Path(destination_dir).expanduser()
+
+        if not archive.exists():
+            raise FileNotFoundError(f"Archive '{archive}' does not exist")
+
+        if self._console.dry_run:
+            self._emit_dry(f"Would extract {archive} to {dest}")
+            return
+
+        dest.mkdir(parents=True, exist_ok=True)
+        archive_format = self._resolve_archive_format(
+            target=archive, format_hint=format_hint)
+
+        if archive_format == "zst":
+            self._extract_zst(archive, dest)
+        elif archive_format == "gztar":
+            with tarfile.open(archive, "r:gz") as tar:
+                tar.extractall(path=dest)
+        elif archive_format == "bztar":
+            with tarfile.open(archive, "r:bz2") as tar:
+                tar.extractall(path=dest)
+        elif archive_format == "xztar":
+            with tarfile.open(archive, "r:xz") as tar:
+                tar.extractall(path=dest)
+        elif archive_format == "tar":
+            with tarfile.open(archive, "r:") as tar:
+                tar.extractall(path=dest)
+        elif archive_format == "zip":
+            with zipfile.ZipFile(archive, "r") as zip_ref:
+                zip_ref.extractall(dest)
+        else:
+            raise ValueError(f"Unsupported archive format: {archive_format}")
+
+        self._console.info(f"Extracted {archive} to {dest}")
+
+    def _extract_zst(self, archive: Path, dest: Path) -> None:
+        dctx = zstd.ZstdDecompressor()
+        with archive.open("rb") as ifh:
+            with dctx.stream_reader(ifh) as reader:
+                with tarfile.open(fileobj=reader, mode="r|") as tar:
+                    tar.extractall(path=dest)
+
 
 __all__ = [
     "ArchiveConsole",

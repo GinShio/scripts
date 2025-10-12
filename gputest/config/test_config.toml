@@ -1,0 +1,13 @@
+[drivers.mesa_git]
+layout = "mesa_git"
+env = { VK_ICD_FILENAMES = "{{root}}/share/vulkan/icd.d/radeon_icd.x86_64.json" }
+
+[layouts.mesa_git]
+root = "{{runner_root}}/mesa/git"
+env = { LD_LIBRARY_PATH = "{{root}}/lib" }
+
+[suites.glmark2]
+executable = "{{runner_root}}/glmark2/bin/glmark2"
+
+[suites.vkmark]
+exe = "{{runner_root}}/vkmark/bin/vkmark"

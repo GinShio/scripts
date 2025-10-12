@@ -19,11 +19,13 @@ classifiers = [
 ]
 dependencies = [
     "ruamel.yaml>=0.17",
+    "zstandard>=0.22.0",
 ]
 
 [project.scripts]
 builder = "builder.cli:main"
+gputest = "gputest.cli:main"
 
 [tool.setuptools]
-package-dir = {"builder" = "builder/src", "core" = "core"}
-packages = ["builder", "core"]
+package-dir = {"builder" = "builder/src", "core" = "core", "gputest" = "gputest/src"}
+packages = ["builder", "core", "gputest"]
