@@ -369,6 +369,108 @@ class GitManagerTests(unittest.TestCase):
         self.assertNotIn(["git", "checkout", "feature"], restoration_commands)
         self.assertEqual(runner.branch, "feature")
 
+    def test_prepare_checkout_component_switches_when_commits_match(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "same", "comp-target": "same"},
+        )
+
+        manager = GitManager(runner)
+        state = manager.prepare_checkout(
+            repo_path=self.repo_path,
+            target_branch="main",
+            auto_stash=False,
+            no_switch_branch=False,
+            component_dir=component_rel,
+            component_branch="comp-target",
+        )
+
+        component_switches = [
+            entry["command"]
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
+        ]
+        self.assertIn(["git", "switch", "comp-target"], component_switches)
+        self.assertEqual(state.component_branch, "comp-old")
+
+        history_length_before_restore = len(runner.history)
+        manager.restore_checkout(self.repo_path, state)
+        restore_component_commands = [
+            entry["command"]
+            for entry in runner.history[history_length_before_restore:]
+            if entry["cwd"] == component_path
+        ]
+        self.assertIn(["git", "switch", "comp-old"], restore_component_commands)
+
+    def test_prepare_checkout_component_absolute_path_detected(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+        )
+
+        manager = GitManager(runner)
+        state = manager.prepare_checkout(
+            repo_path=self.repo_path,
+            target_branch="main",
+            auto_stash=False,
+            no_switch_branch=False,
+            component_dir=component_path,
+            component_branch="comp-target",
+        )
+
+        component_switches = [
+            entry["command"]
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
+        ]
+        self.assertIn(["git", "switch", "comp-target"], component_switches)
+        self.assertEqual(state.component_path, component_path)
+        self.assertEqual(state.component_branch, "comp-old")
+
+    def test_prepare_checkout_component_external_worktree_detected(self) -> None:
+        component_path = (Path(self.temp_dir.name) / "worktrees" / "component-main").resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+        )
+
+        manager = GitManager(runner)
+        state = manager.prepare_checkout(
+            repo_path=self.repo_path,
+            target_branch="main",
+            auto_stash=False,
+            no_switch_branch=False,
+            component_dir=component_path,
+            component_branch="comp-target",
+        )
+
+        component_switches = [
+            entry["command"]
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
+        ]
+        self.assertIn(["git", "switch", "comp-target"], component_switches)
+        self.assertEqual(state.component_path, component_path)
+        self.assertEqual(state.component_branch, "comp-old")
+
     def test_update_repository_component_submodule_switches_component(self) -> None:
         component_rel = Path("components/library")
         component_path = (self.repo_path / component_rel).resolve()
@@ -415,6 +517,36 @@ class GitManagerTests(unittest.TestCase):
         self.assertIsNotNone(state)
         if state:
             self.assertEqual(state.get("branch"), "comp-old")
+
+    def test_update_repository_component_switches_when_commits_match(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2", "comp-target": "same"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "same", "comp-target": "same"},
+        )
+
+        manager = GitManager(runner)
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+            component_branch="comp-target",
+            component_dir=component_rel,
+        )
+
+        component_switches = [
+            entry["command"]
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
+        ]
+        self.assertIn(["git", "switch", "comp-target"], component_switches)
+        self.assertIn(["git", "switch", "comp-old"], component_switches)
 
     def test_update_repository_component_branch_only_updates_component_repo(self) -> None:
         component_rel = Path("components/library")
@@ -670,6 +802,75 @@ class GitManagerTests(unittest.TestCase):
         stash_commands = [entry for entry in runner.history if entry["command"][:3] == ["git", "stash", "push"]]
         self.assertFalse(stash_commands)
         self.assertEqual(runner.branch, "feature")
+
+    def test_prepare_checkout_component_auto_stash_when_switching(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+            dirty=True,
+        )
+
+        manager = GitManager(runner)
+        state = manager.prepare_checkout(
+            repo_path=self.repo_path,
+            target_branch="main",
+            auto_stash=True,
+            no_switch_branch=False,
+            component_dir=component_rel,
+            component_branch="comp-target",
+        )
+
+        component_commands = [
+            entry["command"]
+            for entry in runner.history
+            if entry["cwd"] == component_path
+        ]
+        self.assertIn(["git", "stash", "push", "-m", "builder auto-stash"], component_commands)
+        self.assertIn(["git", "switch", "comp-target"], component_commands)
+
+        history_length_before_restore = len(runner.history)
+        manager.restore_checkout(self.repo_path, state)
+        restore_component_commands = [
+            entry["command"]
+            for entry in runner.history[history_length_before_restore:]
+            if entry["cwd"] == component_path
+        ]
+        self.assertIn(["git", "stash", "pop"], restore_component_commands)
+
+    def test_prepare_checkout_component_dirty_without_auto_stash_raises(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+            dirty=True,
+        )
+
+        manager = GitManager(runner)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"Component working tree at '.*components/library' has uncommitted changes; enable auto_stash to proceed",
+        ):
+            manager.prepare_checkout(
+                repo_path=self.repo_path,
+                target_branch="main",
+                auto_stash=False,
+                no_switch_branch=False,
+                component_dir=component_rel,
+                component_branch="comp-target",
+            )
 
     def test_restore_checkout_pops_stash_after_branch_restored(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", dirty=True, commits={"feature": "f1", "main": "m2"})

@@ -311,7 +311,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
                 print("Preset environment overrides:")
                 pprint(plan.environment)
 
-        target_branch = plan.branch
+        build_branch = plan.branch
         state = None
         plan_has_steps = bool(plan.steps)
         should_prepare_checkout = plan_has_steps and (
@@ -319,14 +319,20 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
         )
         if should_prepare_checkout:
             component_dir_arg = _component_dir_argument(plan)
+            branch_override = options.branch
+            root_target_branch = branch_override or build_branch
+            component_branch_arg: str | None = None
+            if component_dir_arg and not options.no_switch_branch:
+                root_target_branch = plan.project.git.main_branch or root_target_branch
+                component_branch_arg = branch_override or plan.project.git.component_branch or build_branch
             state = git_manager.prepare_checkout(
                 repo_path=plan.source_dir,
-                target_branch=target_branch,
+                target_branch=root_target_branch,
                 auto_stash=plan.project.git.auto_stash,
                 no_switch_branch=options.no_switch_branch,
                 environment=plan.git_environment,
                 component_dir=component_dir_arg,
-                component_branch=plan.branch if (component_dir_arg and not options.no_switch_branch) else None,
+                component_branch=component_branch_arg,
                 dry_run=args.dry_run,
             )
 

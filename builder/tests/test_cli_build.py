@@ -338,7 +338,13 @@ class BuildCommandDryRunTests(unittest.TestCase):
                         "component_branch": component_branch,
                     }
                 )
-                return GitWorkState(branch="main", stash_applied=False)
+                return GitWorkState(
+                    branch="main",
+                    stash_applied=False,
+                    component_branch="component/main",
+                    component_path=repo_root / "libs" / "core",
+                    component_stash_applied=True,
+                )
 
             def restore_checkout(
                 self,
@@ -383,8 +389,211 @@ class BuildCommandDryRunTests(unittest.TestCase):
         self.assertTrue(manager.prepare_args)
         call = manager.prepare_args[0]
         self.assertEqual(call.get("repo_path"), repo_root)
+        self.assertEqual(call.get("target_branch"), "main")
         self.assertEqual(call.get("component_dir"), Path("libs/core"))
         self.assertEqual(call.get("component_branch"), "component/main")
+        self.assertTrue(manager.restore_calls)
+
+    def test_build_branch_override_applies_to_component_repo(self) -> None:
+        projects_dir = self.workspace / "config" / "projects"
+        (projects_dir / "component.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "component"
+                source_dir = "{{builder.path}}/examples/component"
+                component_dir = "libs/core"
+                build_dir = "_build/{{user.branch}}"
+                build_system = "cmake"
+
+                [git]
+                url = "https://example.com/component.git"
+                main_branch = "main"
+                component_branch = "component/main"
+                """
+            )
+        )
+
+        repo_root = self.workspace / "examples" / "component"
+        component_path = repo_root / "libs" / "core"
+        (component_path / ".git").mkdir(parents=True, exist_ok=True)
+
+        class RecordingGitManager:
+            last_instance = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+                self.prepare_args: list[dict[str, object | None]] = []
+                RecordingGitManager.last_instance = self
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+                dry_run: bool = False,
+            ) -> GitWorkState:
+                self.prepare_args.append(
+                    {
+                        "repo_path": repo_path,
+                        "target_branch": target_branch,
+                        "component_dir": component_dir,
+                        "component_branch": component_branch,
+                    }
+                )
+                return GitWorkState(
+                    branch="main",
+                    stash_applied=False,
+                    component_branch="component/main",
+                    component_path=component_path,
+                    component_stash_applied=False,
+                )
+
+            def restore_checkout(
+                self,
+                repo_path: Path,
+                state: GitWorkState,
+                *,
+                environment=None,
+                dry_run: bool = False,
+            ) -> None:
+                return None
+
+        args = SimpleNamespace(
+            project="component",
+            preset=[],
+            branch="component/dev",
+            build_type=None,
+            generator=None,
+            target=None,
+            install=False,
+            dry_run=True,
+            show_vars=False,
+            no_switch_branch=False,
+            verbose=False,
+            toolchain=None,
+            install_dir=None,
+            config_only=False,
+            build_only=False,
+            reconfig=False,
+            extra_switches=[],
+            extra_config_args=[],
+            extra_build_args=[],
+        )
+
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", RecordingGitManager):
+            with redirect_stdout(buffer):
+                cli._handle_build(args, self.workspace)
+
+        manager = RecordingGitManager.last_instance
+        self.assertIsNotNone(manager)
+        assert manager is not None
+        self.assertTrue(manager.prepare_args)
+        call = manager.prepare_args[0]
+        self.assertEqual(call.get("target_branch"), "main")
+        self.assertEqual(call.get("component_branch"), "component/dev")
+
+    def test_build_branch_override_for_single_repo_targets_root(self) -> None:
+        projects_dir = self.workspace / "config" / "projects"
+        (projects_dir / "single.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "single"
+                source_dir = "{{builder.path}}/examples/single"
+                build_dir = "_build"
+                build_system = "cmake"
+
+                [git]
+                url = "https://example.com/single.git"
+                main_branch = "main"
+                """
+            )
+        )
+
+        repo_root = self.workspace / "examples" / "single"
+        (repo_root / ".git").mkdir(parents=True, exist_ok=True)
+
+        class RecordingGitManager:
+            last_instance = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+                self.prepare_args: list[dict[str, object | None]] = []
+                RecordingGitManager.last_instance = self
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+                dry_run: bool = False,
+            ) -> GitWorkState:
+                self.prepare_args.append(
+                    {
+                        "repo_path": repo_path,
+                        "target_branch": target_branch,
+                        "component_dir": component_dir,
+                        "component_branch": component_branch,
+                    }
+                )
+                return GitWorkState(branch=target_branch, stash_applied=False)
+
+            def restore_checkout(
+                self,
+                repo_path: Path,
+                state: GitWorkState,
+                *,
+                environment=None,
+                dry_run: bool = False,
+            ) -> None:
+                return None
+
+        args = SimpleNamespace(
+            project="single",
+            preset=[],
+            branch="release/1.2",
+            build_type=None,
+            generator=None,
+            target=None,
+            install=False,
+            dry_run=True,
+            show_vars=False,
+            no_switch_branch=False,
+            verbose=False,
+            toolchain=None,
+            install_dir=None,
+            config_only=False,
+            build_only=False,
+            reconfig=False,
+            extra_switches=[],
+            extra_config_args=[],
+            extra_build_args=[],
+        )
+
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", RecordingGitManager):
+            with redirect_stdout(buffer):
+                cli._handle_build(args, self.workspace)
+
+        manager = RecordingGitManager.last_instance
+        self.assertIsNotNone(manager)
+        assert manager is not None
+        self.assertTrue(manager.prepare_args)
+        call = manager.prepare_args[0]
+        self.assertEqual(call.get("target_branch"), "release/1.2")
+        self.assertIsNone(call.get("component_branch"))
 
 
 class ExtraSwitchParsingTests(unittest.TestCase):
