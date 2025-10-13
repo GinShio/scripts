@@ -15,6 +15,7 @@ class GitWorkState:
     component_branch: str | None = None
     component_path: Path | None = None
     component_stash_applied: bool = False
+    root_switched: bool = False
 
 
 class GitManager:
@@ -184,6 +185,7 @@ class GitManager:
                     component_dirty = False
 
         dirty = self._is_dirty(repo_path, environment=environment)
+        root_switched = False
         if should_switch_root and dirty:
             if auto_stash:
                 self._run_repo_command(
@@ -225,6 +227,7 @@ class GitManager:
                 raise RuntimeError(
                     f"Unable to switch repository at '{repo_path}' to branch '{target_branch}'. Run 'builder update' first."
                 )
+            root_switched = True
             if should_switch_component:
                 restored_branch = self._switch_component_submodule(
                     component_path=component_path,
@@ -263,6 +266,7 @@ class GitManager:
             component_branch=component_state_branch,
             component_path=component_path,
             component_stash_applied=component_stash_applied,
+            root_switched=root_switched,
         )
 
     def restore_checkout(
@@ -276,6 +280,7 @@ class GitManager:
         repo_path = repo_path.resolve()
         current_branch = self._current_branch(repo_path, environment=environment)
         branch_restored = current_branch == state.branch
+        restored_now = False
         if not branch_restored:
             self._run_repo_command(
                 repo_path,
@@ -285,7 +290,8 @@ class GitManager:
                 stream=False,
             )
             branch_restored = True
-        if branch_restored:
+            restored_now = True
+        if branch_restored and (state.root_switched or restored_now):
             self._update_submodules(
                 repo_path,
                 dry_run=dry_run,

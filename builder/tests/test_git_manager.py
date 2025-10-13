@@ -263,6 +263,46 @@ class GitManagerTests(unittest.TestCase):
         env_records = [entry["env"] for entry in runner.history if entry["command"][0] == "git"]
         self.assertTrue(all(record.get("CUSTOM") == "VALUE" for record in env_records))
 
+    def test_prepare_and_restore_same_branch_skips_submodule_update(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="main", commits={"main": "m1"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="component/main",
+            commits={"component/main": "c1"},
+            dirty=False,
+        )
+
+        manager = GitManager(runner)
+        state = manager.prepare_checkout(
+            repo_path=self.repo_path,
+            target_branch="main",
+            auto_stash=False,
+            no_switch_branch=False,
+            component_dir=component_rel,
+            component_branch="component/main",
+        )
+
+        prepare_updates = [
+            entry
+            for entry in runner.history
+            if entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertFalse(prepare_updates)
+
+        history_length_before_restore = len(runner.history)
+        manager.restore_checkout(self.repo_path, state)
+        restore_updates = [
+            entry
+            for entry in runner.history[history_length_before_restore:]
+            if entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertFalse(restore_updates)
+
     def test_update_repository_passes_environment(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m1"})
         manager = GitManager(runner)
@@ -364,7 +404,7 @@ class GitManagerTests(unittest.TestCase):
             for entry in restoration_entries
             if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
-        self.assertTrue(root_restoration_updates)
+        self.assertFalse(root_restoration_updates)
 
         self.assertNotIn(["git", "checkout", "feature"], restoration_commands)
         self.assertEqual(runner.branch, "feature")
@@ -876,6 +916,12 @@ class GitManagerTests(unittest.TestCase):
         self.assertFalse(component_stashes)
         self.assertIsNone(state.component_path)
         self.assertIsNone(state.component_branch)
+        component_updates = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertFalse(component_updates)
 
     def test_prepare_checkout_component_dirty_without_auto_stash_raises(self) -> None:
         component_rel = Path("components/library")
