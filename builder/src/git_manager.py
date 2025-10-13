@@ -143,7 +143,7 @@ class GitManager:
                 component_path = None
 
         should_switch_component = component_is_submodule and component_path is not None and bool(component_target_branch)
-        should_switch_root = branch_switch_needed
+        should_switch_root = branch_switch_needed and not should_switch_component
 
         dirty = self._is_dirty(repo_path, environment=environment)
         if dirty and should_switch_root:

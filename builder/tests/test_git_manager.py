@@ -323,9 +323,8 @@ class GitManagerTests(unittest.TestCase):
             for entry in history_commands
             if entry["cwd"] == self.repo_path and entry["command"][:2] == ["git", "switch"]
         ]
-        self.assertTrue(root_switches)
-        self.assertIn(["git", "switch", "main"], [entry["command"] for entry in root_switches])
-        self.assertEqual(runner.branch, "main")
+        self.assertFalse(root_switches)
+        self.assertEqual(runner.branch, "feature")
         root_updates = [entry for entry in history_commands if entry["command"] == ["git", "submodule", "update", "--recursive"] and entry["cwd"] == self.repo_path]
         self.assertFalse(root_updates)
         self.assertNotIn(["git", "fetch", "--all"], [entry["command"] for entry in history_commands])
@@ -367,7 +366,7 @@ class GitManagerTests(unittest.TestCase):
         ]
         self.assertTrue(root_restoration_updates)
 
-        self.assertIn(["git", "checkout", "feature"], restoration_commands)
+        self.assertNotIn(["git", "checkout", "feature"], restoration_commands)
         self.assertEqual(runner.branch, "feature")
 
     def test_update_repository_component_submodule_switches_component(self) -> None:
@@ -591,8 +590,8 @@ class GitManagerTests(unittest.TestCase):
         )
 
         stash_commands = [entry for entry in runner.history if entry["command"][:3] == ["git", "stash", "push"]]
-        self.assertTrue(stash_commands)
-        self.assertEqual(runner.branch, "main")
+        self.assertFalse(stash_commands)
+        self.assertEqual(runner.branch, "feature")
 
     def test_restore_checkout_pops_stash_after_branch_restored(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", dirty=True, commits={"feature": "f1", "main": "m2"})
