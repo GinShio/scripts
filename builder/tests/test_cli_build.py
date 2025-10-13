@@ -8,8 +8,10 @@ import textwrap
 import unittest
 from contextlib import redirect_stdout
 import os
+from unittest.mock import patch
 
 from builder import cli
+from builder.git_manager import GitWorkState
 
 
 class ConfigDirectoryResolutionTests(unittest.TestCase):
@@ -282,6 +284,107 @@ class BuildCommandDryRunTests(unittest.TestCase):
         dry_run_lines = [line for line in output.splitlines() if line.startswith("[dry-run]")]
         self.assertTrue(any("git switch" in line for line in dry_run_lines))
         self.assertTrue(any("git submodule update --recursive" in line for line in dry_run_lines))
+
+    def test_build_passes_component_repo_to_git_manager(self) -> None:
+        projects_dir = self.workspace / "config" / "projects"
+        (projects_dir / "component.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "component"
+                source_dir = "{{builder.path}}/examples/component"
+                component_dir = "libs/core"
+                build_dir = "_build/{{user.branch}}"
+                build_system = "cmake"
+
+                [git]
+                url = "https://example.com/component.git"
+                main_branch = "main"
+                component_branch = "component/main"
+                """
+            )
+        )
+
+        repo_root = self.workspace / "examples" / "component"
+        component_path = repo_root / "libs" / "core"
+        (component_path / ".git").mkdir(parents=True, exist_ok=True)
+
+        class RecordingGitManager:
+            last_instance = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+                self.prepare_args: list[dict[str, object | None]] = []
+                self.restore_calls: list[GitWorkState] = []
+                RecordingGitManager.last_instance = self
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+                dry_run: bool = False,
+            ) -> GitWorkState:
+                self.prepare_args.append(
+                    {
+                        "repo_path": repo_path,
+                        "target_branch": target_branch,
+                        "component_dir": component_dir,
+                        "component_branch": component_branch,
+                    }
+                )
+                return GitWorkState(branch="main", stash_applied=False)
+
+            def restore_checkout(
+                self,
+                repo_path: Path,
+                state: GitWorkState,
+                *,
+                environment=None,
+                dry_run: bool = False,
+            ) -> None:
+                self.restore_calls.append(state)
+
+        args = SimpleNamespace(
+            project="component",
+            preset=[],
+            branch=None,
+            build_type=None,
+            generator=None,
+            target=None,
+            install=False,
+            dry_run=True,
+            show_vars=False,
+            no_switch_branch=False,
+            verbose=False,
+            toolchain=None,
+            install_dir=None,
+            config_only=False,
+            build_only=False,
+            reconfig=False,
+            extra_switches=[],
+            extra_config_args=[],
+            extra_build_args=[],
+        )
+
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", RecordingGitManager):
+            with redirect_stdout(buffer):
+                cli._handle_build(args, self.workspace)
+
+        manager = RecordingGitManager.last_instance
+        self.assertIsNotNone(manager)
+        assert manager is not None  # for type checkers
+        self.assertTrue(manager.prepare_args)
+        call = manager.prepare_args[0]
+        self.assertEqual(call.get("repo_path"), repo_root)
+        self.assertEqual(call.get("component_dir"), Path("libs/core"))
+        self.assertEqual(call.get("component_branch"), "component/main")
 
 
 class ExtraSwitchParsingTests(unittest.TestCase):

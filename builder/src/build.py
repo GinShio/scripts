@@ -57,6 +57,7 @@ class BuildPlan:
     install_dir: Path | None
     source_dir: Path
     configure_source_dir: Path
+    component_dir: Path | None
     steps: List[BuildStep]
     context: Dict[str, Any]
     presets: List[str]
@@ -516,6 +517,7 @@ class BuildEngine:
             install_dir=paths.install_dir,
             source_dir=paths.source_dir,
             configure_source_dir=paths.target_source_dir,
+            component_dir=paths.component_dir,
             steps=plan_steps,
             context=combined_context,
             presets=presets_to_resolve,
@@ -1117,6 +1119,7 @@ class BuildEngine:
             "install_dir": str(plan.install_dir) if plan.install_dir else None,
             "source_dir": str(plan.source_dir),
             "configure_source_dir": str(plan.configure_source_dir),
+            "component_dir": str(plan.component_dir) if plan.component_dir else None,
             "steps": [
                 {
                     "description": step.description,

@@ -273,6 +273,7 @@ class GitManager:
         auto_stash: bool = False,
         environment: Mapping[str, str] | None = None,
         dry_run: bool = False,
+        component_dir: Path | str | None = None,
     ) -> None:
         repo_path = repo_path.resolve()
         if not repo_path.exists():
@@ -343,16 +344,31 @@ class GitManager:
             environment=environment,
         )
 
+        component_rel_path: Path | None = None
+        component_repo_path: Path | None = None
+        component_is_submodule = False
+        if component_dir is not None:
+            component_rel_path = Path(component_dir)
+            component_repo_path = component_rel_path if component_rel_path.is_absolute() else (repo_path / component_rel_path).resolve()
+            if not component_rel_path.is_absolute():
+                component_is_submodule = self._is_component_submodule(
+                    repo_path,
+                    component_rel_path,
+                    environment=environment,
+                )
+            if component_is_submodule and component_repo_path and not self._is_git_directory(component_repo_path):
+                component_repo_path = None
+
         if component_branch:
-            component_path = repo_path
+            target_repo_path = component_repo_path if (component_is_submodule and component_repo_path) else repo_path
             self._run_repo_command(
-                component_path,
+                target_repo_path,
                 ["git", "fetch", "--all"],
                 dry_run=dry_run,
                 environment=environment,
             )
             result = self._run_repo_command(
-                component_path,
+                target_repo_path,
                 ["git", "switch", component_branch],
                 dry_run=dry_run,
                 environment=environment,
@@ -361,13 +377,13 @@ class GitManager:
             if result.returncode != 0:
                 raise RuntimeError(f"Component branch '{component_branch}' does not exist")
             self._run_repo_command(
-                component_path,
+                target_repo_path,
                 ["git", "pull", "--ff-only", "origin", component_branch],
                 dry_run=dry_run,
                 environment=environment,
             )
             self._update_submodules(
-                component_path,
+                target_repo_path,
                 dry_run=dry_run,
                 environment=environment,
             )

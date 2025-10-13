@@ -357,6 +357,45 @@ class GitManagerTests(unittest.TestCase):
         self.assertIn(["git", "checkout", "feature"], restoration_commands)
         self.assertEqual(runner.branch, "feature")
 
+    def test_update_repository_component_submodule_switches_component(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+        )
+
+        manager = GitManager(runner)
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+            component_branch="comp-target",
+            component_dir=component_rel,
+        )
+
+        component_switches = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
+        ]
+        self.assertTrue(component_switches)
+        component_pulls = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"] == ["git", "pull", "--ff-only", "origin", "comp-target"]
+        ]
+        self.assertTrue(component_pulls)
+        state = runner.repo_states.get(component_path)
+        self.assertIsNotNone(state)
+        if state:
+            self.assertEqual(state.get("branch"), "comp-target")
+
     def test_restore_checkout_updates_submodules_for_root(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
         manager = GitManager(runner)

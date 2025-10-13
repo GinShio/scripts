@@ -7,6 +7,7 @@ import tempfile
 import textwrap
 import unittest
 from contextlib import redirect_stdout
+from unittest.mock import patch
 
 from builder import cli
 
@@ -110,6 +111,64 @@ class UpdateCommandTests(unittest.TestCase):
         expected_path = self.workspace / "repos" / "demo"
         self.assertIn(f"echo clone {expected_path.as_posix()}", output)
         self.assertNotIn(f"(cwd={expected_path.as_posix()})", output)
+
+    def test_update_passes_component_dir_to_git_manager(self) -> None:
+        config_path = self.workspace / "config" / "projects" / "demo.toml"
+        config_path.write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "demo"
+                source_dir = "{{builder.path}}/repos/demo"
+                component_dir = "libs/core"
+                build_dir = "_build/demo"
+                build_system = "cmake"
+
+                [git]
+                url = "https://example.com/demo.git"
+                main_branch = "main"
+                component_branch = "comp/main"
+                """
+            )
+        )
+
+        repo_path = self.workspace / "repos" / "demo"
+        (repo_path / ".git").mkdir(parents=True, exist_ok=True)
+
+        class RecordingGitManager:
+            last_component_dir: Path | None = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+
+            def update_repository(
+                self,
+                *,
+                repo_path: Path,
+                url: str,
+                main_branch: str,
+                component_branch=None,
+                clone_script=None,
+                update_script=None,
+                auto_stash=False,
+                environment=None,
+                dry_run=False,
+                component_dir=None,
+            ) -> None:
+                RecordingGitManager.last_component_dir = component_dir
+
+        args = SimpleNamespace(
+            project="demo",
+            branch=None,
+            submodule="default",
+            dry_run=True,
+        )
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", RecordingGitManager):
+            with redirect_stdout(buffer):
+                cli._handle_update(args, self.workspace)
+
+        self.assertEqual(RecordingGitManager.last_component_dir, Path("libs/core"))
 
 
 if __name__ == "__main__":  # pragma: no cover

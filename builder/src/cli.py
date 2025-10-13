@@ -7,7 +7,7 @@ from typing import Iterable, List
 import os
 import sys
 
-from .build import BuildEngine, BuildMode, BuildOptions
+from .build import BuildEngine, BuildMode, BuildOptions, BuildPlan
 from .command_runner import RecordingCommandRunner, SubprocessCommandRunner
 from .config_loader import ConfigurationStore
 from .git_manager import GitManager
@@ -119,6 +119,33 @@ def _load_configuration_store(args: Namespace, workspace: Path) -> Configuration
 def _emit_dry_run_output(runner: RecordingCommandRunner, *, workspace: Path) -> None:
     for line in runner.iter_formatted(workspace=workspace):
         print(line)
+
+
+def _component_dir_argument(plan: BuildPlan) -> Path | None:
+    component_dir = plan.project.component_dir
+    if not component_dir:
+        return None
+
+    component_dir_arg: Path | None = None
+    project_ctx: dict[str, object] | object
+    if isinstance(plan.context, dict):
+        project_ctx = plan.context.get("project", {})
+    else:
+        project_ctx = {}
+    resolved_component: object | None = None
+    if isinstance(project_ctx, dict):
+        resolved_component = project_ctx.get("component_dir")
+
+    if isinstance(resolved_component, str):
+        resolved_path = Path(resolved_component)
+        try:
+            component_dir_arg = resolved_path.relative_to(plan.source_dir)
+        except ValueError:
+            component_dir_arg = resolved_path
+    else:
+        component_dir_arg = Path(component_dir)
+
+    return component_dir_arg
 
 
 def _parse_arguments(argv: Iterable[str]) -> Namespace:
@@ -291,12 +318,15 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
             not args.dry_run or plan.source_dir.exists()
         )
         if should_prepare_checkout:
+            component_dir_arg = _component_dir_argument(plan)
             state = git_manager.prepare_checkout(
                 repo_path=plan.source_dir,
                 target_branch=target_branch,
                 auto_stash=plan.project.git.auto_stash,
                 no_switch_branch=options.no_switch_branch,
                 environment=plan.git_environment,
+                component_dir=component_dir_arg,
+                component_branch=plan.branch if (component_dir_arg and not options.no_switch_branch) else None,
                 dry_run=args.dry_run,
             )
 
@@ -402,6 +432,7 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
         )
         plan = planning_engine.plan(options)
         source_dir = plan.source_dir
+        component_dir_arg = _component_dir_argument(plan)
         git_manager.update_repository(
             repo_path=source_dir,
             url=project.git.url,
@@ -412,6 +443,7 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
             auto_stash=project.git.auto_stash,
             environment=plan.git_environment,
             dry_run=args.dry_run,
+            component_dir=component_dir_arg,
         )
     if args.dry_run and isinstance(runner, RecordingCommandRunner):
         _emit_dry_run_output(runner, workspace=workspace)
@@ -469,23 +501,7 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         submodules: List[dict[str, str]] = []
 
         if repo_ready:
-            component_dir_arg: Path | None = None
-            if project.component_dir:
-                if isinstance(plan.context, dict):
-                    project_ctx = plan.context.get("project", {})  # type: ignore[arg-type]
-                else:
-                    project_ctx = {}
-                resolved_component = None
-                if isinstance(project_ctx, dict):
-                    resolved_component = project_ctx.get("component_dir")
-                if resolved_component:
-                    resolved_path = Path(resolved_component)
-                    try:
-                        component_dir_arg = resolved_path.relative_to(repo_path)
-                    except ValueError:
-                        component_dir_arg = Path(project.component_dir)
-                else:
-                    component_dir_arg = Path(project.component_dir)
+            component_dir_arg = _component_dir_argument(plan)
 
             try:
                 state = git_manager.prepare_checkout(
