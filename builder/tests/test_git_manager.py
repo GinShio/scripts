@@ -26,6 +26,9 @@ class FakeGitRunner(CommandRunner):
             }
         }
         self.submodule_paths: set[str] = set()
+        self.submodule_urls: dict[str, str] = {}
+        self.submodule_status_entries: list[tuple[str, str, str | None]] = []
+        self.sparse_checkout: bool = False
         self.root_path: Path | None = None
 
     @property
@@ -53,8 +56,13 @@ class FakeGitRunner(CommandRunner):
         branch = state["branch"]  # type: ignore[index]
         commits_map: dict[str, str] = state["commits"]  # type: ignore[assignment]
 
+        if cmd_list[:4] == ["git", "config", "--bool", "core.sparseCheckout"]:
+            value = "true" if self.sparse_checkout else "false"
+            return CommandResult(command=cmd_list, returncode=0, stdout=f"{value}\n", stderr="")
         if cmd_list[:3] == ["git", "rev-parse", "--abbrev-ref"]:
             return CommandResult(command=cmd_list, returncode=0, stdout=f"{branch}\n", stderr="")
+        if cmd_list[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
+            return CommandResult(command=cmd_list, returncode=0, stdout="true\n", stderr="")
         if cmd_list[:2] == ["git", "rev-parse"] and len(cmd_list) == 3 and cmd_list[2] == "HEAD":
             commit = commits_map.get(branch, "")
             return CommandResult(command=cmd_list, returncode=0, stdout=f"{commit}\n", stderr="")
@@ -101,10 +109,23 @@ class FakeGitRunner(CommandRunner):
                     self.branch = target_branch
             return CommandResult(command=cmd_list, returncode=0, stdout="", stderr="")
         if cmd_list[:3] == ["git", "config", "--file"] and len(cmd_list) >= 5 and cmd_list[3] == ".gitmodules":
-            path_key = self._extract_submodule_path(cmd_list[4])
+            key_entry = cmd_list[4]
+            path_key = self._extract_submodule_path(key_entry)
             if path_key and path_key in self.submodule_paths:
+                if key_entry.endswith(".url") or key_entry.endswith('".url'):
+                    url = self.submodule_urls.get(path_key, "")
+                    return CommandResult(command=cmd_list, returncode=0, stdout=f"{url}\n", stderr="")
                 return CommandResult(command=cmd_list, returncode=0, stdout=f"{path_key}\n", stderr="")
             return CommandResult(command=cmd_list, returncode=1, stdout="", stderr="not found")
+        if cmd_list[:4] == ["git", "submodule", "status", "--recursive"]:
+            lines: list[str] = []
+            for commit_hash, submodule_path, branch_name in self.submodule_status_entries:
+                suffix = f" ({branch_name})" if branch_name else ""
+                lines.append(f" {commit_hash} {submodule_path}{suffix}")
+            stdout = "\n".join(lines)
+            if stdout:
+                stdout += "\n"
+            return CommandResult(command=cmd_list, returncode=0, stdout=stdout, stderr="")
         return CommandResult(command=cmd_list, returncode=0, stdout="", stderr="")
 
     def _state(self, key: Path | None) -> dict[str, object]:
@@ -135,12 +156,22 @@ class FakeGitRunner(CommandRunner):
     def add_submodule_path(self, path: str) -> None:
         self.submodule_paths.add(path)
 
+    def add_submodule_status(self, path: str, commit: str, url: str | None = None, branch: str | None = None) -> None:
+        self.submodule_status_entries.append((commit, path, branch))
+        self.submodule_paths.add(path)
+        if url is not None:
+            self.submodule_urls[path] = url
+
     @staticmethod
     def _extract_submodule_path(key: str) -> str | None:
-        if key.startswith('submodule."') and key.endswith('".path'):
-            return key[len('submodule."') : -len('".path')]
-        if key.startswith("submodule.") and key.endswith(".path"):
-            return key[len("submodule.") : -len(".path")]
+        suffixes = ('".path', '".url')
+        for suffix in suffixes:
+            if key.startswith('submodule."') and key.endswith(suffix):
+                return key[len('submodule."') : -len(suffix)]
+        plain_suffixes = ('.path', '.url')
+        for suffix in plain_suffixes:
+            if key.startswith("submodule.") and key.endswith(suffix):
+                return key[len("submodule.") : -len(suffix)]
         return None
 
 
@@ -344,6 +375,37 @@ class GitManagerTests(unittest.TestCase):
         self.assertIn(["git", "checkout", "feature"], commands)
         self.assertIn(["git", "submodule", "update", "--recursive"], commands)
         self.assertEqual(runner.branch, "feature")
+
+    def test_get_repository_state_supports_subdirectories(self) -> None:
+        sub_path = self.repo_path / "components" / "alpha"
+        sub_path.mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="main", commits={"main": "abcdef0"})
+        manager = GitManager(runner)
+
+        branch, commit = manager.get_repository_state(sub_path)
+
+        self.assertEqual(branch, "main")
+        self.assertEqual(commit, "abcdef0")
+
+    def test_list_submodules_sparse_checkout_skips_missing(self) -> None:
+        runner = FakeGitRunner(initial_branch="main", commits={"main": "c0ffee"})
+        runner.sparse_checkout = True
+        runner.add_submodule_status("present/module", "1111111", url="https://example.com/present.git")
+        runner.add_submodule_status("missing/module", "2222222", url="https://example.com/missing.git")
+
+        manager = GitManager(runner)
+
+        present_dir = self.repo_path / "present" / "module"
+        present_dir.mkdir(parents=True, exist_ok=True)
+
+        submodules = manager.list_submodules(self.repo_path)
+
+        paths = [entry["path"] for entry in submodules]
+        self.assertIn("present/module", paths)
+        self.assertNotIn("missing/module", paths)
+        urls = {entry["path"]: entry.get("url") for entry in submodules}
+        self.assertEqual(urls.get("present/module"), "https://example.com/present.git")
 
 
 if __name__ == "__main__":  # pragma: no cover

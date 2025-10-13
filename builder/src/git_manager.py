@@ -20,6 +20,52 @@ class GitManager:
     def __init__(self, runner: CommandRunner) -> None:
         self._runner = runner
 
+    def is_repository(
+        self,
+        repo_path: Path,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> bool:
+        repo_path = repo_path.resolve()
+        if not repo_path.exists():
+            return False
+
+        result = self._runner.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=repo_path,
+            env=environment,
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        text = result.stdout.strip().lower()
+        if not text:
+            return True
+        return text in {"true", "1", "yes"}
+
+    def is_sparse_checkout(
+        self,
+        repo_path: Path,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> bool:
+        repo_path = repo_path.resolve()
+        if not repo_path.exists():
+            return False
+
+        result = self._runner.run(
+            ["git", "config", "--bool", "core.sparseCheckout"],
+            cwd=repo_path,
+            env=environment,
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        text = result.stdout.strip().lower()
+        if not text:
+            return False
+        return text in {"true", "1", "yes"}
+
     def get_repository_state(
         self,
         repo_path: Path,
@@ -27,7 +73,7 @@ class GitManager:
         environment: Mapping[str, str] | None = None,
     ) -> tuple[str | None, str | None]:
         repo_path = repo_path.resolve()
-        if not repo_path.exists() or not (repo_path / ".git").exists():
+        if not self.is_repository(repo_path, environment=environment):
             return (None, None)
 
         branch: str | None = None
@@ -61,7 +107,7 @@ class GitManager:
             branch = self._current_branch(repo_path, environment=environment)
             return GitWorkState(branch=branch, stash_applied=False)
 
-        self._ensure_repository(repo_path)
+        self._ensure_repository(repo_path, environment=environment)
         current_branch = self._current_branch(repo_path, environment=environment)
         stash_applied = False
         current_commit = self._current_commit(repo_path, environment=environment)
@@ -241,7 +287,7 @@ class GitManager:
             self._run_script(update_script, repo_path, environment=environment, dry_run=dry_run)
             return
 
-        self._ensure_repository(repo_path)
+        self._ensure_repository(repo_path, environment=environment)
         restore_branch: Optional[str] = None
         if not dry_run:
             current_branch = self._current_branch(repo_path, environment=environment)
@@ -489,10 +535,11 @@ class GitManager:
     ) -> list[dict[str, str]]:
         """List all submodules with their paths, URLs, and commit hashes."""
         repo_path = repo_path.resolve()
-        if not repo_path.exists() or not (repo_path / ".git").exists():
+        if not self.is_repository(repo_path, environment=environment):
             return []
 
         submodules: list[dict[str, str]] = []
+        sparse_checkout = self.is_sparse_checkout(repo_path, environment=environment)
 
         try:
             # Get submodule status which includes commit hash and path
@@ -523,6 +570,11 @@ class GitManager:
 
                 commit_hash = parts[0]
                 submodule_path = parts[1]
+
+                if sparse_checkout:
+                    candidate_path = (repo_path / submodule_path).resolve(strict=False)
+                    if not candidate_path.exists():
+                        continue
 
                 # Get submodule URL from configuration
                 url = ""
@@ -587,8 +639,13 @@ class GitManager:
         result = self._runner.run(["git", "status", "--porcelain"], cwd=repo_path, env=environment)
         return bool(result.stdout.strip())
 
-    def _ensure_repository(self, repo_path: Path) -> None:
-        if not (repo_path / ".git").exists():
+    def _ensure_repository(
+        self,
+        repo_path: Path,
+        *,
+        environment: Mapping[str, str] | None = None,
+    ) -> None:
+        if not self.is_repository(repo_path, environment=environment):
             raise RuntimeError(f"Directory '{repo_path}' is not a git repository")
 
     def _run_script(

@@ -459,29 +459,30 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         branch: str | None = None
         commit: str | None = None
         state = None
-        repo_ready = repo_path.exists() and (repo_path / ".git").exists()
+        checkout_error: RuntimeError | None = None
+        repo_ready = git_manager.is_repository(repo_path, environment=plan.git_environment)
         submodules: List[dict[str, str]] = []
 
-        try:
-            if repo_ready:
-                component_dir_arg: Path | None = None
-                if project.component_dir:
-                    if isinstance(plan.context, dict):
-                        project_ctx = plan.context.get("project", {})  # type: ignore[arg-type]
-                    else:
-                        project_ctx = {}
-                    resolved_component = None
-                    if isinstance(project_ctx, dict):
-                        resolved_component = project_ctx.get("component_dir")
-                    if resolved_component:
-                        resolved_path = Path(resolved_component)
-                        try:
-                            component_dir_arg = resolved_path.relative_to(repo_path)
-                        except ValueError:
-                            component_dir_arg = Path(project.component_dir)
-                    else:
+        if repo_ready:
+            component_dir_arg: Path | None = None
+            if project.component_dir:
+                if isinstance(plan.context, dict):
+                    project_ctx = plan.context.get("project", {})  # type: ignore[arg-type]
+                else:
+                    project_ctx = {}
+                resolved_component = None
+                if isinstance(project_ctx, dict):
+                    resolved_component = project_ctx.get("component_dir")
+                if resolved_component:
+                    resolved_path = Path(resolved_component)
+                    try:
+                        component_dir_arg = resolved_path.relative_to(repo_path)
+                    except ValueError:
                         component_dir_arg = Path(project.component_dir)
+                else:
+                    component_dir_arg = Path(project.component_dir)
 
+            try:
                 state = git_manager.prepare_checkout(
                     repo_path=repo_path,
                     target_branch=plan.branch,
@@ -489,14 +490,23 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
                     no_switch_branch=args.no_switch_branch,
                     environment=plan.git_environment,
                     component_dir=component_dir_arg,
-                    component_branch=plan.branch if component_dir_arg else None,
+                    component_branch=plan.branch if (component_dir_arg and not args.no_switch_branch) else None,
                 )
-            branch, commit = git_manager.get_repository_state(repo_path, environment=plan.git_environment)
-            if repo_path.exists():
-                submodules = git_manager.list_submodules(repo_path, environment=plan.git_environment)
-        except RuntimeError as exc:
-            print(f"Warning: Could not prepare repository '{name}': {exc}")
-        finally:
+            except RuntimeError as exc:
+                checkout_error = exc
+
+            try:
+                branch, commit = git_manager.get_repository_state(repo_path, environment=plan.git_environment)
+            except RuntimeError as exc:
+                if checkout_error is None:
+                    checkout_error = exc
+            else:
+                if repo_path.exists():
+                    submodules = git_manager.list_submodules(repo_path, environment=plan.git_environment)
+
+            if checkout_error is not None:
+                print(f"Warning: Could not prepare repository '{name}': {checkout_error}")
+
             if state is not None:
                 try:
                     git_manager.restore_checkout(
@@ -506,6 +516,8 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
                     )
                 except RuntimeError as exc:
                     print(f"Warning: Could not restore repository '{name}': {exc}")
+        else:
+            branch, commit = git_manager.get_repository_state(repo_path, environment=plan.git_environment)
 
         branch_display = branch or "-"
         commit_display = commit[:11] if commit else "<missing>"
@@ -534,6 +546,10 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
 
         if not repo_path.exists():
             print(f"Warning: Repository path '{repo_path}' does not exist for project '{name}'")
+            continue
+
+        if not repo_ready:
+            print(f"Warning: Git repository not found at '{repo_path}' for project '{name}'")
             continue
 
         if not include_submodules:

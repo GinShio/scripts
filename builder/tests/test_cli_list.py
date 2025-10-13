@@ -84,6 +84,9 @@ class ListCommandTests(unittest.TestCase):
             def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
                 self.restore_calls.append(repo_path)
 
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return True
+
         args = SimpleNamespace(project=None, branch=None, no_switch_branch=False, url=False)
         buffer = io.StringIO()
         with patch("builder.cli.GitManager", FakeGitManager):
@@ -131,6 +134,9 @@ class ListCommandTests(unittest.TestCase):
             def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
                 pass
 
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return True
+
         args = SimpleNamespace(project=None, branch=None, no_switch_branch=False, url=True)
         buffer = io.StringIO()
         with patch("builder.cli.GitManager", FakeGitManager):
@@ -174,6 +180,9 @@ class ListCommandTests(unittest.TestCase):
 
             def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
                 pass
+
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return (repo_path / ".git").exists()
 
         args = SimpleNamespace(project="demo", branch=None, no_switch_branch=False, url=False)
         repo_dir = self.workspace / "repos" / "demo"
@@ -229,6 +238,9 @@ class ListCommandTests(unittest.TestCase):
 
             def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
                 pass
+
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return True
 
         args = SimpleNamespace(project=None, branch=None, no_switch_branch=False, url=True)
         buffer = io.StringIO()
@@ -312,6 +324,9 @@ class ListCommandTests(unittest.TestCase):
             def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
                 pass
 
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return True
+
         args = SimpleNamespace(
             project="complex",
             branch=None,
@@ -335,6 +350,74 @@ class ListCommandTests(unittest.TestCase):
         self.assertIn("dep-two", output)
         self.assertNotIn("external/lib", output)
         self.assertNotIn("abcdefabcdefa", output)
+
+    def test_list_accepts_nested_repository_paths(self) -> None:
+        component_project_path = self.workspace / "config" / "projects" / "component.toml"
+        component_project_path.write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "component"
+                source_dir = "{{builder.path}}/repos/demo/component"
+
+                [git]
+                url = "https://example.com/demo.git"
+                main_branch = "main"
+                """
+            )
+        )
+
+        component_dir = self.workspace / "repos" / "demo" / "component"
+        component_dir.mkdir(parents=True, exist_ok=True)
+
+        class FakeGitManager:
+            last_instance = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+                self.repo_paths: list[Path] = []
+                FakeGitManager.last_instance = self
+
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                self.repo_paths.append(repo_path)
+                return True
+
+            def get_repository_state(self, repo_path: Path, *, environment=None):
+                return ("main", "feedfacecafebeef")
+
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return []
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ):
+                return GitWorkState(branch="main", stash_applied=False)
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                pass
+
+        args = SimpleNamespace(project="component", branch=None, no_switch_branch=False, url=False)
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", FakeGitManager):
+            with redirect_stdout(buffer):
+                exit_code = cli._handle_list(args, self.workspace)
+
+        output = buffer.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("component", output)
+        self.assertIn("feedfacecaf", output)
+
+        fake_manager = FakeGitManager.last_instance
+        self.assertIsNotNone(fake_manager)
+        self.assertIn(component_dir, fake_manager.repo_paths)
 
 
 if __name__ == "__main__":  # pragma: no cover
