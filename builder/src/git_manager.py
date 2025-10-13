@@ -143,7 +143,7 @@ class GitManager:
                 component_path = None
 
         should_switch_component = component_is_submodule and component_path is not None and bool(component_target_branch)
-        should_switch_root = branch_switch_needed and not should_switch_component
+        should_switch_root = branch_switch_needed
 
         dirty = self._is_dirty(repo_path, environment=environment)
         if dirty and should_switch_root:
@@ -306,6 +306,7 @@ class GitManager:
 
         component_repo_path: Path | None = None
         component_original_branch: Optional[str] = None
+        component_is_submodule = False
         if component_dir is not None:
             component_candidate = Path(component_dir)
             candidate_path = (
@@ -319,6 +320,12 @@ class GitManager:
                     component_original_branch = self._current_branch(candidate_path, environment=environment)
                 except CommandError:
                     component_original_branch = None
+                if not component_candidate.is_absolute():
+                    component_is_submodule = self._is_component_submodule(
+                        repo_path,
+                        component_candidate,
+                        environment=environment,
+                    )
 
         if update_script:
             restore_branch: Optional[str] = None
@@ -388,7 +395,7 @@ class GitManager:
                     environment=environment,
                 )
 
-            if component_switched and component_original_branch and component_repo_path:
+            if component_repo_path and component_original_branch and component_original_branch != (component_branch or component_original_branch):
                 self._run_repo_command(
                     component_repo_path,
                     ["git", "switch", component_original_branch],
@@ -458,16 +465,31 @@ class GitManager:
         )
 
         component_switched = False
+        component_target_path = component_repo_path or repo_path
+        component_target_branch = component_branch or main_branch
+        component_needs_switch = False
+        component_current_branch: Optional[str] = component_original_branch
+        if component_repo_path:
+            if component_current_branch is None:
+                try:
+                    component_current_branch = self._current_branch(component_repo_path, environment=environment)
+                except CommandError:
+                    component_current_branch = None
+        else:
+            component_current_branch = self._current_branch(repo_path, environment=environment)
+
+        if component_target_path:
+            component_needs_switch = component_current_branch != component_target_branch
+
         if component_branch:
-            target_repo_path = component_repo_path or repo_path
             self._run_repo_command(
-                target_repo_path,
+                component_target_path,
                 ["git", "fetch", "--all"],
                 dry_run=dry_run,
                 environment=environment,
             )
             result = self._run_repo_command(
-                target_repo_path,
+                component_target_path,
                 ["git", "switch", component_branch],
                 dry_run=dry_run,
                 environment=environment,
@@ -475,19 +497,43 @@ class GitManager:
             )
             if result.returncode != 0:
                 raise RuntimeError(f"Component branch '{component_branch}' does not exist")
-            if component_repo_path and component_original_branch and component_original_branch != component_branch:
-                component_switched = True
             self._run_repo_command(
-                target_repo_path,
+                component_target_path,
                 ["git", "pull", "--ff-only", "origin", component_branch],
                 dry_run=dry_run,
                 environment=environment,
             )
             self._update_submodules(
-                target_repo_path,
+                component_target_path,
                 dry_run=dry_run,
                 environment=environment,
             )
+            if component_repo_path and component_original_branch and component_original_branch != component_branch:
+                component_switched = True
+        elif component_needs_switch and component_is_submodule and component_repo_path:
+            result = self._run_repo_command(
+                component_repo_path,
+                ["git", "switch", component_target_branch],
+                dry_run=dry_run,
+                environment=environment,
+                check=False,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"Unable to switch component repository at '{component_repo_path}' to branch '{component_target_branch}'."
+                )
+            self._run_repo_command(
+                component_repo_path,
+                ["git", "pull", "--ff-only", "origin", component_target_branch],
+                dry_run=dry_run,
+                environment=environment,
+            )
+            self._update_submodules(
+                component_repo_path,
+                dry_run=dry_run,
+                environment=environment,
+            )
+            component_switched = component_original_branch not in {None, component_target_branch}
 
         if restore_branch:
             self._run_repo_command(
@@ -497,7 +543,7 @@ class GitManager:
                 environment=environment,
             )
 
-        if component_switched and component_original_branch and component_repo_path:
+        if component_repo_path and component_original_branch and component_original_branch != component_target_branch:
             self._run_repo_command(
                 component_repo_path,
                 ["git", "switch", component_original_branch],

@@ -323,8 +323,9 @@ class GitManagerTests(unittest.TestCase):
             for entry in history_commands
             if entry["cwd"] == self.repo_path and entry["command"][:2] == ["git", "switch"]
         ]
-        self.assertFalse(root_switches)
-        self.assertEqual(runner.branch, "feature")
+        self.assertTrue(root_switches)
+        self.assertIn(["git", "switch", "main"], [entry["command"] for entry in root_switches])
+        self.assertEqual(runner.branch, "main")
         root_updates = [entry for entry in history_commands if entry["command"] == ["git", "submodule", "update", "--recursive"] and entry["cwd"] == self.repo_path]
         self.assertFalse(root_updates)
         self.assertNotIn(["git", "fetch", "--all"], [entry["command"] for entry in history_commands])
@@ -366,7 +367,7 @@ class GitManagerTests(unittest.TestCase):
         ]
         self.assertTrue(root_restoration_updates)
 
-        self.assertNotIn(["git", "checkout", "feature"], restoration_commands)
+        self.assertIn(["git", "checkout", "feature"], restoration_commands)
         self.assertEqual(runner.branch, "feature")
 
     def test_update_repository_component_submodule_switches_component(self) -> None:
@@ -415,6 +416,64 @@ class GitManagerTests(unittest.TestCase):
         self.assertIsNotNone(state)
         if state:
             self.assertEqual(state.get("branch"), "comp-old")
+
+    def test_update_repository_component_branch_only_updates_component_repo(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2", "comp-target": "c2"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+        )
+
+        manager = GitManager(runner)
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+            component_branch="comp-target",
+            component_dir=component_rel,
+        )
+
+        root_switches = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == self.repo_path and entry["command"][:2] == ["git", "switch"]
+        ]
+        self.assertTrue(any(entry["command"] == ["git", "switch", "main"] for entry in root_switches))
+        component_switches = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
+        ]
+        self.assertEqual(
+            [entry["command"] for entry in component_switches],
+            [["git", "switch", "comp-target"], ["git", "switch", "comp-old"]],
+        )
+
+        state = runner.repo_states.get(component_path)
+        self.assertIsNotNone(state)
+        if state:
+            self.assertEqual(state.get("branch"), "comp-old")
+
+    def test_update_repository_handles_detached_head(self) -> None:
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
+        manager = GitManager(runner)
+
+        runner.branch = "HEAD"
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+        )
+
+        commands = [entry["command"] for entry in runner.history]
+        self.assertIn(["git", "switch", "main"], commands)
+        self.assertNotIn(["git", "switch", "HEAD"], commands)
 
     def test_update_repository_update_script_switches_branch(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
@@ -532,8 +591,8 @@ class GitManagerTests(unittest.TestCase):
         )
 
         stash_commands = [entry for entry in runner.history if entry["command"][:3] == ["git", "stash", "push"]]
-        self.assertFalse(stash_commands)
-        self.assertEqual(runner.branch, "feature")
+        self.assertTrue(stash_commands)
+        self.assertEqual(runner.branch, "main")
 
     def test_restore_checkout_pops_stash_after_branch_restored(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", dirty=True, commits={"feature": "f1", "main": "m2"})
