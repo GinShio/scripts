@@ -142,8 +142,11 @@ class GitManager:
             else:
                 component_path = None
 
+        should_switch_component = component_is_submodule and component_path is not None and bool(component_target_branch)
+        should_switch_root = branch_switch_needed and not should_switch_component
+
         dirty = self._is_dirty(repo_path, environment=environment)
-        if dirty and branch_switch_needed:
+        if dirty and should_switch_root:
             if auto_stash:
                 self._run_repo_command(
                     repo_path,
@@ -156,7 +159,7 @@ class GitManager:
             else:
                 raise RuntimeError("Working tree has uncommitted changes and auto_stash is disabled")
 
-        if branch_switch_needed:
+        if should_switch_root:
             result = self._run_repo_command(
                 repo_path,
                 ["git", "switch", target_branch],
@@ -169,11 +172,11 @@ class GitManager:
                 raise RuntimeError(
                     f"Unable to switch repository at '{repo_path}' to branch '{target_branch}'. Run 'builder update' first."
                 )
-            if component_is_submodule and component_path is not None and component_target_branch:
+            if should_switch_component:
                 restored_branch = self._switch_component_submodule(
                     component_path=component_path,
                     original_branch=component_state_branch,
-                    target_branch=component_target_branch,
+                    target_branch=component_target_branch or target_branch,
                     environment=environment,
                     dry_run=dry_run,
                 )
@@ -187,6 +190,17 @@ class GitManager:
                     environment=environment,
                     stream=False,
                 )
+        elif should_switch_component:
+            restored_branch = self._switch_component_submodule(
+                component_path=component_path,
+                original_branch=component_state_branch,
+                target_branch=component_target_branch or target_branch,
+                environment=environment,
+                dry_run=dry_run,
+            )
+            if restored_branch is None:
+                component_path = None
+            component_state_branch = restored_branch
         else:
             component_path = None
             component_state_branch = None
