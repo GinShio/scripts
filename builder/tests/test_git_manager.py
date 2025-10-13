@@ -844,6 +844,39 @@ class GitManagerTests(unittest.TestCase):
         ]
         self.assertIn(["git", "stash", "pop"], restore_component_commands)
 
+    def test_prepare_checkout_component_dirty_without_switch_skips_stash(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="main", dirty=False, commits={"main": "m1"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="component/main",
+            commits={"component/main": "c1"},
+            dirty=True,
+        )
+
+        manager = GitManager(runner)
+        state = manager.prepare_checkout(
+            repo_path=self.repo_path,
+            target_branch="main",
+            auto_stash=True,
+            no_switch_branch=False,
+            component_dir=component_rel,
+            component_branch="component/main",
+        )
+
+        component_stashes = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"][:3] == ["git", "stash", "push"]
+        ]
+        self.assertFalse(component_stashes)
+        self.assertIsNone(state.component_path)
+        self.assertIsNone(state.component_branch)
+
     def test_prepare_checkout_component_dirty_without_auto_stash_raises(self) -> None:
         component_rel = Path("components/library")
         component_path = (self.repo_path / component_rel).resolve()

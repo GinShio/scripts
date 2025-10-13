@@ -159,9 +159,29 @@ class GitManager:
         component_dirty = False
         if component_path is not None and should_switch_component:
             try:
-                component_dirty = self._is_dirty(component_path, environment=environment)
+                component_current_branch = self._current_branch(component_path, environment=environment)
             except CommandError:
-                component_dirty = False
+                component_current_branch = None
+            try:
+                component_current_commit = self._current_commit(component_path, environment=environment)
+            except CommandError:
+                component_current_commit = None
+            component_target_commit = None
+            if component_target_branch:
+                component_target_commit = self._commit_for_branch(component_path, component_target_branch, environment=environment)
+
+            component_switch_needed = True
+            if component_current_branch == component_target_branch:
+                if component_target_commit is None or component_current_commit == component_target_commit:
+                    component_switch_needed = False
+
+            if not component_switch_needed:
+                should_switch_component = False
+            else:
+                try:
+                    component_dirty = self._is_dirty(component_path, environment=environment)
+                except CommandError:
+                    component_dirty = False
 
         dirty = self._is_dirty(repo_path, environment=environment)
         if should_switch_root and dirty:
