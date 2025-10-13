@@ -101,13 +101,15 @@ class GitManager:
         environment: Mapping[str, str] | None = None,
         component_dir: Path | str | None = None,
         component_branch: str | None = None,
+        dry_run: bool = False,
     ) -> GitWorkState:
         repo_path = repo_path.resolve()
         if no_switch_branch:
             branch = self._current_branch(repo_path, environment=environment)
             return GitWorkState(branch=branch, stash_applied=False)
 
-        self._ensure_repository(repo_path, environment=environment)
+        if not dry_run:
+            self._ensure_repository(repo_path, environment=environment)
         current_branch = self._current_branch(repo_path, environment=environment)
         stash_applied = False
         current_commit = self._current_commit(repo_path, environment=environment)
@@ -146,7 +148,7 @@ class GitManager:
                 self._run_repo_command(
                     repo_path,
                     ["git", "stash", "push", "-m", "builder auto-stash"],
-                    dry_run=False,
+                    dry_run=dry_run,
                     environment=environment,
                     stream=False,
                 )
@@ -158,7 +160,7 @@ class GitManager:
             result = self._run_repo_command(
                 repo_path,
                 ["git", "switch", target_branch],
-                dry_run=False,
+                dry_run=dry_run,
                 environment=environment,
                 check=False,
                 stream=False,
@@ -173,6 +175,7 @@ class GitManager:
                     original_branch=component_state_branch,
                     target_branch=component_target_branch,
                     environment=environment,
+                    dry_run=dry_run,
                 )
                 if restored_branch is None:
                     component_path = None
@@ -180,7 +183,7 @@ class GitManager:
             else:
                 self._update_submodules(
                     repo_path,
-                    dry_run=False,
+                    dry_run=dry_run,
                     environment=environment,
                     stream=False,
                 )
@@ -200,6 +203,7 @@ class GitManager:
         state: GitWorkState,
         *,
         environment: Mapping[str, str] | None = None,
+        dry_run: bool = False,
     ) -> None:
         repo_path = repo_path.resolve()
         current_branch = self._current_branch(repo_path, environment=environment)
@@ -208,7 +212,7 @@ class GitManager:
             self._run_repo_command(
                 repo_path,
                 ["git", "checkout", state.branch],
-                dry_run=False,
+                dry_run=dry_run,
                 environment=environment,
                 stream=False,
             )
@@ -216,7 +220,7 @@ class GitManager:
         if branch_restored:
             self._update_submodules(
                 repo_path,
-                dry_run=False,
+                dry_run=dry_run,
                 environment=environment,
                 stream=False,
             )
@@ -224,7 +228,7 @@ class GitManager:
             self._run_repo_command(
                 repo_path,
                 ["git", "stash", "pop"],
-                dry_run=False,
+                dry_run=dry_run,
                 environment=environment,
                 check=False,
                 stream=False,
@@ -239,7 +243,7 @@ class GitManager:
                 result = self._run_repo_command(
                     state.component_path,
                     ["git", "switch", state.component_branch],
-                    dry_run=False,
+                    dry_run=dry_run,
                     environment=environment,
                     check=False,
                     stream=False,
@@ -252,7 +256,7 @@ class GitManager:
             if component_restored:
                 self._update_submodules(
                     state.component_path,
-                    dry_run=False,
+                    dry_run=dry_run,
                     environment=environment,
                     stream=False,
                 )
@@ -475,6 +479,7 @@ class GitManager:
         original_branch: str | None,
         target_branch: str,
         environment: Mapping[str, str] | None = None,
+        dry_run: bool = False,
     ) -> str | None:
         if not self._is_git_directory(component_path):
             return None
@@ -496,7 +501,7 @@ class GitManager:
             result = self._run_repo_command(
                 component_path,
                 ["git", "switch", target_branch],
-                dry_run=False,
+                dry_run=dry_run,
                 environment=environment,
                 check=False,
                 stream=False,
@@ -507,7 +512,7 @@ class GitManager:
                 )
             self._update_submodules(
                 component_path,
-                dry_run=False,
+                dry_run=dry_run,
                 environment=environment,
                 stream=False,
             )
@@ -633,7 +638,8 @@ class GitManager:
         result = self._runner.run(["git", "rev-parse", branch], cwd=repo_path, check=False, env=environment)
         if result.returncode != 0:
             return None
-        return result.stdout.strip()
+        text = result.stdout.strip()
+        return text or None
 
     def _is_dirty(self, repo_path: Path, *, environment: Mapping[str, str] | None = None) -> bool:
         result = self._runner.run(["git", "status", "--porcelain"], cwd=repo_path, env=environment)

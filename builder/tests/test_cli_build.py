@@ -248,6 +248,41 @@ class BuildCommandDryRunTests(unittest.TestCase):
         self.assertIn("No build steps for project 'meta'", output)
         self.assertNotIn("[dry-run]", output)
 
+    def test_build_dry_run_records_git_operations_when_repository_exists(self) -> None:
+        source_dir = self.workspace / "examples" / "demo"
+        (source_dir / ".git").mkdir(parents=True, exist_ok=True)
+
+        args = SimpleNamespace(
+            project="demo",
+            preset=["dev"],
+            branch=None,
+            build_type=None,
+            generator=None,
+            target=None,
+            install=False,
+            dry_run=True,
+            show_vars=False,
+            no_switch_branch=False,
+            verbose=False,
+            toolchain=None,
+            install_dir=None,
+            config_only=False,
+            build_only=False,
+            reconfig=False,
+            extra_switches=[],
+            extra_config_args=[],
+            extra_build_args=[],
+        )
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            cli._handle_build(args, self.workspace)
+
+        output = buffer.getvalue()
+        dry_run_lines = [line for line in output.splitlines() if line.startswith("[dry-run]")]
+        self.assertTrue(any("git switch" in line for line in dry_run_lines))
+        self.assertTrue(any("git submodule update --recursive" in line for line in dry_run_lines))
+
 
 class ExtraSwitchParsingTests(unittest.TestCase):
     def test_parse_scoped_switches(self) -> None:

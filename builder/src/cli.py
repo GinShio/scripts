@@ -287,13 +287,17 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
         target_branch = plan.branch
         state = None
         plan_has_steps = bool(plan.steps)
-        if plan_has_steps and not args.dry_run:
+        should_prepare_checkout = plan_has_steps and (
+            not args.dry_run or plan.source_dir.exists()
+        )
+        if should_prepare_checkout:
             state = git_manager.prepare_checkout(
                 repo_path=plan.source_dir,
                 target_branch=target_branch,
                 auto_stash=plan.project.git.auto_stash,
                 no_switch_branch=options.no_switch_branch,
                 environment=plan.git_environment,
+                dry_run=args.dry_run,
             )
 
         if not plan_has_steps:
@@ -308,6 +312,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
                     plan.source_dir,
                     state,
                     environment=plan.git_environment,
+                    dry_run=args.dry_run,
                 )
 
     for dependency in dependencies:
