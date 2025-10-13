@@ -137,6 +137,8 @@ class UpdateCommandTests(unittest.TestCase):
 
         class RecordingGitManager:
             last_component_dir: Path | None = None
+            last_main_branch: str | None = None
+            last_component_branch: str | None = None
 
             def __init__(self, runner) -> None:
                 self.runner = runner
@@ -156,6 +158,8 @@ class UpdateCommandTests(unittest.TestCase):
                 component_dir=None,
             ) -> None:
                 RecordingGitManager.last_component_dir = component_dir
+                RecordingGitManager.last_main_branch = main_branch
+                RecordingGitManager.last_component_branch = component_branch
 
         args = SimpleNamespace(
             project="demo",
@@ -169,6 +173,8 @@ class UpdateCommandTests(unittest.TestCase):
                 cli._handle_update(args, self.workspace)
 
         self.assertEqual(RecordingGitManager.last_component_dir, Path("libs/core"))
+        self.assertEqual(RecordingGitManager.last_main_branch, "main")
+        self.assertEqual(RecordingGitManager.last_component_branch, "comp/main")
 
 
 if __name__ == "__main__":  # pragma: no cover

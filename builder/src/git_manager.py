@@ -307,6 +307,7 @@ class GitManager:
         component_repo_path: Path | None = None
         component_original_branch: Optional[str] = None
         component_is_submodule = False
+        component_stash_applied = False
         if component_dir is not None:
             component_candidate = Path(component_dir)
             candidate_path = (
@@ -371,18 +372,36 @@ class GitManager:
                         component_original_branch = self._current_branch(component_repo_path, environment=environment)
                     except CommandError:
                         component_original_branch = None
-                if component_original_branch != component_branch:
-                    component_result = self._run_repo_command(
-                        component_repo_path,
-                        ["git", "switch", component_branch],
-                        dry_run=dry_run,
-                        environment=environment,
-                        check=False,
+                component_switch_required = component_original_branch != component_branch
+                if component_original_branch is None:
+                    component_switch_required = True
+                if component_switch_required:
+                    component_dirty = self._is_dirty(component_repo_path, environment=environment)
+                    if component_dirty:
+                        if auto_stash:
+                            self._run_repo_command(
+                                component_repo_path,
+                                ["git", "stash", "push", "-m", "builder auto-stash"],
+                                dry_run=dry_run,
+                                environment=environment,
+                            )
+                            component_stash_applied = True
+                        else:
+                            raise RuntimeError(
+                                f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
+                            )
+                component_result = self._run_repo_command(
+                    component_repo_path,
+                    ["git", "switch", component_branch],
+                    dry_run=dry_run,
+                    environment=environment,
+                    check=False,
+                )
+                if component_result.returncode != 0:
+                    raise RuntimeError(
+                        f"Unable to switch component repository at '{component_repo_path}' to branch '{component_branch}'."
                     )
-                    if component_result.returncode != 0:
-                        raise RuntimeError(
-                            f"Unable to switch component repository at '{component_repo_path}' to branch '{component_branch}'."
-                        )
+                if component_switch_required:
                     component_switched = True
 
             self._run_script(update_script, repo_path, environment=environment, dry_run=dry_run)
@@ -401,6 +420,15 @@ class GitManager:
                     ["git", "switch", component_original_branch],
                     dry_run=dry_run,
                     environment=environment,
+                )
+
+            if component_repo_path and component_stash_applied:
+                self._run_repo_command(
+                    component_repo_path,
+                    ["git", "stash", "pop"],
+                    dry_run=dry_run,
+                    environment=environment,
+                    check=False,
                 )
 
             if stash_applied:
@@ -482,6 +510,25 @@ class GitManager:
             component_needs_switch = component_current_branch != component_target_branch
 
         if component_branch:
+            component_switch_required = bool(
+                component_repo_path
+                and (component_current_branch is None or component_current_branch != component_branch)
+            )
+            if component_switch_required:
+                component_dirty = self._is_dirty(component_repo_path, environment=environment)
+                if component_dirty:
+                    if auto_stash:
+                        self._run_repo_command(
+                            component_repo_path,
+                            ["git", "stash", "push", "-m", "builder auto-stash"],
+                            dry_run=dry_run,
+                            environment=environment,
+                        )
+                        component_stash_applied = True
+                    else:
+                        raise RuntimeError(
+                            f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
+                        )
             self._run_repo_command(
                 component_target_path,
                 ["git", "fetch", "--all"],
@@ -511,6 +558,20 @@ class GitManager:
             if component_repo_path and component_original_branch and component_original_branch != component_branch:
                 component_switched = True
         elif component_needs_switch and component_is_submodule and component_repo_path:
+            component_dirty = self._is_dirty(component_repo_path, environment=environment)
+            if component_dirty:
+                if auto_stash:
+                    self._run_repo_command(
+                        component_repo_path,
+                        ["git", "stash", "push", "-m", "builder auto-stash"],
+                        dry_run=dry_run,
+                        environment=environment,
+                    )
+                    component_stash_applied = True
+                else:
+                    raise RuntimeError(
+                        f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
+                    )
             result = self._run_repo_command(
                 component_repo_path,
                 ["git", "switch", component_target_branch],
@@ -549,6 +610,15 @@ class GitManager:
                 ["git", "switch", component_original_branch],
                 dry_run=dry_run,
                 environment=environment,
+            )
+
+        if component_repo_path and component_stash_applied:
+            self._run_repo_command(
+                component_repo_path,
+                ["git", "stash", "pop"],
+                dry_run=dry_run,
+                environment=environment,
+                check=False,
             )
 
         if stash_applied:

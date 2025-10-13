@@ -436,7 +436,7 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
         git_manager.update_repository(
             repo_path=source_dir,
             url=project.git.url,
-            main_branch=plan.branch,
+            main_branch=project.git.main_branch,
             component_branch=project.git.component_branch,
             clone_script=plan.git_clone_script,
             update_script=plan.git_update_script,

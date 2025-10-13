@@ -459,6 +459,84 @@ class GitManagerTests(unittest.TestCase):
         if state:
             self.assertEqual(state.get("branch"), "comp-old")
 
+    def test_update_repository_component_auto_stash_when_switching(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(
+            initial_branch="feature",
+            commits={"feature": "f1", "main": "m2", "comp-target": "c2"},
+        )
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+            dirty=True,
+        )
+
+        manager = GitManager(runner)
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+            component_branch="comp-target",
+            component_dir=component_rel,
+            auto_stash=True,
+        )
+
+        component_commands = [
+            entry["command"]
+            for entry in runner.history
+            if entry["cwd"] == component_path
+        ]
+        self.assertIn(["git", "stash", "push", "-m", "builder auto-stash"], component_commands)
+        self.assertIn(["git", "stash", "pop"], component_commands)
+
+        stash_push_index = component_commands.index(["git", "stash", "push", "-m", "builder auto-stash"])
+        switch_index = component_commands.index(["git", "switch", "comp-target"])
+        self.assertLess(stash_push_index, switch_index)
+
+        restore_index = component_commands.index(["git", "switch", "comp-old"])
+        stash_pop_index = component_commands.index(["git", "stash", "pop"])
+        self.assertLess(restore_index, stash_pop_index)
+
+        state = runner.repo_states.get(component_path)
+        self.assertIsNotNone(state)
+        if state:
+            self.assertEqual(state.get("branch"), "comp-old")
+
+    def test_update_repository_component_dirty_without_auto_stash_raises(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(
+            initial_branch="feature",
+            commits={"feature": "f1", "main": "m2", "comp-target": "c2"},
+        )
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+            dirty=True,
+        )
+
+        manager = GitManager(runner)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"Component working tree at '.*components/library' has uncommitted changes; enable auto_stash to proceed",
+        ):
+            manager.update_repository(
+                repo_path=self.repo_path,
+                url="https://example.com/demo.git",
+                main_branch="main",
+                component_branch="comp-target",
+                component_dir=component_rel,
+            )
+
     def test_update_repository_handles_detached_head(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
         manager = GitManager(runner)
