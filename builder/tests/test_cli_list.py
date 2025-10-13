@@ -419,6 +419,260 @@ class ListCommandTests(unittest.TestCase):
         self.assertIsNotNone(fake_manager)
         self.assertIn(component_dir, fake_manager.repo_paths)
 
+    def test_list_component_branch_selection(self) -> None:
+        project_path = self.workspace / "config" / "projects" / "component.toml"
+        project_path.write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "component"
+                source_dir = "{{builder.path}}/repos/component"
+                component_dir = "libs/core"
+
+                [git]
+                url = "https://example.com/component.git"
+                main_branch = "main"
+                component_branch = "component/main"
+                """
+            )
+        )
+
+        repo_root = self.workspace / "repos" / "component"
+        component_path = repo_root / "libs" / "core"
+        (component_path / ".git").mkdir(parents=True, exist_ok=True)
+
+        class RecordingGitManager:
+            last_instance = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+                self.prepare_calls: list[dict[str, object | None]] = []
+                self.restore_calls: list[GitWorkState] = []
+                RecordingGitManager.last_instance = self
+
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return True
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ) -> GitWorkState:
+                self.prepare_calls.append(
+                    {
+                        "repo_path": repo_path,
+                        "target_branch": target_branch,
+                        "component_dir": component_dir,
+                        "component_branch": component_branch,
+                    }
+                )
+                return GitWorkState(
+                    branch="main",
+                    stash_applied=False,
+                    component_branch="component/main",
+                    component_path=component_path,
+                    component_stash_applied=False,
+                )
+
+            def restore_checkout(
+                self,
+                repo_path: Path,
+                state: GitWorkState,
+                *,
+                environment=None,
+            ) -> None:
+                self.restore_calls.append(state)
+
+            def get_repository_state(self, repo_path: Path, *, environment=None):
+                return ("component/main", "abc123def4567890")
+
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return []
+
+        args = SimpleNamespace(project="component", branch=None, no_switch_branch=False, url=False)
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", RecordingGitManager):
+            with redirect_stdout(buffer):
+                exit_code = cli._handle_list(args, self.workspace)
+
+        self.assertEqual(exit_code, 0)
+        manager = RecordingGitManager.last_instance
+        self.assertIsNotNone(manager)
+        assert manager is not None
+        self.assertTrue(manager.prepare_calls)
+        call = manager.prepare_calls[0]
+        self.assertEqual(call["target_branch"], "main")
+        self.assertEqual(call["component_dir"], Path("libs/core"))
+        self.assertEqual(call["component_branch"], "component/main")
+        self.assertTrue(manager.restore_calls)
+
+    def test_list_branch_override_targets_component_repo(self) -> None:
+        project_path = self.workspace / "config" / "projects" / "component.toml"
+        project_path.write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "component"
+                source_dir = "{{builder.path}}/repos/component"
+                component_dir = "libs/core"
+
+                [git]
+                url = "https://example.com/component.git"
+                main_branch = "main"
+                component_branch = "component/main"
+                """
+            )
+        )
+
+        repo_root = self.workspace / "repos" / "component"
+        component_path = repo_root / "libs" / "core"
+        (component_path / ".git").mkdir(parents=True, exist_ok=True)
+
+        class RecordingGitManager:
+            last_instance = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+                self.prepare_calls: list[dict[str, object | None]] = []
+                self.last_target_branch: str | None = None
+                RecordingGitManager.last_instance = self
+
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return True
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ) -> GitWorkState:
+                self.prepare_calls.append(
+                    {
+                        "repo_path": repo_path,
+                        "target_branch": target_branch,
+                        "component_dir": component_dir,
+                        "component_branch": component_branch,
+                    }
+                )
+                return GitWorkState(
+                    branch=target_branch,
+                    stash_applied=False,
+                    component_branch=component_branch,
+                    component_path=component_path,
+                    component_stash_applied=False,
+                )
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                return None
+
+            def get_repository_state(self, repo_path: Path, *, environment=None):
+                return ("component/dev", "0123456789abcdef")
+
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return []
+
+        args = SimpleNamespace(project="component", branch="component/dev", no_switch_branch=False, url=False)
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", RecordingGitManager):
+            with redirect_stdout(buffer):
+                exit_code = cli._handle_list(args, self.workspace)
+
+        self.assertEqual(exit_code, 0)
+        manager = RecordingGitManager.last_instance
+        self.assertIsNotNone(manager)
+        assert manager is not None
+        self.assertTrue(manager.prepare_calls)
+        call = manager.prepare_calls[0]
+        self.assertEqual(call["target_branch"], "main")
+        self.assertEqual(call["component_branch"], "component/dev")
+
+    def test_list_branch_override_single_repository(self) -> None:
+        project_path = self.workspace / "config" / "projects" / "single.toml"
+        project_path.write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "single"
+                source_dir = "{{builder.path}}/repos/single"
+
+                [git]
+                url = "https://example.com/single.git"
+                main_branch = "main"
+                """
+            )
+        )
+
+        repo_root = self.workspace / "repos" / "single"
+        (repo_root / ".git").mkdir(parents=True, exist_ok=True)
+
+        class RecordingGitManager:
+            last_instance = None
+
+            def __init__(self, runner) -> None:
+                self.runner = runner
+                self.prepare_calls: list[dict[str, object | None]] = []
+                RecordingGitManager.last_instance = self
+
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return True
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ) -> GitWorkState:
+                self.prepare_calls.append(
+                    {
+                        "repo_path": repo_path,
+                        "target_branch": target_branch,
+                        "component_dir": component_dir,
+                        "component_branch": component_branch,
+                    }
+                )
+                self.last_target_branch = target_branch
+                return GitWorkState(branch=target_branch, stash_applied=False)
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                return None
+
+            def get_repository_state(self, repo_path: Path, *, environment=None):
+                return (self.last_target_branch or "main", "deadbeefcafebabe")
+
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return []
+
+        args = SimpleNamespace(project="single", branch="release/2.0", no_switch_branch=False, url=False)
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", RecordingGitManager):
+            with redirect_stdout(buffer):
+                exit_code = cli._handle_list(args, self.workspace)
+
+        self.assertEqual(exit_code, 0)
+        manager = RecordingGitManager.last_instance
+        self.assertIsNotNone(manager)
+        assert manager is not None
+        self.assertTrue(manager.prepare_calls)
+        call = manager.prepare_calls[0]
+        self.assertEqual(call["target_branch"], "release/2.0")
+        self.assertIsNone(call["component_branch"])
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

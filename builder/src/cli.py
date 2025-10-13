@@ -508,16 +508,22 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
 
         if repo_ready:
             component_dir_arg = _component_dir_argument(plan)
+            branch_override = getattr(args, "branch", None)
+            root_target_branch = branch_override or plan.branch
+            component_branch_arg: str | None = None
+            if component_dir_arg and not args.no_switch_branch:
+                root_target_branch = plan.project.git.main_branch or root_target_branch
+                component_branch_arg = branch_override or plan.project.git.component_branch or plan.branch
 
             try:
                 state = git_manager.prepare_checkout(
                     repo_path=repo_path,
-                    target_branch=plan.branch,
+                    target_branch=root_target_branch,
                     auto_stash=plan.project.git.auto_stash,
                     no_switch_branch=args.no_switch_branch,
                     environment=plan.git_environment,
                     component_dir=component_dir_arg,
-                    component_branch=plan.branch if (component_dir_arg and not args.no_switch_branch) else None,
+                    component_branch=component_branch_arg,
                 )
             except RuntimeError as exc:
                 checkout_error = exc
