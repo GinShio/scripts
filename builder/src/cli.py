@@ -169,6 +169,7 @@ def _component_dir_argument(plan: BuildPlan) -> Path | None:
 def _parse_arguments(argv: Iterable[str]) -> Namespace:
     parser = ArgumentParser(prog="builder", description="Preset-driven build orchestrator")
     parser.add_argument(
+        "-C",
         "--config-dir",
         dest="config_dirs",
         action="append",
@@ -180,17 +181,17 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
 
     build_parser = subparsers.add_parser("build", help="Configure and build a project")
     build_parser.add_argument("project", help="Project name to build")
-    build_parser.add_argument("--preset", action="append", default=[], help="Preset name(s) to apply (comma-separated)")
-    build_parser.add_argument("--branch", help="Git branch to use for the build")
-    build_parser.add_argument("--build-type", help="Override build type (Debug/Release)")
-    build_parser.add_argument("--generator", help="Override build system generator")
-    build_parser.add_argument("--target", help="Build a specific target")
+    build_parser.add_argument("-p", "--preset", action="append", default=[], help="Preset name(s) to apply (comma-separated)")
+    build_parser.add_argument("-b", "--branch", help="Git branch to use for the build")
+    build_parser.add_argument("-B", "--build-type", help="Override build type (Debug/Release)")
+    build_parser.add_argument("-G", "--generator", help="Override build system generator")
+    build_parser.add_argument("-t", "--target", help="Build a specific target")
     build_parser.add_argument("--install", action="store_true", help="Install after build")
-    build_parser.add_argument("--dry-run", action="store_true", help="Print commands without executing them")
+    build_parser.add_argument("-n", "--dry-run", action="store_true", help="Print commands without executing them")
     build_parser.add_argument("--show-vars", action="store_true", help="Display resolved variables before building")
     build_parser.add_argument("--no-switch-branch", action="store_true", help="Do not switch Git branches automatically")
     build_parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
-    build_parser.add_argument("--toolchain", help="Specify the toolchain to use")
+    build_parser.add_argument("-T", "--toolchain", help="Specify the toolchain to use")
     build_parser.add_argument("--install-dir", help="Override install directory")
     build_parser.add_argument("--config-only", action="store_true", help="Run configuration only")
     build_parser.add_argument("--build-only", action="store_true", help="Run build only")
@@ -236,9 +237,9 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
 
     update_parser = subparsers.add_parser("update", help="Update Git repositories")
     update_parser.add_argument("project", nargs="?", help="Project to update; omit to update all")
-    update_parser.add_argument("--branch", help="Branch to checkout during update")
-    update_parser.add_argument("--submodule", choices=["default", "latest", "skip"], default="default", help="Submodule update strategy")
-    update_parser.add_argument("--dry-run", action="store_true", help="Preview git commands without executing them")
+    update_parser.add_argument("-b", "--branch", help="Branch to checkout during update")
+    update_parser.add_argument("-s", "--submodule", choices=["default", "latest", "skip"], default="default", help="Submodule update strategy")
+    update_parser.add_argument("-n", "--dry-run", action="store_true", help="Preview git commands without executing them")
 
     list_parser = subparsers.add_parser(
         "list",

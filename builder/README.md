@@ -40,7 +40,7 @@ Builder looks for configuration bundles in layers. The lookup order is:
 
 1. `config/` in the workspace root.
 2. Paths listed in `BUILDER_CONFIG_DIR` (use your OS path separator).
-3. Each `--config-dir PATH` passed on the command line.
+3. Each `-C PATH` / `--config-dir PATH` passed on the command line.
 
 Later entries override earlier ones when they define the same file stem. A minimal directory might look like:
 
@@ -64,26 +64,31 @@ See `docs/config.md` for the full schema and advanced templating rules.
 ## CLI overview
 
 Global options:
-- `--config-dir PATH` – append another configuration source (repeatable; respects path separators).
+- `-C PATH` / `--config-dir PATH` – append another configuration source (repeatable; respects path separators).
 
 ### `builder build`
 
 Configure and execute a project's build plan. Highlights:
 
-- `--preset NAME[,NAME]` – apply one or more presets (repeat flag for readability).
-- `--dry-run` – print actions without running them; combine with `--show-vars` to inspect the resolved context.
+- `-p NAME` / `--preset NAME[,NAME]` – apply one or more presets (repeat flag for readability).
+- `-b NAME` / `--branch NAME` – override the branch for the run (project + component repos).
+- `-n` / `--dry-run` – print actions without running them; combine with `--show-vars` to inspect the resolved context.
+- `-G NAME` / `--generator NAME` – force a specific generator (e.g., Ninja, Visual Studio).
+- `-B TYPE` / `--build-type TYPE` – override the build type (Debug/Release/...).
+- `-t TARGET` / `--target TARGET` – build a specific target when supported by the backend.
 - `--config-only`, `--build-only`, `--reconfig` – control orchestration stages.
 - `-X[scope],ARG` or `--extra-config-args/--extra-build-args` – pass through extra flags.
 - `-DNAME=VALUE` / `--definition NAME=VALUE` – inject temporary build definitions without editing configuration files.
-- `--install`, `--install-dir`, `--target`, `--toolchain`, `--no-switch-branch` – tailor the build and Git behavior.
+- `-T NAME` / `--toolchain NAME` – select a toolchain (e.g., gcc, clang, msvc).
+- `--install`, `--install-dir`, `--no-switch-branch` – tailor the build and Git behavior.
 
 ### `builder update`
 
 Clone or refresh repositories (and optional component directories) defined in the configuration. Supports:
 
-- `--branch` to switch during the update.
-- `--submodule {default,latest,skip}` to pick a submodule strategy.
-- `--dry-run` to preview Git commands.
+- `-b NAME` / `--branch NAME` to switch during the update.
+- `-s STRATEGY` / `--submodule {default,latest,skip}` to pick a submodule strategy.
+- `-n` / `--dry-run` to preview Git commands.
 
 ### `builder list`
 

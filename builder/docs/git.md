@@ -37,10 +37,16 @@ builder update myapp
 builder update --all
 
 # Specify a branch for the update (for components or main project)
-builder update myapp --branch feature-x
+builder update -b feature-x myapp
 
 # Preview Git activity without executing it
-builder update myapp --dry-run
+builder update -n myapp
+
+Short aliases:
+
+- `-b` selects the branch to update.
+- `-s` picks the submodule strategy (`default`, `latest`, `skip`).
+- `-n` previews Git work without executing it.
 ```
 
 ---
@@ -174,7 +180,7 @@ Solutions:
 Users can specify different Submodule update behaviors using the `--submodule` parameter:
 
 ```shell
-builder update myapp --submodule=<strategy>
+builder update -s <strategy> myapp
 ```
 
 #### Supported Strategies:

@@ -48,6 +48,13 @@ class UpdateCommandTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    def test_update_short_flags_parsed(self) -> None:
+        args = cli._parse_arguments(["update", "-b", "feature", "-s", "skip", "-n"])
+        self.assertEqual(args.command, "update")
+        self.assertEqual(args.branch, "feature")
+        self.assertEqual(args.submodule, "skip")
+        self.assertTrue(args.dry_run)
+
     def test_update_dry_run_records_commands(self) -> None:
         args = SimpleNamespace(
             project=None,

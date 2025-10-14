@@ -55,6 +55,42 @@ class ConfigDirectoryResolutionTests(unittest.TestCase):
 
         self.assertEqual(result, expected)
 
+    def test_parse_short_config_dir_option(self) -> None:
+        args = cli._parse_arguments(["-C", "extras", "build", "demo"])
+        self.assertEqual(args.config_dirs, ["extras"])
+        self.assertEqual(args.command, "build")
+        self.assertEqual(args.project, "demo")
+
+    def test_build_short_flags_parsed(self) -> None:
+        args = cli._parse_arguments(
+            [
+                "build",
+                "-p",
+                "dev",
+                "-b",
+                "feature",
+                "-n",
+                "-G",
+                "Ninja",
+                "-B",
+                "Release",
+                "-t",
+                "app",
+                "-T",
+                "gcc",
+                "demo",
+            ]
+        )
+        self.assertEqual(args.command, "build")
+        self.assertEqual(args.project, "demo")
+        self.assertEqual(args.preset, ["dev"])
+        self.assertEqual(args.branch, "feature")
+        self.assertTrue(args.dry_run)
+        self.assertEqual(args.generator, "Ninja")
+        self.assertEqual(args.build_type, "Release")
+        self.assertEqual(args.target, "app")
+        self.assertEqual(args.toolchain, "gcc")
+
 
 class BuildCommandDryRunTests(unittest.TestCase):
     def setUp(self) -> None:

@@ -1,9 +1,5 @@
 # Build System
 This document describes the technical design and usage of the build system, including its core principles, configuration process, Git integration, supported build systems, and advanced features.
-
----
-
-- `-DNAME=VALUE` / `--definition NAME=VALUE` – override or introduce build definitions temporarily (applies to configuration commands).
 ## Core Design Principles
 
 ### Design Principles
@@ -20,7 +16,7 @@ This document describes the technical design and usage of the build system, incl
 
 ### Loading Workflow
 
-1. Discover project definitions across every configured directory (repository `config/`, entries in `BUILDER_CONFIG_DIR`, and any `--config-dir` values).
+1. Discover project definitions across every configured directory (repository `config/`, entries in `BUILDER_CONFIG_DIR`, and any `-C/--config-dir` values).
 2. Identify the target project configuration based on the project name.
 3. Load project-specific configurations, including Git settings and build directory configurations.
 4. Parse preset configurations and resolve inheritance chains.
@@ -31,7 +27,7 @@ This document describes the technical design and usage of the build system, incl
 
 The loader accepts additional configuration directories in priority order. The default repository `config/` directory
 is always included. Directories listed in the `BUILDER_CONFIG_DIR` environment variable are processed next, followed by
-any paths supplied via the `--config-dir` CLI option. Later directories override earlier ones when files share a stem,
+any paths supplied via the `-C/--config-dir` CLI option. Later directories override earlier ones when files share a stem,
 allowing per-user or per-machine customizations without modifying shared configuration. Parser selection is automatic
 based on the file extension (TOML, JSON, or YAML).
 
@@ -117,6 +113,17 @@ Increase logging verbosity for long-running builds:
 ```shell
 builder build myapp --preset development --verbose
 ```
+
+### Frequently Used Options
+
+- `-p NAME` / `--preset NAME[,NAME]` – apply or stack presets.
+- `-b NAME` / `--branch NAME` – build against a specific branch (project and component repos).
+- `-n` / `--dry-run` – print the Git/build commands without running them.
+- `-G NAME` / `--generator NAME` – force a particular generator (Ninja, Visual Studio, etc.).
+- `-B TYPE` / `--build-type TYPE` – override the build type (Debug/Release/custom profiles).
+- `-t TARGET` / `--target TARGET` – build a single target when the backend supports it.
+- `-DNAME=VALUE` / `--definition NAME=VALUE` – inject temporary build definitions (applies during configuration).
+- `-T NAME` / `--toolchain NAME` – select a toolchain (clang, gcc, msvc, rustc).
 
 #### Mode Details
 

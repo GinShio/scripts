@@ -7,12 +7,12 @@ This document describes the technical details of the configuration system, inclu
 ## Directory Layout
 
 By default the tool reads configuration content from the repository `config/` directory. You can layer additional
-locations using the `BUILDER_CONFIG_DIR` environment variable or the `--config-dir` CLI option; later entries win
+locations using the `BUILDER_CONFIG_DIR` environment variable or the `-C/--config-dir` CLI option; later entries win
 when files share the same stem. The priority order is:
 
 1. Repository `config/`
 2. Each path in `BUILDER_CONFIG_DIR` (supports the platform path separator and relative entries)
-3. Paths provided via `--config-dir` (repeat flag or separate paths with the platform path separator)
+3. Paths provided via `-C/--config-dir` (repeat flag or separate paths with the platform path separator)
 
 All directories are merged, so shared configuration files and projects can be overridden in higher-priority layers.
 
