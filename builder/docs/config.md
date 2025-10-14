@@ -16,7 +16,7 @@ when files share the same stem. The priority order is:
 
 All directories are merged, so shared configuration files and projects can be overridden in higher-priority layers.
 
-The configuration files are organized in the following structure as example within each directory:
+The configuration files are organized in the following structure as an example within each directory:
 
 ```text
 /config
@@ -28,24 +28,21 @@ The configuration files are organized in the following structure as example with
     └── webserver.toml
 ```
 
-### Key Points:
-- **Shared Base Configuration**: Files such as `company-base.toml`, `company-base.json`, or `company-base.yaml` contain reusable configurations shared across multiple projects. Higher-priority directories can override these entries with updated values.
-- **Project Configuration**: Each project has its own configuration file under `projects/`, named after the project. Only one file per stem is allowed (e.g., don't mix `myapp.toml` and `myapp.yaml`).
-- **Layered Overrides**: Project files discovered later in the precedence chain replace earlier definitions for the same project name, enabling local or user-specific overrides without editing the shared repository copy.
+### Key Points
+
+- **Shared base configuration**: Files such as `company-base.toml`, `company-base.json`, or `company-base.yaml` contain reusable settings shared across multiple projects. Higher-priority directories can override these entries with updated values.
+- **Project configuration**: Each project has its own configuration file under `projects/`, named after the project. Only one file per stem is allowed (e.g. `myapp.toml` *or* `myapp.yaml`, not both).
+- **Layered overrides**: Project files discovered later in the precedence chain replace earlier definitions for the same project name, enabling local or user-specific overrides without editing the shared repository copy.
 
 
 ## File Naming Conventions
-Dependencies are resolved transitively and executed in topological order before
-the requested project. Cycles are rejected during planning. To track a project
-without building it, omit its `build_dir` in that project's configuration; the
-dependency will still be planned so variables resolve, but no build steps will
-run.
-   - Use the project name as the file name (e.g., `myapp.toml`, `myapp.json`).
-   - File names must be concise and avoid special characters.
-2. **Shared Configuration**:
-   - Use descriptive names for shared configurations (e.g., `company-base.yaml`).
 
-> **Dependency note**: YAML files require the `PyYAML` package. It is included in the default project dependencies, but custom environments must ensure it is installed.
+- Use the project name as the file name (e.g. `myapp.toml`, `myapp.json`).
+- Keep file names concise and avoid special characters.
+- Shared configuration files can use descriptive names such as `company-base.yaml` or `linux-defaults.toml`.
+- Builder automatically selects the parser based on the file extension (TOML, JSON, or YAML).
+
+> **Dependency note**: YAML parsing relies on `PyYAML`. The package depends on it by default, but custom environments must ensure it is installed.
 
 ---
 
@@ -146,7 +143,7 @@ SSH_COMMAND = "ssh -i {{project.environment.TOOLS_ROOT}}/keys/deploy_rsa"
 ```
 
 Use `extra_config_args` to append arguments only to the configuration command
-(for example additional `-D` definitions for CMake). Use `extra_build_args`
+(for example, extra `-D` definitions for CMake). Use `extra_build_args`
 for flags that should only be passed to the build step (such as `--target`).
 
 Project-level environment variables are resolved before presets run and merge into the build environment. They support all template placeholders (including references to other `project.environment` entries) and become available through `{{env.NAME}}` and `{{project.environment.NAME}}`. The optional `[git.environment]` section behaves similarly but applies only to Git operations and custom clone/update scripts.
@@ -257,12 +254,10 @@ extra_build_args = ["--warn-uninitialized"]
 ### Required Fields:
 - `project.name`: Must be defined and unique.
 - `project.source_dir`: Must exist and be accessible.
-- `project.build_dir`: Must be defined.
-- `project.build_system`: Must specify a supported build system.
 - `git.url`: Remote repository URL must be defined.
 - `git.main_branch`: Main branch must be specified.
-- `project.build_dir`: Optional. When omitted, the project will not run build steps during `builder build`.
-- `project.build_system`: Required only when `project.build_dir` is provided.
+- `project.build_system`: Required when `project.build_dir` is provided. Supported values: `cmake`, `meson`, `bazel`, `cargo`, `make`.
+- `project.build_dir`: Required for `cmake`, `meson`, `cargo`, and `make`. Optional otherwise—omit it to mark a project as "validate only".
 
 ### Preset Validation:
 - Preset names must be unique.
@@ -348,15 +343,6 @@ definitions = {
     ENABLE_TESTS = true
 }
 ```
-
----
-
-## Future Considerations
-
-1. **Dynamic Expression Security**:
-   - Currently, the system assumes users provide valid expressions. Future versions may include sandboxing for safer evaluation.
-2. **Dependency Enhancements**:
-   - Future releases may add richer per-dependency options such as custom operations, toolchains, or conditional execution rules.
 
 ---
 

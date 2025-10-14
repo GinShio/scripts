@@ -38,6 +38,9 @@ builder update --all
 
 # Specify a branch for the update (for components or main project)
 builder update myapp --branch feature-x
+
+# Preview Git activity without executing it
+builder update myapp --dry-run
 ```
 
 ---
@@ -115,6 +118,14 @@ git submodule update --recursive
 git checkout $PROJECT_ORIG_BRANCH && git stash pop # If auto_stash is enabled
 ```
 
+### Branch Management Flags
+
+- `builder build` and `builder list` temporarily switch branches to gather state. Add `--no-switch-branch` to skip
+   temporary checkouts while still planning or inspecting repositories. This is helpful when uncommitted work should
+   remain on the current branch.
+- The `builder update` command always ensures the requested branch is fetched; pair it with `auto_stash = true` for
+   safe automation when local changes exist.
+
 ---
 
 ## Working Tree State Handling
@@ -173,6 +184,28 @@ builder update myapp --submodule=<strategy>
    - Update all Submodules to their latest versions.
 3. **`skip`**:
    - Skip all Submodule updates.
+
+---
+
+## Repository Inspection
+
+Use the `builder list` command to audit repository status without performing updates:
+
+```shell
+# Summarize every configured project
+builder list
+
+# Focus on a single project
+builder list myapp
+
+# Include presets, dependency edges, or remote URLs
+builder list --presets --dependencies --url
+```
+
+- Builder temporarily checks out the requested branch to gather accurate metadata. Add `--no-switch-branch` to avoid
+  temporary branch switches (useful for very large workspaces or when working tree changes must remain untouched).
+- Submodule rows appear immediately beneath their parent project, mirroring `git submodule status` output. Pass
+  `--dependencies` or `--presets` to repurpose the listing for configuration audits instead of Git inspection.
 
 ---
 

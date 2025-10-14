@@ -20,7 +20,7 @@ This document describes the technical design and usage of the build system, incl
 
 ### Loading Workflow
 
-1. Scan all `config/projects/*.toml` files.-C
+1. Discover project definitions across every configured directory (repository `config/`, entries in `BUILDER_CONFIG_DIR`, and any `--config-dir` values).
 2. Identify the target project configuration based on the project name.
 3. Load project-specific configurations, including Git settings and build directory configurations.
 4. Parse preset configurations and resolve inheritance chains.
@@ -32,7 +32,8 @@ This document describes the technical design and usage of the build system, incl
 The loader accepts additional configuration directories in priority order. The default repository `config/` directory
 is always included. Directories listed in the `BUILDER_CONFIG_DIR` environment variable are processed next, followed by
 any paths supplied via the `--config-dir` CLI option. Later directories override earlier ones when files share a stem,
-allowing per-user or per-machine customizations without modifying shared configuration.
+allowing per-user or per-machine customizations without modifying shared configuration. Parser selection is automatic
+based on the file extension (TOML, JSON, or YAML).
 
 ---
 
@@ -105,6 +106,18 @@ builder build myapp --reconfig
 builder build myapp --dry-run
 ```
 
+Inspect resolved variables and preset environment mappings for troubleshooting:
+
+```shell
+builder build myapp --preset development --dry-run --show-vars
+```
+
+Increase logging verbosity for long-running builds:
+
+```shell
+builder build myapp --preset development --verbose
+```
+
 #### Mode Details
 
 1. **`config-only` Mode**:
@@ -151,7 +164,7 @@ builder build myapp --install
 
 #### Behavior:
 - Installs the project to the directory specified in `project.install_dir`.
-- Users can override the default installation path via command-line options.
+- Users can override the default installation path with `--install-dir`.
 
 ---
 
@@ -160,12 +173,17 @@ builder build myapp --install
 ### Toolchain Management
 
 - **Default Toolchains**:
-  - Unix-like systems: `clang`.
-  - Windows systems: `msvc`.
+   - Unix-like systems default to `clang`.
+   - Windows systems default to `msvc`.
+   - Cargo projects default to `rustc`.
 
 - **Compatibility Check**:
   - The system validates the compatibility between the selected toolchain and build system.
   - Incompatible combinations (e.g., `clang` with `Cargo`) result in an error.
+
+- **Manual override**: Pass `--toolchain` (e.g. `--toolchain gcc`) to force a particular toolchain. Builder injects
+   compiler/linker environment variables (including `ccache` wrapping when available) and derives sensible defaults for
+   `CMAKE_*` variables.
 
 **Example Error**:
 ```
@@ -251,6 +269,32 @@ bazel build //myapp:app --copt=-O2
 
 ---
 
+### Cargo Integration
+
+```toml
+[project]
+build_system = "cargo"
+build_dir = "_build/main"
+
+[presets.cargo-release]
+extends = ["configs.release"]
+extra_build_args = ["--workspace"]
+```
+
+**Generated Commands**:
+```shell
+# Optional prefetch (config-only / reconfig)
+cargo fetch --locked
+
+# Build command (Debug by default, add --release automatically when build_type=Release)
+cargo build --target-dir _build/main
+```
+
+- `--target` is intentionally unsupported for Cargo projects; forward additional flags via `--extra-build-args`.
+- Install mode is not currently available for Cargo builds.
+
+---
+
 ## Error Handling and Debugging
 
 ### Compilation Errors
@@ -281,6 +325,7 @@ builder build myapp --preset development --verbose
 
 - Displays detailed command execution logs.
 - Shows all resolved template variables and environment settings.
+- Combine with `--show-vars` to emit the entire context before execution.
 
 ---
 
