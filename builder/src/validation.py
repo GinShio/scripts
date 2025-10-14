@@ -27,6 +27,7 @@ def validate_store_structure(store: ConfigurationStore) -> list[str]:
 
     errors: list[str] = []
     all_preset_names = _collect_all_preset_names(store)
+    errors.extend(store.toolchains.validate())
     for key, shared_config in store.shared_configs.items():
         presets_section = shared_config.get("presets")
         if isinstance(presets_section, Mapping):
@@ -95,6 +96,7 @@ def validate_project_templates(
         linker=None,
         cc=None,
         cxx=None,
+        launcher=None,
     )
 
     project_ctx = context_builder.project(

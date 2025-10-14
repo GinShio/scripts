@@ -14,6 +14,8 @@ from core.config_loader import (
     resolve_config_paths,
 )
 
+from .toolchains import ToolchainRegistry
+
 ConfigLoader = SharedConfigLoader
 
 
@@ -118,6 +120,7 @@ class ProjectDefinition:
     build_dir: str | None
     install_dir: str | None
     build_system: str | None
+    default_toolchain: str | None
     generator: str | None
     component_dir: str | None
     build_at_root: bool
@@ -140,6 +143,7 @@ class ProjectDefinition:
         build_dir = project_section.get("build_dir")
         install_dir = project_section.get("install_dir")
         build_system = project_section.get("build_system")
+        default_toolchain = project_section.get("toolchain")
         if not name or not source_dir:
             raise ValueError("project.name and project.source_dir are required")
         if build_dir and not build_system:
@@ -198,6 +202,7 @@ class ProjectDefinition:
             build_dir=str(build_dir) if build_dir else None,
             install_dir=str(install_dir) if install_dir else None,
             build_system=str(build_system).lower() if build_system else None,
+            default_toolchain=str(default_toolchain).strip() if isinstance(default_toolchain, str) and default_toolchain.strip() else None,
             generator=str(generator) if generator else None,
             component_dir=str(component_dir) if component_dir else None,
             build_at_root=build_at_root,
@@ -253,6 +258,7 @@ class ConfigurationStore:
     global_config: GlobalConfig
     shared_configs: Dict[str, Mapping[str, Any]]
     projects: Dict[str, ProjectDefinition]
+    toolchains: ToolchainRegistry
     config_dirs: tuple[Path, ...] = field(default_factory=tuple)
 
     @classmethod
@@ -270,6 +276,7 @@ class ConfigurationStore:
 
         global_data: Mapping[str, Any] = {}
         shared_configs: Dict[str, Mapping[str, Any]] = {}
+        toolchain_registry = ToolchainRegistry.with_builtins()
         projects: Dict[str, ProjectDefinition] = {}
         have_projects_dir = False
 
@@ -279,6 +286,11 @@ class ConfigurationStore:
             if global_path is not None:
                 data = load_config_file(global_path)
                 global_data = merge_mappings(global_data, data)
+
+            toolchains_path = top_level_files.pop("toolchains", None)
+            if toolchains_path is not None:
+                toolchain_data = load_config_file(toolchains_path)
+                toolchain_registry.merge_from_mapping(toolchain_data)
 
             for stem, path in sorted(top_level_files.items()):
                 shared_configs[stem] = load_config_file(path)
@@ -305,6 +317,7 @@ class ConfigurationStore:
             global_config=global_config,
             shared_configs=shared_configs,
             projects=projects,
+            toolchains=toolchain_registry,
         )
 
     def list_projects(self) -> Iterable[str]:

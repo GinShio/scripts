@@ -108,6 +108,17 @@ class BuildCommandDryRunTests(unittest.TestCase):
                 """
             )
         )
+        (config_dir / "toolchains.toml").write_text(
+            textwrap.dedent(
+                """
+                [toolchains.clang]
+                launcher = "ccache"
+
+                [toolchains.gcc]
+                launcher = "ccache"
+                """
+            )
+        )
         (projects_dir / "demo.toml").write_text(
             textwrap.dedent(
                 """
@@ -116,6 +127,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/examples/demo"
                 build_dir = "_build/{{user.branch}}_{{user.build_type}}"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/demo.git"
@@ -173,6 +185,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/examples/lib"
                 build_dir = "_build/lib"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/lib.git"
@@ -191,6 +204,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/examples/demo"
                 build_dir = "_build/{{user.branch}}_{{user.build_type}}"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/demo.git"
@@ -249,6 +263,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
                 [project]
                 name = "meta"
                 source_dir = "{{builder.path}}/meta"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/meta.git"
@@ -332,6 +347,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
                 component_dir = "libs/core"
                 build_dir = "_build/{{user.branch}}"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/component.git"
@@ -474,6 +490,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
                 component_dir = "libs/core"
                 build_dir = "_build/{{user.branch}}"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/component.git"
@@ -578,6 +595,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/examples/single"
                 build_dir = "_build"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/single.git"

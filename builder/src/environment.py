@@ -20,6 +20,7 @@ class UserContext:
     linker: str | None = None
     cc: str | None = None
     cxx: str | None = None
+    launcher: str | None = None
 
     def to_mapping(self) -> Dict[str, Any]:
         data = {
@@ -35,6 +36,7 @@ class UserContext:
             "linker": self.linker,
             "cc": self.cc,
             "cxx": self.cxx,
+            "launcher": self.launcher,
         }
         for key, value in optional.items():
             if value is not None:
@@ -103,6 +105,7 @@ class ContextBuilder:
         linker: str | None = None,
         cc: str | None = None,
         cxx: str | None = None,
+        launcher: str | None = None,
     ) -> UserContext:
         sanitized_branch = branch.replace("/", "_")
         return UserContext(
@@ -116,6 +119,7 @@ class ContextBuilder:
             linker=linker,
             cc=cc,
             cxx=cxx,
+            launcher=launcher,
         )
 
     def system(self) -> SystemContext:

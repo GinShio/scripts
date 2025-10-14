@@ -179,18 +179,27 @@ builder build myapp --install
 
 ### Toolchain Management
 
-- **Default Toolchains**:
-   - Unix-like systems default to `clang`.
-   - Windows systems default to `msvc`.
-   - Cargo projects default to `rustc`.
+- **Explicit selection**:
+   - Every project must set `project.toolchain` (or `project.default_toolchain` via shared config) when a build system is
+      configured.
+   - The CLI `--toolchain NAME` flag can override the project default at runtime.
 
-- **Compatibility Check**:
-  - The system validates the compatibility between the selected toolchain and build system.
-  - Incompatible combinations (e.g., `clang` with `Cargo`) result in an error.
+- **Built-in registry**:
+   - Builder ships definitions for `clang`, `gcc`, `msvc`, and `rustc`. Custom entries defined in
+      `toolchains.{toml,json,yaml}` extend or override these built-ins.
 
-- **Manual override**: Pass `--toolchain` (e.g. `--toolchain gcc`) to force a particular toolchain. Builder injects
-   compiler/linker environment variables (including `ccache` wrapping when available) and derives sensible defaults for
-   `CMAKE_*` variables.
+- **Launcher support**:
+   - Toolchain definitions can specify `launcher = "ccache"` (or similar) globally or per build system. Launchers wrap
+      compiler invocations and populate `CMAKE_*_COMPILER_LAUNCHER` when applicable.
+
+- **Compatibility check**:
+   - During planning the engine verifies that the chosen toolchain is allowed for the active build system. For example,
+      attempting to drive Cargo with `clang` fails with a clear error message.
+
+- **Configurable metadata**:
+   - Toolchain entries can pin compiler executables, preferred linkers, and build-system definitions such as
+      `CMAKE_*`. Builder applies these values ahead of preset/project configuration so downstream overrides remain
+      predictable.
 
 **Example Error**:
 ```

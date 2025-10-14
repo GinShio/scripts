@@ -27,6 +27,17 @@ class BuildEngineTests(unittest.TestCase):
                 """
             )
         )
+        (config_dir / "toolchains.toml").write_text(
+            textwrap.dedent(
+                """
+                [toolchains.clang]
+                launcher = "ccache"
+
+                [toolchains.gcc]
+                launcher = "ccache"
+                """
+            )
+        )
         (projects_dir / "demo.toml").write_text(
             textwrap.dedent(
                 """
@@ -37,6 +48,7 @@ class BuildEngineTests(unittest.TestCase):
                 build_system = "cmake"
                 generator = "Ninja"
                 extra_config_args = ["-DUSE_PRESET_CC={{preset.environment.CC}}"]
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/demo.git"
@@ -71,6 +83,7 @@ class BuildEngineTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/examples/meson-app"
                 build_dir = "_build"
                 build_system = "meson"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/meson-app.git"
@@ -95,6 +108,7 @@ class BuildEngineTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/examples/bazel-app"
                 build_dir = "unused"
                 build_system = "bazel"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/bazel-app.git"
@@ -114,6 +128,7 @@ class BuildEngineTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/examples/cargo-app"
                 build_dir = "_build/{{user.branch}}"
                 build_system = "cargo"
+                toolchain = "rustc"
 
                 [git]
                 url = "https://example.com/cargo-app.git"
@@ -130,6 +145,7 @@ class BuildEngineTests(unittest.TestCase):
                 component_dir = "components/a"
                 build_dir = "_build/{{user.branch}}"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/branch_override.git"
@@ -150,6 +166,7 @@ class BuildEngineTests(unittest.TestCase):
                 generator = "Ninja"
                 build_at_root = true
                 source_at_root = true
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/mono-root.git"
@@ -169,6 +186,7 @@ class BuildEngineTests(unittest.TestCase):
                 generator = "Ninja"
                 build_at_root = true
                 source_at_root = false
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/component-source-root.git"
@@ -182,6 +200,7 @@ class BuildEngineTests(unittest.TestCase):
                 [project]
                 name = "meta"
                 source_dir = "{{builder.path}}/meta"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/meta.git"
@@ -496,6 +515,47 @@ class BuildEngineTests(unittest.TestCase):
         self.assertIn("CMAKE_C_FLAGS:STRING=-fdiagnostics-color=always", configure_str)
         self.assertIn("CMAKE_CXX_FLAGS:STRING=-fdiagnostics-color=always", configure_str)
 
+    def test_toolchain_config_overrides_builtins(self) -> None:
+        toolchains_path = self.workspace / "config" / "toolchains.toml"
+        toolchains_path.write_text(
+            textwrap.dedent(
+                """
+                [toolchains.clang]
+                launcher = "ccache"
+
+                [toolchains.clang.environment]
+                CC = "clang-17"
+                CXX = "clang++-17"
+                AR = "llvm-ar-17"
+
+                [toolchains.clang.build_systems.cmake.definitions]
+                CMAKE_AR = "llvm-ar-17"
+                """
+            )
+        )
+
+        store = ConfigurationStore.from_directory(self.workspace)
+        engine = BuildEngine(store=store, command_runner=self.runner, workspace=self.workspace)
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            operation=BuildMode.AUTO,
+        )
+
+        def fake_which(exe: str) -> str | None:
+            return {
+                "ccache": "/usr/bin/ccache",
+            }.get(exe)
+
+        with patch("builder.build.shutil.which", side_effect=fake_which):
+            plan = engine.plan(options)
+
+        self.assertEqual(plan.environment.get("AR"), "llvm-ar-17")
+        configure_cmd = " ".join(plan.steps[0].command)
+        self.assertIn("CMAKE_AR:STRING=llvm-ar-17", configure_cmd)
+        self.assertEqual(plan.steps[0].env.get("CC"), "ccache clang-17")
+        self.assertEqual(plan.steps[0].env.get("CXX"), "ccache clang++-17")
+
     def test_toolchain_prefers_mold_then_lld(self) -> None:
         options = BuildOptions(
             project_name="demo",
@@ -647,6 +707,7 @@ class BuildEngineTests(unittest.TestCase):
                 build_system = "cmake"
                 extra_config_args = ["-DCONFIG_FROM_PROJECT", "-Dshared"]
                 extra_build_args = ["--build-from-project", "-Dshared"]
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/split.git"

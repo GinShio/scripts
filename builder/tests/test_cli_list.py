@@ -30,12 +30,24 @@ class ListCommandTests(unittest.TestCase):
                 """
             )
         )
+        (config_dir / "toolchains.toml").write_text(
+            textwrap.dedent(
+                """
+                [toolchains.clang]
+                launcher = "ccache"
+
+                [toolchains.gcc]
+                launcher = "ccache"
+                """
+            )
+        )
         (projects_dir / "demo.toml").write_text(
             textwrap.dedent(
                 """
                 [project]
                 name = "demo"
                 source_dir = "{{builder.path}}/repos/demo"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/demo.git"
@@ -269,6 +281,7 @@ class ListCommandTests(unittest.TestCase):
                 [project]
                 name = "complex"
                 source_dir = "{{builder.path}}/repos/complex"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/complex.git"
@@ -359,6 +372,7 @@ class ListCommandTests(unittest.TestCase):
                 [project]
                 name = "component"
                 source_dir = "{{builder.path}}/repos/demo/component"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/demo.git"
@@ -428,6 +442,7 @@ class ListCommandTests(unittest.TestCase):
                 name = "component"
                 source_dir = "{{builder.path}}/repos/component"
                 component_dir = "libs/core"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/component.git"
@@ -521,6 +536,7 @@ class ListCommandTests(unittest.TestCase):
                 name = "component"
                 source_dir = "{{builder.path}}/repos/component"
                 component_dir = "libs/core"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/component.git"
@@ -605,6 +621,7 @@ class ListCommandTests(unittest.TestCase):
                 [project]
                 name = "single"
                 source_dir = "{{builder.path}}/repos/single"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/single.git"

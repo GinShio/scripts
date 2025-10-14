@@ -12,6 +12,7 @@ from core.command_runner import CommandRunner, CommandResult
 from .config_loader import ConfigurationStore, ProjectDefinition
 from .environment import ContextBuilder
 from .presets import PresetRepository
+from .toolchains import ToolchainDefinition
 from core.template import TemplateResolver, build_dependency_map, topological_order
 
 
@@ -82,29 +83,6 @@ class _ResolvedPaths:
     target_source_dir: Path
 
 
-_TOOLCHAIN_MATRIX: Dict[str, set[str]] = {
-    "cmake": {"clang", "gcc", "msvc"},
-    "meson": {"clang", "gcc", "msvc"},
-    "bazel": {"clang", "gcc", "msvc"},
-    "cargo": {"rustc"},
-    "make": {"clang", "gcc"},
-}
-
-_TOOLCHAIN_DEFAULTS: Dict[str, Dict[str, str]] = {
-    "clang": {
-        "CC": "clang",
-        "CXX": "clang++",
-    },
-    "gcc": {
-        "CC": "gcc",
-        "CXX": "g++",
-    },
-    "msvc": {
-        "CC": "cl",
-        "CXX": "cl",
-    },
-}
-
 
 class BuildEngine:
     def __init__(
@@ -131,32 +109,72 @@ class BuildEngine:
         *,
         project: ProjectDefinition,
         environment: Dict[str, str],
+        definitions: Dict[str, Any],
         options: BuildOptions,
         toolchain: str,
         cc: str | None,
         cxx: str | None,
         linker: str | None,
-    ) -> None:
-        self._ensure_toolchain_compatibility(project.build_system, toolchain)
+        launcher: str | None,
+        definition: ToolchainDefinition | None,
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        self._ensure_toolchain_compatibility(
+            build_system=project.build_system,
+            toolchain=toolchain,
+            definition=definition,
+        )
 
-        def update(key: str, value: str | None) -> None:
+        explicit = options.toolchain is not None
+        resolved_launcher = launcher
+        if definition is not None:
+            definition.apply(
+                build_system=project.build_system,
+                environment=environment,
+                definitions=definitions,
+                explicit=explicit,
+            )
+            if definition.resolved_cc:
+                cc = definition.resolved_cc
+            if definition.resolved_cxx:
+                cxx = definition.resolved_cxx
+            if definition.resolved_linker:
+                linker = definition.resolved_linker
+            override_launcher = definition.resolve_launcher(project.build_system)
+            if override_launcher is not None:
+                resolved_launcher = override_launcher
+
+        def apply_value(key: str, value: str | None) -> None:
             if not value:
                 return
-            if options.toolchain is not None:
+            if explicit:
                 environment[key] = value
             else:
-                environment.setdefault(key, value)
+                existing = environment.get(key)
+                if existing != value:
+                    environment[key] = value
 
-        update("CC", cc)
-        update("CXX", cxx)
+        apply_value("CC", cc)
+        apply_value("CXX", cxx)
 
         if linker:
-            if options.toolchain is not None:
-                environment["CC_LD"] = linker
-                environment["CXX_LD"] = linker
-            else:
-                environment.setdefault("CC_LD", linker)
-                environment.setdefault("CXX_LD", linker)
+            apply_value("CC_LD", linker)
+            apply_value("CXX_LD", linker)
+
+        if resolved_launcher:
+            def prepend(value: str | None) -> str | None:
+                if not value:
+                    return value
+                prefix = f"{resolved_launcher} "
+                return value if value.startswith(prefix) else f"{resolved_launcher} {value}"
+
+            current_cc = environment.get("CC")
+            current_cxx = environment.get("CXX")
+            if current_cc:
+                environment["CC"] = prepend(current_cc)
+            if current_cxx:
+                environment["CXX"] = prepend(current_cxx)
+
+        return cc, cxx, linker, resolved_launcher
 
     @staticmethod
     def _resolve_generator(options: BuildOptions, project: ProjectDefinition) -> str | None:
@@ -314,20 +332,44 @@ class BuildEngine:
         generator = self._resolve_generator(options, project)
         system_ctx = context_builder.system()
 
-        toolchain = options.toolchain or self._default_toolchain(system_ctx.os_name, project.build_system)
-        cc = self._default_cc(toolchain)
-        cxx = self._default_cxx(toolchain)
-        linker = self._determine_linker(toolchain=toolchain, os_name=system_ctx.os_name)
+        selected_toolchain = options.toolchain or project.default_toolchain
+        if not selected_toolchain:
+            raise ValueError(
+                f"No toolchain specified for project '{project.name}'. Provide one via project.toolchain or --toolchain."
+            )
+
+        toolchain_key = selected_toolchain.strip().lower()
+        if not toolchain_key:
+            raise ValueError("Toolchain name cannot be empty")
+
+        definition = self._store.toolchains.get(toolchain_key)
+        if definition is None:
+            available = ", ".join(sorted(self._store.toolchains.available())) or "<none>"
+            raise ValueError(f"Unknown toolchain '{selected_toolchain}'. Available toolchains: {available}")
+
+        preview_env: Dict[str, str] = {}
+        preview_defs: Dict[str, Any] = {}
+        definition.apply(
+            build_system=project.build_system,
+            environment=preview_env,
+            definitions=preview_defs,
+            explicit=True,
+        )
+        cc = preview_env.get("CC") or definition.resolved_cc
+        cxx = preview_env.get("CXX") or definition.resolved_cxx
+        linker = self._determine_linker(toolchain=toolchain_key, os_name=system_ctx.os_name, definition=definition)
+        launcher = definition.resolve_launcher(project.build_system)
 
         user_ctx = context_builder.user(
             branch=branch,
             build_type=build_type,
             generator=generator,
             operation=options.operation.value,
-            toolchain=toolchain,
+            toolchain=toolchain_key,
             linker=linker,
             cc=cc,
             cxx=cxx,
+            launcher=launcher,
         )
 
         source_dir_str = project.source_dir
@@ -442,26 +484,32 @@ class BuildEngine:
             if project.build_system == "cargo":
                 environment.setdefault("CARGO_TARGET_DIR", str(paths.build_dir))
 
-            self._apply_toolchain_environment(
+            cc, cxx, linker, launcher = self._apply_toolchain_environment(
                 project=project,
                 environment=environment,
+                definitions=definitions,
                 options=options,
-                toolchain=toolchain,
+                toolchain=toolchain_key,
                 cc=cc,
                 cxx=cxx,
                 linker=linker,
+                launcher=launcher,
+                definition=definition,
             )
             self._apply_color_diagnostics(
                 project=project,
                 environment=environment,
                 definitions=definitions,
-                toolchain=toolchain,
+                toolchain=toolchain_key,
             )
-            self._maybe_wrap_with_ccache(environment=environment, toolchain=toolchain)
             self._apply_cmake_toolchain(
                 build_system=project.build_system,
                 definitions=definitions,
                 environment=environment,
+                cc=cc,
+                cxx=cxx,
+                linker=linker,
+                launcher=launcher,
             )
 
             plan_steps = self._create_build_steps(
@@ -475,6 +523,15 @@ class BuildEngine:
                 extra_build_args=extra_build_args,
                 options=options,
             )
+
+        user_ctx.toolchain = toolchain_key
+        user_ctx.linker = linker
+        user_ctx.cc = cc
+        user_ctx.cxx = cxx
+        user_ctx.launcher = launcher
+
+        combined_context = dict(combined_context)
+        combined_context["user"] = user_ctx.to_mapping()
 
         combined_context = self._apply_environment_to_context(
             context=combined_context,
@@ -939,28 +996,37 @@ class BuildEngine:
 
         return steps
 
-    def _ensure_toolchain_compatibility(self, build_system: str, toolchain: str) -> None:
-        allowed = _TOOLCHAIN_MATRIX.get(build_system)
-        if not allowed:
+    def _ensure_toolchain_compatibility(
+        self,
+        *,
+        build_system: str | None,
+        toolchain: str,
+        definition: ToolchainDefinition | None,
+    ) -> None:
+        if not build_system:
             return
-        if toolchain not in allowed:
+        if definition is None:
+            raise ValueError(f"Toolchain '{toolchain}' is not defined")
+        if definition.supported_build_systems and build_system not in definition.supported_build_systems:
+            allowed_systems = ", ".join(sorted(definition.supported_build_systems))
             raise ValueError(
                 f"Toolchain '{toolchain}' is not compatible with build system '{build_system}'. "
-                f"Allowed: {', '.join(sorted(allowed))}"
+                f"Allowed systems: {allowed_systems}"
             )
 
-    def _default_toolchain(self, os_name: str, build_system: str | None) -> str:
-        if build_system == "cargo":
-            return "rustc"
-        return "msvc" if os_name == "windows" else "clang"
-
-    def _default_cc(self, toolchain: str) -> str:
-        return _TOOLCHAIN_DEFAULTS.get(toolchain, {}).get("CC")
-
-    def _default_cxx(self, toolchain: str) -> str:
-        return _TOOLCHAIN_DEFAULTS.get(toolchain, {}).get("CXX")
-
-    def _determine_linker(self, *, toolchain: str, os_name: str) -> str | None:
+    def _determine_linker(
+        self,
+        *,
+        toolchain: str,
+        os_name: str,
+        definition: ToolchainDefinition | None = None,
+    ) -> str | None:
+        if definition is None:
+            definition = self._store.toolchains.get(toolchain)
+        if definition:
+            resolved = definition.resolved_linker
+            if resolved:
+                return resolved
         if os_name == "windows" or toolchain == "msvc":
             return None
         if shutil.which("mold"):
@@ -970,18 +1036,6 @@ class BuildEngine:
         if toolchain == "gcc" and shutil.which("gold"):
             return "gold"
         return "ld"
-
-    def _maybe_wrap_with_ccache(self, *, environment: Dict[str, str], toolchain: str) -> None:
-        if toolchain not in {"clang", "gcc"}:
-            return
-        if not shutil.which("ccache"):
-            return
-        cc = environment.get("CC")
-        cxx = environment.get("CXX")
-        if cc and not cc.startswith("ccache "):
-            environment["CC"] = f"ccache {cc}"
-        if cxx and not cxx.startswith("ccache "):
-            environment["CXX"] = f"ccache {cxx}"
 
     def _append_flag(self, container: Dict[str, str], key: str, flag: str) -> None:
         existing = container.get(key)
@@ -1056,34 +1110,25 @@ class BuildEngine:
         build_system: str,
         definitions: Dict[str, Any],
         environment: Dict[str, str],
+        cc: str | None,
+        cxx: str | None,
+        linker: str | None,
+        launcher: str | None,
     ) -> None:
         if build_system != "cmake":
             return
-        cc = environment.get("CC")
-        cxx = environment.get("CXX")
-        if cc:
-            launcher: str | None = None
-            actual_cc = cc
-            if cc.startswith("ccache "):
-                launcher = "ccache"
-                actual_cc = cc.split(" ", 1)[1]
-            if "CMAKE_C_COMPILER" not in definitions:
-                definitions["CMAKE_C_COMPILER"] = actual_cc
-            if launcher and "CMAKE_C_COMPILER_LAUNCHER" not in definitions:
+        if cc and "CMAKE_C_COMPILER" not in definitions:
+            definitions["CMAKE_C_COMPILER"] = cc
+        if cxx and "CMAKE_CXX_COMPILER" not in definitions:
+            definitions["CMAKE_CXX_COMPILER"] = cxx
+        if launcher:
+            if "CMAKE_C_COMPILER_LAUNCHER" not in definitions:
                 definitions["CMAKE_C_COMPILER_LAUNCHER"] = launcher
-        if cxx:
-            launcher = None
-            actual_cxx = cxx
-            if cxx.startswith("ccache "):
-                launcher = "ccache"
-                actual_cxx = cxx.split(" ", 1)[1]
-            if "CMAKE_CXX_COMPILER" not in definitions:
-                definitions["CMAKE_CXX_COMPILER"] = actual_cxx
-            if launcher and "CMAKE_CXX_COMPILER_LAUNCHER" not in definitions:
+            if "CMAKE_CXX_COMPILER_LAUNCHER" not in definitions:
                 definitions["CMAKE_CXX_COMPILER_LAUNCHER"] = launcher
-        linker = environment.get("CXX_LD") or environment.get("CC_LD")
-        if linker and "CMAKE_LINKER" not in definitions:
-            definitions["CMAKE_LINKER"] = linker
+        cmake_linker = linker or environment.get("CXX_LD") or environment.get("CC_LD")
+        if cmake_linker and "CMAKE_LINKER" not in definitions:
+            definitions["CMAKE_LINKER"] = cmake_linker
         if "CMAKE_EXPORT_COMPILE_COMMANDS" not in definitions:
             definitions["CMAKE_EXPORT_COMPILE_COMMANDS"] = True
 

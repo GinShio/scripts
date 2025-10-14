@@ -91,6 +91,9 @@ source_dir = "/home/user/projects/{{project.name}}"
 # Omit to disable build orchestration for this project
 build_dir = "_build/{{user.branch}}_{{user.build_type}}"
 
+# Default toolchain to use when planning builds (required when build_dir/build_system are set)
+toolchain = "clang"
+
 # Installation directory (optional, defaults to /usr/local)
 install_dir = "_install/{{user.branch}}_{{user.build_type}}"
 
@@ -141,6 +144,10 @@ clone_script = "{{project.source_dir}}/scripts/clone.sh"
 # Environment overrides used for git commands and custom scripts (optional)
 SSH_COMMAND = "ssh -i {{project.environment.TOOLS_ROOT}}/keys/deploy_rsa"
 ```
+
+The `toolchain` field selects the default toolchain for the project. It must match either a built-in entry (`clang`,
+`gcc`, `msvc`, or `rustc`) or a name provided by your configuration's `toolchains` registry. The CLI `--toolchain`
+flag can temporarily override this selection when running a build.
 
 Use `extra_config_args` to append arguments only to the configuration command
 (for example, extra `-D` definitions for CMake). Use `extra_build_args`
@@ -260,6 +267,7 @@ extra_build_args = ["--warn-uninitialized"]
 - `git.main_branch`: Main branch must be specified.
 - `project.build_system`: Required when `project.build_dir` is provided. Supported values: `cmake`, `meson`, `bazel`, `cargo`, `make`.
 - `project.build_dir`: Required for `cmake`, `meson`, `cargo`, and `make`. Optional otherwise—omit it to mark a project as "validate only".
+- `project.toolchain`: Required whenever a project defines a build system; determines the default toolchain used during planning.
 
 ### Preset Validation:
 - Preset names must be unique.
@@ -348,6 +356,56 @@ definitions = {
 
 ---
 
+## Toolchain Configuration
+
+Builder loads shared toolchain metadata from a top-level file named `toolchains.{toml,json,yaml}` inside each configuration directory. Entries define compiler, linker, launcher, and build-system-specific settings that apply whenever the matching toolchain is active (selected via project configuration or the `--toolchain` flag). Definitions from higher-priority configuration directories override previously loaded values.
+
+### Example (`config/toolchains.toml`)
+
+```toml
+[toolchains.clang]
+description = "LLVM Clang"
+supports = ["cmake", "meson", "bazel", "make"]
+linker = "mold"
+launcher = "ccache"
+
+[toolchains.clang.environment]
+CC = "clang-17"
+CXX = "clang++-17"
+AR = "llvm-ar-17"
+RANLIB = "llvm-ranlib-17"
+
+[toolchains.clang.build_systems.cmake.definitions]
+CMAKE_AR = "llvm-ar-17"
+CMAKE_RANLIB = "llvm-ranlib-17"
+
+[toolchains.gcc.environment]
+CC = "gcc"
+CXX = "g++"
+
+[toolchains.rustc]
+supports = ["cargo"]
+
+[toolchains.rustc.environment]
+RUSTC = "rustc"
+CARGO = "cargo"
+```
+
+### Schema Overview
+
+- `description` *(optional)* – free-form text for humans.
+- `supports` *(optional)* – list of build systems the toolchain may drive. If omitted, the built-in compatibility matrix is used.
+- `cc`, `cxx`, `rustc`, `linker` *(optional)* – explicit compiler/linker commands. When omitted, Builder falls back to `environment.CC`, `environment.CXX`, or built-in defaults.
+- `launcher` *(optional)* – an executable such as `ccache` that should wrap compiler commands. When provided, Builder prefixes `CC`/`CXX` values and sets `CMAKE_*_COMPILER_LAUNCHER` where applicable.
+- `environment` *(optional)* – key/value environment variables applied to every build using this toolchain. Values resolve templates like any other configuration field.
+- `definitions` *(optional)* – build definitions injected ahead of preset/project definitions (for example, global `CMAKE_*` values).
+- `build_systems.<name>.launcher` *(optional)* – override the launcher for a specific build system (lowercase name such as `cmake`).
+- `build_systems.<name>.environment` *(optional)* – per-build-system environment overrides (`name` is normalized to lowercase, e.g. `cmake`).
+- `build_systems.<name>.definitions` *(optional)* – per-build-system definitions.
+- `metadata` *(optional)* – arbitrary mapping preserved for tooling; not interpreted by Builder.
+
+Entries merge deeply when the same toolchain name appears in multiple directories: later definitions extend or override earlier environment values, definitions, and per-build-system overrides. Creating a brand-new toolchain requires specifying at least one supported build system (`supports`), otherwise the default compatibility matrix must already include the toolchain name.
+
 ## Conclusion
 
-This configuration system provides a robust and flexible way to manage project settings. It supports global settings, project-specific configurations, reusable presets, and advanced templating with variable resolution.
+This configuration system provides a robust and flexible way to manage project settings. It supports global settings, project-specific configurations, reusable presets, advanced templating with variable resolution, and now centralized toolchain metadata.

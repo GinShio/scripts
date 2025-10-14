@@ -28,6 +28,17 @@ class UpdateCommandTests(unittest.TestCase):
                 """
             )
         )
+        (config_dir / "toolchains.toml").write_text(
+            textwrap.dedent(
+                """
+                [toolchains.clang]
+                launcher = "ccache"
+
+                [toolchains.gcc]
+                launcher = "ccache"
+                """
+            )
+        )
         (projects_dir / "demo.toml").write_text(
             textwrap.dedent(
                 """
@@ -36,6 +47,7 @@ class UpdateCommandTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/repos/demo"
                 build_dir = "_build/demo"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/demo.git"
@@ -96,6 +108,7 @@ class UpdateCommandTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/repos/demo"
                 build_dir = "_build/demo"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/demo.git"
@@ -130,6 +143,7 @@ class UpdateCommandTests(unittest.TestCase):
                 component_dir = "libs/core"
                 build_dir = "_build/demo"
                 build_system = "cmake"
+                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/demo.git"
