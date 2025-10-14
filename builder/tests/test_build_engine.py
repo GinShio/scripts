@@ -425,6 +425,23 @@ class BuildEngineTests(unittest.TestCase):
         self.assertIn("CMAKE_BUILD_TYPE:STRING=Release", configure_str)
         self.assertNotIn("CMAKE_BUILD_TYPE:STRING=Debug", configure_str)
 
+    def test_cli_definitions_override_existing_values(self) -> None:
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            operation=BuildMode.AUTO,
+            definitions={"DEMO_NAME": "override", "EXTRA_FLAG": "123"},
+        )
+        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+            plan = self.engine.plan(options)
+
+        configure_cmd = plan.steps[0].command
+        configure_str = " ".join(configure_cmd)
+        self.assertIn("DEMO_NAME:STRING=override", configure_str)
+        self.assertIn("EXTRA_FLAG:STRING=123", configure_str)
+        self.assertEqual(plan.definitions.get("DEMO_NAME"), "override")
+        self.assertEqual(plan.definitions.get("EXTRA_FLAG"), "123")
+
     def test_multi_config_adds_debug_and_release_presets(self) -> None:
         options = BuildOptions(
             project_name="demo",

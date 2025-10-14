@@ -394,6 +394,39 @@ class BuildCommandDryRunTests(unittest.TestCase):
         self.assertEqual(call.get("component_branch"), "component/main")
         self.assertTrue(manager.restore_calls)
 
+    def test_build_cli_definitions_propagate_to_commands(self) -> None:
+        args = SimpleNamespace(
+            project="demo",
+            preset=["dev"],
+            branch=None,
+            build_type=None,
+            generator=None,
+            target=None,
+            install=False,
+            dry_run=True,
+            show_vars=False,
+            no_switch_branch=False,
+            verbose=False,
+            toolchain=None,
+            install_dir=None,
+            config_only=False,
+            build_only=False,
+            reconfig=False,
+            extra_switches=[],
+            extra_config_args=[],
+            extra_build_args=[],
+            definitions=["DEMO_NAME=cli-value", "EXTRA_FLAG=ON"],
+        )
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            cli._handle_build(args, self.workspace)
+
+        output = buffer.getvalue()
+        dry_run_lines = [line for line in output.splitlines() if line.startswith("[dry-run]")]
+        self.assertTrue(any("DEMO_NAME:STRING=cli-value" in line for line in dry_run_lines))
+        self.assertTrue(any("EXTRA_FLAG:STRING=ON" in line for line in dry_run_lines))
+
     def test_build_branch_override_applies_to_component_repo(self) -> None:
         projects_dir = self.workspace / "config" / "projects"
         (projects_dir / "component.toml").write_text(

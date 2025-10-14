@@ -1,9 +1,9 @@
 # Build System
-
 This document describes the technical design and usage of the build system, including its core principles, configuration process, Git integration, supported build systems, and advanced features.
 
 ---
 
+- `-DNAME=VALUE` / `--definition NAME=VALUE` – override or introduce build definitions temporarily (applies to configuration commands).
 ## Core Design Principles
 
 ### Design Principles

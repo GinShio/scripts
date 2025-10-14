@@ -40,6 +40,7 @@ class BuildOptions:
     toolchain: str | None = None
     install_dir: str | None = None
     operation: BuildMode = BuildMode.AUTO
+    definitions: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -404,6 +405,10 @@ class BuildEngine:
         environment = dict(project_environment)
         environment.update(resolved_presets.environment)
         definitions = dict(resolved_presets.definitions)
+
+        if options.definitions:
+            for key, value in options.definitions.items():
+                definitions[key] = value
 
         combined_context = self._apply_environment_to_context(
             context=combined_context,

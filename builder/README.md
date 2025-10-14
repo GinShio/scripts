@@ -74,6 +74,7 @@ Configure and execute a project's build plan. Highlights:
 - `--dry-run` – print actions without running them; combine with `--show-vars` to inspect the resolved context.
 - `--config-only`, `--build-only`, `--reconfig` – control orchestration stages.
 - `-X[scope],ARG` or `--extra-config-args/--extra-build-args` – pass through extra flags.
+- `-DNAME=VALUE` / `--definition NAME=VALUE` – inject temporary build definitions without editing configuration files.
 - `--install`, `--install-dir`, `--target`, `--toolchain`, `--no-switch-branch` – tailor the build and Git behavior.
 
 ### `builder update`

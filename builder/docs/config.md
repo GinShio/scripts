@@ -150,6 +150,8 @@ Project-level environment variables are resolved before presets run and merge in
 
 After presets apply, configuration fields (such as `extra_config_args`, `extra_build_args`, or script paths) can reference preset outputs using `{{preset.environment.NAME}}` and `{{preset.definitions.NAME}}`.
 
+> **Runtime overrides**: The CLI `-DNAME=VALUE` / `--definition NAME=VALUE` flags temporarily extend or replace resolved definitions without editing configuration files.
+
 ## Project Dependencies
 
 Projects can express relationships with other configured projects using an

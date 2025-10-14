@@ -86,6 +86,24 @@ def _split_config_values(values: Iterable[str]) -> List[str]:
     return parts
 
 
+def _parse_definition_args(values: Iterable[str]) -> dict[str, str]:
+    definitions: dict[str, str] = {}
+    for raw in values:
+        if raw is None:
+            continue
+        text = raw.strip()
+        if not text:
+            continue
+        if "=" not in text:
+            raise ValueError(f"Definition '{text}' must be in NAME=VALUE format")
+        name, value = text.split("=", 1)
+        key = name.strip()
+        if not key:
+            raise ValueError("Definition name cannot be empty")
+        definitions[key] = value.strip()
+    return definitions
+
+
 def _resolve_config_directories(workspace: Path, cli_values: Iterable[str]) -> List[Path]:
     config_dirs: List[Path] = [workspace / "config"]
 
@@ -203,6 +221,15 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         metavar="ARG",
         help="Additional arguments appended to build commands",
     )
+    build_parser.add_argument(
+        "-D",
+        "--definition",
+        dest="definitions",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="Temporarily define a build variable (repeatable)",
+    )
 
     validate_parser = subparsers.add_parser("validate", help="Validate configuration files")
     validate_parser.add_argument("project", nargs="?", help="Validate a single project by name")
@@ -265,6 +292,11 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
     cli_extra_build_args = _flatten_arg_groups(getattr(args, "extra_build_args", []))
     extra_config_args = [*switch_config_args, *cli_extra_config_args]
     extra_build_args = [*switch_build_args, *cli_extra_build_args]
+    try:
+        cli_definitions = _parse_definition_args(getattr(args, "definitions", []))
+    except ValueError as exc:
+        print(f"Error: {exc}")
+        return 2
     dependencies = store.resolve_dependency_chain(args.project)
     presets = _collect_presets(args.preset)
     operation = BuildMode.AUTO
@@ -292,6 +324,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
         toolchain=args.toolchain,
         install_dir=args.install_dir,
         operation=operation,
+        definitions=cli_definitions,
     )
 
     runner = _make_runner(args.dry_run)
@@ -369,6 +402,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
             toolchain=build_options.toolchain,
             install_dir=None,
             operation=build_options.operation,
+            definitions=dict(build_options.definitions),
         )
         run_project(dep_options, show_vars=False)
 
