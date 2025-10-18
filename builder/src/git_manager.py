@@ -480,6 +480,12 @@ class GitManager:
                     dry_run=dry_run,
                     environment=environment,
                 )
+                if component_repo_path is None or not component_is_submodule:
+                    self._update_submodules(
+                        repo_path,
+                        dry_run=dry_run,
+                        environment=environment,
+                    )
 
             if component_repo_path and component_original_branch and component_original_branch != (component_branch or component_original_branch):
                 self._run_repo_command(
@@ -670,6 +676,12 @@ class GitManager:
                 dry_run=dry_run,
                 environment=environment,
             )
+            if component_repo_path is None or not component_is_submodule:
+                self._update_submodules(
+                    repo_path,
+                    dry_run=dry_run,
+                    environment=environment,
+                )
 
         if component_repo_path and component_original_branch and component_original_branch != component_target_branch:
             self._run_repo_command(

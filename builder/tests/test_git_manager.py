@@ -196,6 +196,18 @@ class GitManagerTests(unittest.TestCase):
         )
         self.assertEqual(runner.branch, "feature")
         self.assertIn(["git", "switch", "feature"], [entry["command"] for entry in runner.history])
+        root_updates = [
+            (index, entry)
+            for index, entry in enumerate(runner.history)
+            if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertGreaterEqual(len(root_updates), 2)
+        switch_feature_index = next(
+            index
+            for index, entry in enumerate(runner.history)
+            if entry["cwd"] == self.repo_path and entry["command"] == ["git", "switch", "feature"]
+        )
+        self.assertTrue(any(index > switch_feature_index for index, _ in root_updates))
 
     def test_update_restores_branch_when_auto_stash(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", dirty=True, commits={"feature": "f1", "main": "m1"})
@@ -557,6 +569,47 @@ class GitManagerTests(unittest.TestCase):
         self.assertIsNotNone(state)
         if state:
             self.assertEqual(state.get("branch"), "comp-old")
+
+    def test_update_repository_switch_back_updates_submodules_without_component_submodule(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2", "comp-target": "c2"})
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+        )
+
+        manager = GitManager(runner)
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+            component_branch="comp-target",
+            component_dir=component_rel,
+        )
+
+        root_updates = [
+            (index, entry)
+            for index, entry in enumerate(runner.history)
+            if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertGreaterEqual(len(root_updates), 2)
+        switch_feature_index = next(
+            index
+            for index, entry in enumerate(runner.history)
+            if entry["cwd"] == self.repo_path and entry["command"] == ["git", "switch", "feature"]
+        )
+        self.assertTrue(any(index > switch_feature_index for index, _ in root_updates))
+
+        component_updates = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertTrue(component_updates)
 
     def test_update_repository_component_switches_when_commits_match(self) -> None:
         component_rel = Path("components/library")
