@@ -403,34 +403,21 @@ class GitManager:
             if current_branch and current_branch not in {"", "HEAD", main_branch}:
                 restore_branch = current_branch
 
-            dirty = self._is_dirty(repo_path, environment=environment)
-            if dirty:
-                if auto_stash:
-                    self._run_repo_command(
-                        repo_path,
-                        ["git", "stash", "push", "-m", "builder auto-stash"],
-                        dry_run=dry_run,
-                        environment=environment,
-                    )
-                    stash_applied = True
-                else:
-                    raise RuntimeError("Working tree has uncommitted changes; enable auto_stash to proceed")
+            stash_applied = self._stash_if_dirty(
+                repo_path,
+                auto_stash=auto_stash,
+                dry_run=dry_run,
+                environment=environment,
+                error_message="Working tree has uncommitted changes; enable auto_stash to proceed",
+            )
 
             if current_branch != main_branch:
-                result = self._run_repo_command(
+                self._switch_or_create_branch(
                     repo_path,
-                    ["git", "switch", main_branch],
+                    main_branch,
                     dry_run=dry_run,
                     environment=environment,
-                    check=False,
                 )
-                if result.returncode != 0:
-                    self._run_repo_command(
-                        repo_path,
-                        ["git", "switch", "-c", main_branch, f"origin/{main_branch}"],
-                        dry_run=dry_run,
-                        environment=environment,
-                    )
 
             component_switched = False
             if component_branch and component_repo_path:
@@ -443,20 +430,15 @@ class GitManager:
                 if component_original_branch is None:
                     component_switch_required = True
                 if component_switch_required:
-                    component_dirty = self._is_dirty(component_repo_path, environment=environment)
-                    if component_dirty:
-                        if auto_stash:
-                            self._run_repo_command(
-                                component_repo_path,
-                                ["git", "stash", "push", "-m", "builder auto-stash"],
-                                dry_run=dry_run,
-                                environment=environment,
-                            )
-                            component_stash_applied = True
-                        else:
-                            raise RuntimeError(
-                                f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
-                            )
+                    component_stash_applied = self._stash_if_dirty(
+                        component_repo_path,
+                        auto_stash=auto_stash,
+                        dry_run=dry_run,
+                        environment=environment,
+                        error_message=(
+                            f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
+                        ),
+                    )
                 component_result = self._run_repo_command(
                     component_repo_path,
                     ["git", "switch", component_branch],
@@ -495,23 +477,19 @@ class GitManager:
                     environment=environment,
                 )
 
-            if component_repo_path and component_stash_applied:
-                self._run_repo_command(
-                    component_repo_path,
-                    ["git", "stash", "pop"],
-                    dry_run=dry_run,
-                    environment=environment,
-                    check=False,
-                )
+            self._restore_stash(
+                component_repo_path,
+                stash_applied=component_stash_applied,
+                dry_run=dry_run,
+                environment=environment,
+            )
 
-            if stash_applied:
-                self._run_repo_command(
-                    repo_path,
-                    ["git", "stash", "pop"],
-                    dry_run=dry_run,
-                    environment=environment,
-                    check=False,
-                )
+            self._restore_stash(
+                repo_path,
+                stash_applied=stash_applied,
+                dry_run=dry_run,
+                environment=environment,
+            )
             return
 
         restore_branch: Optional[str] = None
@@ -520,18 +498,13 @@ class GitManager:
             if current_branch and current_branch not in {"", "HEAD", main_branch}:
                 restore_branch = current_branch
 
-        dirty = self._is_dirty(repo_path, environment=environment)
-        stash_applied = False
-        if dirty and auto_stash:
-            self._run_repo_command(
-                repo_path,
-                ["git", "stash", "push", "-m", "builder auto-stash"],
-                dry_run=dry_run,
-                environment=environment,
-            )
-            stash_applied = True
-        elif dirty:
-            raise RuntimeError("Working tree has uncommitted changes; enable auto_stash to proceed")
+        stash_applied = self._stash_if_dirty(
+            repo_path,
+            auto_stash=auto_stash,
+            dry_run=dry_run,
+            environment=environment,
+            error_message="Working tree has uncommitted changes; enable auto_stash to proceed",
+        )
 
         self._run_repo_command(
             repo_path,
@@ -539,20 +512,12 @@ class GitManager:
             dry_run=dry_run,
             environment=environment,
         )
-        result = self._run_repo_command(
+        self._switch_or_create_branch(
             repo_path,
-            ["git", "switch", main_branch],
+            main_branch,
             dry_run=dry_run,
             environment=environment,
-            check=False,
         )
-        if result.returncode != 0:
-            self._run_repo_command(
-                repo_path,
-                ["git", "switch", "-c", main_branch, f"origin/{main_branch}"],
-                dry_run=dry_run,
-                environment=environment,
-            )
         self._run_repo_command(
             repo_path,
             ["git", "pull", "--ff-only", "origin", main_branch],
@@ -588,20 +553,15 @@ class GitManager:
                 and (component_current_branch is None or component_current_branch != component_branch)
             )
             if component_switch_required:
-                component_dirty = self._is_dirty(component_repo_path, environment=environment)
-                if component_dirty:
-                    if auto_stash:
-                        self._run_repo_command(
-                            component_repo_path,
-                            ["git", "stash", "push", "-m", "builder auto-stash"],
-                            dry_run=dry_run,
-                            environment=environment,
-                        )
-                        component_stash_applied = True
-                    else:
-                        raise RuntimeError(
-                            f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
-                        )
+                component_stash_applied = self._stash_if_dirty(
+                    component_repo_path,
+                    auto_stash=auto_stash,
+                    dry_run=dry_run,
+                    environment=environment,
+                    error_message=(
+                        f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
+                    ),
+                )
             self._run_repo_command(
                 component_target_path,
                 ["git", "fetch", "--all"],
@@ -631,20 +591,15 @@ class GitManager:
             if component_repo_path and component_original_branch and component_original_branch != component_branch:
                 component_switched = True
         elif component_needs_switch and component_is_submodule and component_repo_path:
-            component_dirty = self._is_dirty(component_repo_path, environment=environment)
-            if component_dirty:
-                if auto_stash:
-                    self._run_repo_command(
-                        component_repo_path,
-                        ["git", "stash", "push", "-m", "builder auto-stash"],
-                        dry_run=dry_run,
-                        environment=environment,
-                    )
-                    component_stash_applied = True
-                else:
-                    raise RuntimeError(
-                        f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
-                    )
+            component_stash_applied = self._stash_if_dirty(
+                component_repo_path,
+                auto_stash=auto_stash,
+                dry_run=dry_run,
+                environment=environment,
+                error_message=(
+                    f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
+                ),
+            )
             result = self._run_repo_command(
                 component_repo_path,
                 ["git", "switch", component_target_branch],
@@ -691,23 +646,19 @@ class GitManager:
                 environment=environment,
             )
 
-        if component_repo_path and component_stash_applied:
-            self._run_repo_command(
-                component_repo_path,
-                ["git", "stash", "pop"],
-                dry_run=dry_run,
-                environment=environment,
-                check=False,
-            )
+        self._restore_stash(
+            component_repo_path,
+            stash_applied=component_stash_applied,
+            dry_run=dry_run,
+            environment=environment,
+        )
 
-        if stash_applied:
-            self._run_repo_command(
-                repo_path,
-                ["git", "stash", "pop"],
-                dry_run=dry_run,
-                environment=environment,
-                check=False,
-            )
+        self._restore_stash(
+            repo_path,
+            stash_applied=stash_applied,
+            dry_run=dry_run,
+            environment=environment,
+        )
 
     def _run_command(
         self,
@@ -738,6 +689,76 @@ class GitManager:
             dry_run=dry_run,
             environment=environment,
             check=check,
+            stream=stream,
+        )
+
+    def _switch_or_create_branch(
+        self,
+        repo_path: Path,
+        branch: str,
+        *,
+        dry_run: bool,
+        environment: Mapping[str, str] | None = None,
+        stream: bool | None = None,
+    ) -> None:
+        result = self._run_repo_command(
+            repo_path,
+            ["git", "switch", branch],
+            dry_run=dry_run,
+            environment=environment,
+            check=False,
+            stream=stream,
+        )
+        if result.returncode != 0:
+            self._run_repo_command(
+                repo_path,
+                ["git", "switch", "-c", branch, f"origin/{branch}"],
+                dry_run=dry_run,
+                environment=environment,
+                stream=stream,
+            )
+
+    def _stash_if_dirty(
+        self,
+        repo_path: Path,
+        *,
+        auto_stash: bool,
+        dry_run: bool,
+        environment: Mapping[str, str] | None = None,
+        error_message: str,
+        stream: bool | None = None,
+    ) -> bool:
+        dirty = self._is_dirty(repo_path, environment=environment)
+        if not dirty:
+            return False
+        if not auto_stash:
+            raise RuntimeError(error_message)
+        self._run_repo_command(
+            repo_path,
+            ["git", "stash", "push", "-m", "builder auto-stash"],
+            dry_run=dry_run,
+            environment=environment,
+            stream=stream,
+        )
+        return True
+
+    def _restore_stash(
+        self,
+        repo_path: Path | None,
+        *,
+        stash_applied: bool,
+        dry_run: bool,
+        environment: Mapping[str, str] | None = None,
+        stream: bool | None = None,
+    ) -> None:
+        if not stash_applied or repo_path is None:
+            return
+        self._run_repo_command(
+            repo_path,
+            ["git", "stash", "pop"],
+            dry_run=dry_run,
+            environment=environment,
+            check=False,
             stream=stream,
         )
 
