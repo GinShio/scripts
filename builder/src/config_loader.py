@@ -260,6 +260,7 @@ class ConfigurationStore:
     projects: Dict[str, ProjectDefinition]
     toolchains: ToolchainRegistry
     config_dirs: tuple[Path, ...] = field(default_factory=tuple)
+    missing_config_dirs: tuple[Path, ...] = field(default_factory=tuple)
 
     @classmethod
     def from_directory(cls, root: Path) -> "ConfigurationStore":
@@ -268,10 +269,10 @@ class ConfigurationStore:
     @classmethod
     def from_directories(cls, root: Path, directories: Iterable[Path]) -> "ConfigurationStore":
         resolved_dirs, missing_dirs = resolve_config_paths(root, directories)
-        if missing_dirs and not resolved_dirs:
-            missing_display = ", ".join(str(path) for path in missing_dirs)
-            raise FileNotFoundError(f"No configuration directories found. Missing: {missing_display}")
         if not resolved_dirs:
+            if missing_dirs:
+                missing_display = ", ".join(str(path) for path in missing_dirs)
+                raise FileNotFoundError(f"No configuration directories found. Missing: {missing_display}")
             raise FileNotFoundError("No configuration directories were provided")
 
         global_data: Mapping[str, Any] = {}
@@ -314,6 +315,7 @@ class ConfigurationStore:
         return cls(
             root=root,
             config_dirs=resolved_dirs,
+            missing_config_dirs=missing_dirs,
             global_config=global_config,
             shared_configs=shared_configs,
             projects=projects,

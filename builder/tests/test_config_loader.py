@@ -275,6 +275,45 @@ class ConfigurationLoaderTests(unittest.TestCase):
 
                 self.assertIn("tools", store.projects)
 
+        def test_from_directories_skips_missing_paths(self) -> None:
+                (self.config_dir / "config.toml").write_text("[global]\n")
+                (self.projects_dir / "demo.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "demo"
+                                source_dir = "{{builder.path}}/demo"
+
+                                [git]
+                                url = "https://example.com/demo.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+
+                missing_relative = Path("missing")
+                store = ConfigurationStore.from_directories(
+                        self.root,
+                        [missing_relative, Path("config")],
+                )
+
+                expected_missing = ((self.root / missing_relative).resolve(),)
+                self.assertEqual(store.config_dirs, (self.config_dir.resolve(),))
+                self.assertEqual(store.missing_config_dirs, expected_missing)
+                self.assertIn("demo", store.projects)
+
+        def test_from_directories_raises_when_all_missing(self) -> None:
+                with self.assertRaises(FileNotFoundError) as ctx:
+                        ConfigurationStore.from_directories(
+                                self.root,
+                                [Path("missing-one"), Path("missing-two")],
+                        )
+
+                message = str(ctx.exception)
+                self.assertIn("No configuration directories found", message)
+                self.assertIn("missing-one", message)
+                self.assertIn("missing-two", message)
+
         def test_resolve_dependency_chain_orders_and_merges(self) -> None:
                 (self.config_dir / "config.toml").write_text("[global]\n")
                 (self.projects_dir / "core.toml").write_text(
