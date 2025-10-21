@@ -465,6 +465,7 @@ class ConfigurationLoaderTests(unittest.TestCase):
                                 build_system = "cmake"
                                 extra_config_args = ["-DCONFIG_FROM_PROJECT", "-Dshared"]
                                 extra_build_args = ["--build-from-project", "--target", "install"]
+                                extra_install_args = ["--install-from-project", "--shared"]
 
                                 [git]
                                 url = "https://example.com/demo.git"
@@ -482,6 +483,10 @@ class ConfigurationLoaderTests(unittest.TestCase):
                 self.assertEqual(
                         project.extra_build_args,
                         ["--build-from-project", "--target", "install"],
+                )
+                self.assertEqual(
+                        project.extra_install_args,
+                        ["--install-from-project", "--shared"],
                 )
 
 

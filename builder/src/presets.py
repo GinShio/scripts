@@ -13,12 +13,14 @@ class ResolvedPreset:
     definitions: Dict[str, Any] = field(default_factory=dict)
     extra_config_args: List[str] = field(default_factory=list)
     extra_build_args: List[str] = field(default_factory=list)
+    extra_install_args: List[str] = field(default_factory=list)
 
     def merge(self, other: "ResolvedPreset") -> None:
         self.environment.update(other.environment)
         self.definitions.update(other.definitions)
         self._extend_unique(self.extra_config_args, other.extra_config_args)
         self._extend_unique(self.extra_build_args, other.extra_build_args)
+        self._extend_unique(self.extra_install_args, other.extra_install_args)
 
     @staticmethod
     def _extend_unique(target: List[str], values: Iterable[str]) -> None:
@@ -34,6 +36,7 @@ class ResolvedPreset:
             definitions=dict(self.definitions),
             extra_config_args=list(self.extra_config_args),
             extra_build_args=list(self.extra_build_args),
+            extra_install_args=list(self.extra_install_args),
         )
 
 
@@ -47,6 +50,7 @@ class PresetDefinition:
     definition_dependencies: Dict[str, List[str]]
     extra_config_args: Sequence[Any]
     extra_build_args: Sequence[Any]
+    extra_install_args: Sequence[Any]
 
 
 class PresetRepository:
@@ -129,6 +133,7 @@ class PresetRepository:
 
         extra_config_args = _normalize_args(raw_preset.get("extra_config_args"))
         extra_build_args = _normalize_args(raw_preset.get("extra_build_args"))
+        extra_install_args = _normalize_args(raw_preset.get("extra_install_args"))
 
         condition = raw_preset.get("condition")
 
@@ -141,6 +146,7 @@ class PresetRepository:
             definition_dependencies=definition_dependencies,
             extra_config_args=extra_config_args,
             extra_build_args=extra_build_args,
+            extra_install_args=extra_install_args,
         )
 
     @staticmethod
@@ -299,6 +305,10 @@ class PresetRepository:
         build_args = _collect_args(preset_data.extra_build_args)
         if build_args:
             ResolvedPreset._extend_unique(resolved.extra_build_args, build_args)
+
+        install_args = _collect_args(preset_data.extra_install_args)
+        if install_args:
+            ResolvedPreset._extend_unique(resolved.extra_install_args, install_args)
 
         cache[name] = resolved.clone()
         return resolved

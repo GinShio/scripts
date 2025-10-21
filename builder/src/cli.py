@@ -27,9 +27,10 @@ def _flatten_arg_groups(groups: Iterable[Iterable[str]]) -> List[str]:
     return flattened
 
 
-def _parse_extra_switches(values: Iterable[str]) -> tuple[List[str], List[str]]:
+def _parse_extra_switches(values: Iterable[str]) -> tuple[List[str], List[str], List[str]]:
     config_args: List[str] = []
     build_args: List[str] = []
+    install_args: List[str] = []
 
     for raw in values:
         if raw is None:
@@ -44,7 +45,7 @@ def _parse_extra_switches(values: Iterable[str]) -> tuple[List[str], List[str]]:
         if "," in text:
             prefix, _, remainder = text.partition(",")
             candidate = prefix.strip().lower()
-            if candidate in {"config", "build"} and remainder:
+            if candidate in {"config", "build", "install"} and remainder:
                 scope = candidate
                 payload = remainder
             else:
@@ -59,14 +60,16 @@ def _parse_extra_switches(values: Iterable[str]) -> tuple[List[str], List[str]]:
             targets = [config_args]
         elif scope == "build":
             targets = [build_args]
+        elif scope == "install":
+            targets = [install_args]
         else:
-            targets = [config_args, build_args]
+            targets = [config_args, build_args, install_args]
 
         for part in parts:
             for target in targets:
                 target.append(part)
 
-    return config_args, build_args
+    return config_args, build_args, install_args
 
 
 def _split_config_values(values: Iterable[str]) -> List[str]:
@@ -202,7 +205,7 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         action="append",
         default=[],
         metavar="SCOPE,ARG",
-        help="Extra arguments (use -Xconfig,<arg> or -Xbuild,<arg>; omit scope for both)",
+        help="Extra arguments (use -Xconfig,<arg>, -Xbuild,<arg>, or -Xinstall,<arg>; omit scope for all phases)",
     )
     build_parser.add_argument(
         "--extra-config-args",
@@ -221,6 +224,15 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         default=[],
         metavar="ARG",
         help="Additional arguments appended to build commands",
+    )
+    build_parser.add_argument(
+        "--extra-install-args",
+        dest="extra_install_args",
+        action="append",
+        nargs="+",
+        default=[],
+        metavar="ARG",
+        help="Additional arguments appended to install commands",
     )
     build_parser.add_argument(
         "-D",
@@ -288,11 +300,13 @@ def main(argv: Iterable[str] | None = None) -> int:
 
 def _handle_build(args: Namespace, workspace: Path) -> int:
     store = _load_configuration_store(args, workspace)
-    switch_config_args, switch_build_args = _parse_extra_switches(getattr(args, "extra_switches", []))
+    switch_config_args, switch_build_args, switch_install_args = _parse_extra_switches(getattr(args, "extra_switches", []))
     cli_extra_config_args = _flatten_arg_groups(getattr(args, "extra_config_args", []))
     cli_extra_build_args = _flatten_arg_groups(getattr(args, "extra_build_args", []))
+    cli_extra_install_args = _flatten_arg_groups(getattr(args, "extra_install_args", []))
     extra_config_args = [*switch_config_args, *cli_extra_config_args]
     extra_build_args = [*switch_build_args, *cli_extra_build_args]
+    extra_install_args = [*switch_install_args, *cli_extra_install_args]
     try:
         cli_definitions = _parse_definition_args(getattr(args, "definitions", []))
     except ValueError as exc:
@@ -322,6 +336,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
         verbose=args.verbose,
         extra_config_args=extra_config_args,
         extra_build_args=extra_build_args,
+        extra_install_args=extra_install_args,
         toolchain=args.toolchain,
         install_dir=args.install_dir,
         operation=operation,
@@ -400,6 +415,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
             verbose=build_options.verbose,
             extra_config_args=list(build_options.extra_config_args),
             extra_build_args=list(build_options.extra_build_args),
+            extra_install_args=list(build_options.extra_install_args),
             toolchain=build_options.toolchain,
             install_dir=None,
             operation=build_options.operation,

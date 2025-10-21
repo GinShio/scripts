@@ -165,6 +165,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
             extra_switches=[],
             extra_config_args=[],
             extra_build_args=[],
+            extra_install_args=[],
         )
         buffer = io.StringIO()
         with redirect_stdout(buffer):
@@ -175,6 +176,36 @@ class BuildCommandDryRunTests(unittest.TestCase):
         self.assertIn("cmake", output)
         # Build steps should include the resolved workspace path
         self.assertIn(str(self.workspace / "examples" / "demo"), output)
+
+    def test_build_install_accepts_extra_install_args(self) -> None:
+        args = SimpleNamespace(
+            project="demo",
+            preset=["dev"],
+            branch=None,
+            build_type=None,
+            generator=None,
+            target=None,
+            install=True,
+            dry_run=True,
+            show_vars=False,
+            no_switch_branch=False,
+            verbose=False,
+            toolchain=None,
+            install_dir=str(self.workspace / "install-root"),
+            config_only=False,
+            build_only=False,
+            reconfig=False,
+            extra_switches=["install,--from-switch"],
+            extra_config_args=[],
+            extra_build_args=[],
+            extra_install_args=[["--from-cli"]],
+        )
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            cli._handle_build(args, self.workspace)
+        output = buffer.getvalue()
+        self.assertIn("--from-switch", output)
+        self.assertIn("--from-cli", output)
 
     def test_build_with_dependencies_runs_in_order(self) -> None:
         (self.workspace / "config" / "projects" / "lib.toml").write_text(
@@ -685,10 +716,11 @@ class BuildCommandDryRunTests(unittest.TestCase):
 
 class ExtraSwitchParsingTests(unittest.TestCase):
     def test_parse_scoped_switches(self) -> None:
-        config_args, build_args = cli._parse_extra_switches(
+        config_args, build_args, install_args = cli._parse_extra_switches(
             [
                 "config,-DCONFIG_ONLY",
                 "build,--build-only",
+                "install,--install-only",
                 "--shared-flag",
                 "build,--multi-a,--multi-b",
             ]
@@ -700,6 +732,10 @@ class ExtraSwitchParsingTests(unittest.TestCase):
         self.assertEqual(
             build_args,
             ["--build-only", "--shared-flag", "--multi-a", "--multi-b"],
+        )
+        self.assertEqual(
+            install_args,
+            ["--install-only", "--shared-flag"],
         )
 
     def test_flatten_arg_groups(self) -> None:

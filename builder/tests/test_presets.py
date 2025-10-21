@@ -52,11 +52,13 @@ class PresetRepositoryTests(unittest.TestCase):
                 "base": {
                     "extra_config_args": ["-DCONFIG_FROM_BASE", "-Dshared"],
                     "extra_build_args": ["--build-from-base", "-Dshared"],
+                    "extra_install_args": ["--install-from-base", "--shared"],
                 },
                 "child": {
                     "extends": ["base"],
                     "extra_config_args": ["-DCONFIG_FROM_CHILD"],
                     "extra_build_args": ["--build-from-child"],
+                    "extra_install_args": ["--install-from-child"],
                 },
             }
         )
@@ -75,6 +77,14 @@ class PresetRepositoryTests(unittest.TestCase):
                 "--build-from-base",
                 "-Dshared",
                 "--build-from-child",
+            },
+        )
+        self.assertEqual(
+            set(resolved.extra_install_args),
+            {
+                "--install-from-base",
+                "--shared",
+                "--install-from-child",
             },
         )
 

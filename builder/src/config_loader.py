@@ -130,6 +130,7 @@ class ProjectDefinition:
     dependencies: List[ProjectDependency] = field(default_factory=list)
     extra_config_args: List[str] = field(default_factory=list)
     extra_build_args: List[str] = field(default_factory=list)
+    extra_install_args: List[str] = field(default_factory=list)
     environment: Dict[str, Any] = field(default_factory=dict)
     raw: Mapping[str, Any] = field(default_factory=dict)
 
@@ -187,6 +188,10 @@ class ProjectDefinition:
             project_section.get("extra_build_args"),
             field_name="project.extra_build_args",
         )
+        extra_install_args = normalize_string_list(
+            project_section.get("extra_install_args"),
+            field_name="project.extra_install_args",
+        )
         dependencies_section = data.get("dependencies", [])
         dependencies: List[ProjectDependency] = []
         if dependencies_section:
@@ -212,6 +217,7 @@ class ProjectDefinition:
             dependencies=dependencies,
             extra_config_args=extra_config_args,
             extra_build_args=extra_build_args,
+            extra_install_args=extra_install_args,
             environment=project_environment,
             raw=data,
         )

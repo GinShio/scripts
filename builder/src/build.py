@@ -38,6 +38,7 @@ class BuildOptions:
     verbose: bool = False
     extra_config_args: List[str] = field(default_factory=list)
     extra_build_args: List[str] = field(default_factory=list)
+    extra_install_args: List[str] = field(default_factory=list)
     toolchain: str | None = None
     install_dir: str | None = None
     operation: BuildMode = BuildMode.AUTO
@@ -67,6 +68,7 @@ class BuildPlan:
     definitions: Dict[str, Any]
     extra_config_args: List[str]
     extra_build_args: List[str]
+    extra_install_args: List[str]
     git_clone_script: str | None
     git_update_script: str | None
     git_environment: Dict[str, str]
@@ -463,13 +465,17 @@ class BuildEngine:
 
         project_config_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_config_args]
         project_build_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_build_args]
+        project_install_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_install_args]
 
         extra_config_args = list(resolved_presets.extra_config_args)
         extra_build_args = list(resolved_presets.extra_build_args)
+        extra_install_args = list(resolved_presets.extra_install_args)
         self._extend_unique(extra_config_args, project_config_args_resolved)
         self._extend_unique(extra_build_args, project_build_args_resolved)
+        self._extend_unique(extra_install_args, project_install_args_resolved)
         self._extend_unique(extra_config_args, options.extra_config_args)
         self._extend_unique(extra_build_args, options.extra_build_args)
+        self._extend_unique(extra_install_args, options.extra_install_args)
 
         plan_steps: List[BuildStep] = []
         if build_enabled and paths.build_dir is not None:
@@ -521,6 +527,7 @@ class BuildEngine:
                 definitions=definitions,
                 extra_config_args=extra_config_args,
                 extra_build_args=extra_build_args,
+                extra_install_args=extra_install_args,
                 options=options,
             )
 
@@ -587,6 +594,7 @@ class BuildEngine:
             definitions=definitions,
             extra_config_args=extra_config_args,
             extra_build_args=extra_build_args,
+            extra_install_args=extra_install_args,
             git_clone_script=clone_script,
             git_update_script=update_script,
             git_environment=git_environment,
@@ -636,6 +644,7 @@ class BuildEngine:
         definitions: Dict[str, Any],
         extra_config_args: List[str],
         extra_build_args: List[str],
+        extra_install_args: List[str],
         options: BuildOptions,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
@@ -651,6 +660,7 @@ class BuildEngine:
                     definitions=definitions,
                     extra_config_args=extra_config_args,
                     extra_build_args=extra_build_args,
+                    extra_install_args=extra_install_args,
                     options=options,
                 )
             )
@@ -664,6 +674,7 @@ class BuildEngine:
                     definitions=definitions,
                     extra_config_args=extra_config_args,
                     extra_build_args=extra_build_args,
+                    extra_install_args=extra_install_args,
                     options=options,
                 )
             )
@@ -737,6 +748,7 @@ class BuildEngine:
         definitions: Dict[str, Any],
         extra_config_args: List[str],
         extra_build_args: List[str],
+        extra_install_args: List[str],
         options: BuildOptions,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
@@ -806,9 +818,10 @@ class BuildEngine:
             install_cmd = self._install_command(
                 build_system="cmake",
                 build_dir=build_dir,
-                is_multi_config=is_multi_config,
                 options=options,
             )
+            if extra_install_args:
+                install_cmd.extend(extra_install_args)
             steps.append(
                 BuildStep(
                     description="Install project",
@@ -829,6 +842,7 @@ class BuildEngine:
         definitions: Dict[str, Any],
         extra_config_args: List[str],
         extra_build_args: List[str],
+        extra_install_args: List[str],
         options: BuildOptions,
     ) -> List[BuildStep]:
         steps: List[BuildStep] = []
@@ -892,9 +906,10 @@ class BuildEngine:
             install_cmd = self._install_command(
                 build_system="meson",
                 build_dir=build_dir,
-                is_multi_config=False,
                 options=options,
             )
+            if extra_install_args:
+                install_cmd.extend(extra_install_args)
             steps.append(
                 BuildStep(
                     description="Install project",
@@ -1011,14 +1026,12 @@ class BuildEngine:
         *,
         build_system: str,
         build_dir: Path,
-        is_multi_config: bool,
         options: BuildOptions,
     ) -> List[str]:
-        build_type = self._determine_build_type(options=options)
-
         if build_system == "cmake":
             cmd = ["cmake", "--install", str(build_dir)]
-            if is_multi_config:
+            if self._is_multi_config_generator(options.generator):
+                build_type = self._determine_build_type(options=options)
                 cmd.extend(["--config", build_type])
             return cmd
 
@@ -1217,7 +1230,8 @@ class BuildEngine:
             "presets": plan.presets,
             "environment": plan.environment,
             "definitions": plan.definitions,
-                "extra_config_args": plan.extra_config_args,
-                "extra_build_args": plan.extra_build_args,
+            "extra_config_args": plan.extra_config_args,
+            "extra_build_args": plan.extra_build_args,
+            "extra_install_args": plan.extra_install_args,
         }
         return json.dumps(data, indent=2)

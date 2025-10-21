@@ -739,8 +739,10 @@ class BuildEngineTests(unittest.TestCase):
                 source_dir = "{{builder.path}}/examples/split-args"
                 build_dir = "_build"
                 build_system = "cmake"
+                install_dir = "_install"
                 extra_config_args = ["-DCONFIG_FROM_PROJECT", "-Dshared"]
                 extra_build_args = ["--build-from-project", "-Dshared"]
+                extra_install_args = ["--install-from-project", "--shared"]
                 toolchain = "clang"
 
                 [git]
@@ -750,6 +752,7 @@ class BuildEngineTests(unittest.TestCase):
                 [presets.extra]
                 extra_config_args = ["-DCONFIG_FROM_PRESET", "-Dshared"]
                 extra_build_args = ["--build-from-preset", "-Dshared"]
+                extra_install_args = ["--install-from-preset", "--shared"]
                 """
             )
         )
@@ -761,6 +764,9 @@ class BuildEngineTests(unittest.TestCase):
             presets=["extra"],
             extra_config_args=["-DCONFIG_FROM_CLI", "-Dshared"],
             extra_build_args=["--build-from-cli", "-Dshared"],
+            extra_install_args=["--install-from-cli", "--shared"],
+            install=True,
+            install_dir=str(self.workspace / "install-root"),
         )
         with patch("builder.build.shutil.which", return_value=None):
             plan = engine.plan(options)
@@ -784,6 +790,26 @@ class BuildEngineTests(unittest.TestCase):
                 "--build-from-cli",
             },
         )
+        self.assertEqual(
+            set(plan.extra_install_args),
+            {
+                "--install-from-preset",
+                "--shared",
+                "--install-from-project",
+                "--install-from-cli",
+            },
+        )
+
+        install_steps = [step for step in plan.steps if step.description == "Install project"]
+        self.assertTrue(install_steps)
+        install_cmd = install_steps[0].command
+        for expected in [
+            "--install-from-preset",
+            "--install-from-project",
+            "--install-from-cli",
+            "--shared",
+        ]:
+            self.assertIn(expected, install_cmd)
 
 
 if __name__ == "__main__":  # pragma: no cover
