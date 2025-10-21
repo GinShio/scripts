@@ -430,6 +430,40 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(build_cmd[:3], ["cmake", "--build", str(plan.build_dir)])
         self.assertEqual(install_cmd, ["cmake", "--install", str(plan.build_dir)])
 
+    def test_cmake_multi_config_installs_with_config_flag(self) -> None:
+        install_dir = Path(self.workspace) / "install-root"
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            generator="Ninja Multi-Config",
+            operation=BuildMode.AUTO,
+            install=True,
+            install_dir=str(install_dir),
+        )
+        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+            plan = self.engine.plan(options)
+
+        install_cmd = plan.steps[-1].command
+        self.assertEqual(
+            install_cmd,
+            ["cmake", "--install", str(plan.build_dir), "--config", "Release"],
+        )
+
+    def test_meson_install_omits_config_flag(self) -> None:
+        install_dir = Path(self.workspace) / "meson-install"
+        options = BuildOptions(
+            project_name="meson-app",
+            presets=["dev"],
+            operation=BuildMode.AUTO,
+            install=True,
+            install_dir=str(install_dir),
+        )
+        with patch("builder.build.shutil.which", return_value=None):
+            plan = self.engine.plan(options)
+
+        install_cmd = plan.steps[-1].command
+        self.assertEqual(install_cmd, ["meson", "install", "-C", str(plan.build_dir)])
+
     def test_cli_build_type_overrides_presets(self) -> None:
         options = BuildOptions(
             project_name="demo",

@@ -803,11 +803,16 @@ class BuildEngine:
         if options.install:
             if install_dir is None:
                 raise ValueError("Install directory is not defined for this project")
-            cmd = ["cmake", "--install", str(build_dir)]
+            install_cmd = self._install_command(
+                build_system="cmake",
+                build_dir=build_dir,
+                is_multi_config=is_multi_config,
+                options=options,
+            )
             steps.append(
                 BuildStep(
                     description="Install project",
-                    command=cmd,
+                    command=install_cmd,
                     cwd=effective_source_dir,
                     env=environment,
                 )
@@ -884,11 +889,16 @@ class BuildEngine:
         if options.install:
             if install_dir is None:
                 raise ValueError("Install directory is not defined for this project")
-            cmd = ["meson", "install", "-C", str(build_dir)]
+            install_cmd = self._install_command(
+                build_system="meson",
+                build_dir=build_dir,
+                is_multi_config=False,
+                options=options,
+            )
             steps.append(
                 BuildStep(
                     description="Install project",
-                    command=cmd,
+                    command=install_cmd,
                     cwd=effective_source_dir,
                     env=environment,
                 )
@@ -995,6 +1005,31 @@ class BuildEngine:
             raise ValueError("Install mode is not supported for cargo projects")
 
         return steps
+
+    def _install_command(
+        self,
+        *,
+        build_system: str,
+        build_dir: Path,
+        is_multi_config: bool,
+        options: BuildOptions,
+    ) -> List[str]:
+        build_type = self._determine_build_type(options=options)
+
+        if build_system == "cmake":
+            cmd = ["cmake", "--install", str(build_dir)]
+            if is_multi_config:
+                cmd.extend(["--config", build_type])
+            return cmd
+
+        if build_system == "meson":
+            cmd = ["meson", "install", "-C", str(build_dir)]
+            return cmd
+
+        if build_system == "cargo":
+            raise ValueError("Install mode is not supported for cargo projects")
+
+        raise ValueError(f"Install mode is not supported for build system '{build_system}'")
 
     def _ensure_toolchain_compatibility(
         self,
