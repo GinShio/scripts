@@ -210,8 +210,8 @@ builder list myapp backend
 # Include presets, dependency edges, or remote URLs
 builder list --presets --dependencies --url
 
-# Show paths alongside commit information when needed
-builder list --show-build-dir --show-install-dir
+# Show repository paths or build/install directories alongside commits
+builder list --path --show-build-dir --show-install-dir
 
 # Suppress or force submodule listings explicitly
 builder list --no-submodules
@@ -220,9 +220,11 @@ builder list --submodules
 
 - Builder temporarily checks out the requested branch to gather accurate metadata. Add `--no-switch-branch` to avoid
    temporary branch switches (useful for very large workspaces or when working tree changes must remain untouched).
-- Add `--show-build-dir` and/or `--show-install-dir` to include path columns in the listing. The install directory is
-   resolved from the active build cache (CMake cache or Meson introspection) when available, falling back to the
-   configured value when the build has not been generated yet.
+- By default, only the Project, Branch, and Commit columns are displayed. Enable `--path`, `--url`, `--show-build-dir`,
+   `--show-install-dir`, `--presets`, and/or `--dependencies` to reveal additional columns. Columns appear in the
+   deterministic order: Path, URL, Build Dir, Install Dir, Presets, Dependencies.
+- The install directory is resolved from the active build cache (CMake cache or Meson introspection) when available,
+   falling back to the configured value when the build has not been generated yet.
 - Control submodule visibility with `--submodules` / `--no-submodules`. By default, submodules are hidden when
    requesting preset or dependency columns, and shown otherwise.
 

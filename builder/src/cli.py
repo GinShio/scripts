@@ -310,6 +310,11 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         help="Include repository and submodule URLs in the listing",
     )
     list_parser.add_argument(
+        "--path",
+        action="store_true",
+        help="Include repository paths in the listing",
+    )
+    list_parser.add_argument(
         "--presets",
         action="store_true",
         help="Include preset names in the listing",
@@ -589,6 +594,7 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         project_names = sorted(store.list_projects())
 
     include_url = bool(getattr(args, "url", False))
+    include_path = bool(getattr(args, "path", False))
     include_presets = bool(getattr(args, "presets", False))
     include_dependencies = bool(getattr(args, "dependencies", False))
     include_build_dir = bool(getattr(args, "show_build_dir", False))
@@ -686,6 +692,10 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
             "Branch": branch_display,
             "Commit": commit_display,
         }
+        if include_path:
+            row["Path"] = str(repo_path)
+        if include_url:
+            row["URL"] = project_url
         if include_build_dir:
             build_dir_display = str(plan.build_dir) if plan.build_dir else "-"
             row["Build Dir"] = build_dir_display
@@ -693,9 +703,6 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
             resolved_install_dir = _resolve_install_directory(plan)
             install_dir_display = str(resolved_install_dir) if resolved_install_dir else "-"
             row["Install Dir"] = install_dir_display
-        row["Path"] = str(repo_path)
-        if include_url:
-            row["URL"] = project_url
         if include_presets:
             preset_names = ", ".join(sorted(project.presets)) if project.presets else "-"
             row["Presets"] = preset_names
@@ -731,13 +738,14 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
                 "Branch": "",
                 "Commit": hash_display,
             }
+            if include_path:
+                submodule_row["Path"] = submodule.get("path", "-")
+            if include_url:
+                submodule_row["URL"] = url_display
             if include_build_dir:
                 submodule_row["Build Dir"] = ""
             if include_install_dir:
                 submodule_row["Install Dir"] = ""
-            submodule_row["Path"] = submodule.get("path", "-")
-            if include_url:
-                submodule_row["URL"] = url_display
             if include_presets:
                 submodule_row["Presets"] = ""
             if include_dependencies:
@@ -749,18 +757,17 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         return 0
 
     headers: List[str] = ["Project", "Branch", "Commit"]
-    if include_build_dir:
-        headers.append("Build Dir")
-    if include_install_dir:
-        headers.append("Install Dir")
-    headers.append("Path")
-    if include_url:
-        headers.append("URL")
-    if include_presets:
-        headers.append("Presets")
-    if include_dependencies:
-        headers.append("Dependencies")
-
+    column_order: List[tuple[str, bool]] = [
+        ("Path", include_path),
+        ("URL", include_url),
+        ("Build Dir", include_build_dir),
+        ("Install Dir", include_install_dir),
+        ("Presets", include_presets),
+        ("Dependencies", include_dependencies),
+    ]
+    for column_name, enabled in column_order:
+        if enabled:
+            headers.append(column_name)
     widths = {header: len(header) for header in headers}
     for row in rows:
         for header in headers:

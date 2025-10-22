@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import io
+import re
 import tempfile
 import textwrap
 import unittest
@@ -119,6 +120,7 @@ class ListCommandTests(unittest.TestCase):
             projects=[],
             branch=None,
             no_switch_branch=False,
+            path=False,
             url=False,
             presets=False,
             dependencies=False,
@@ -137,6 +139,7 @@ class ListCommandTests(unittest.TestCase):
         self.assertIn("abcdef12345", output)
         self.assertNotIn("https://example.com/demo.git", output)
         header_line = output.splitlines()[0]
+        self.assertNotIn("Path", header_line)
         self.assertNotIn("Build Dir", header_line)
         self.assertNotIn("Install Dir", header_line)
         self.assertNotIn("URL", header_line)
@@ -181,6 +184,7 @@ class ListCommandTests(unittest.TestCase):
             projects=[],
             branch=None,
             no_switch_branch=False,
+            path=False,
             url=False,
             presets=False,
             dependencies=False,
@@ -245,6 +249,7 @@ class ListCommandTests(unittest.TestCase):
             projects=[],
             branch=None,
             no_switch_branch=False,
+            path=True,
             url=True,
             presets=False,
             dependencies=False,
@@ -262,6 +267,137 @@ class ListCommandTests(unittest.TestCase):
         header_line = output.splitlines()[0]
         self.assertIn("URL", header_line)
         self.assertIn("https://example.com/demo.git", output)
+
+    def test_list_with_path_flag_displays_repository_path(self) -> None:
+        class FakeGitManager:
+            def __init__(self, runner) -> None:
+                self.runner = runner
+
+            def get_repository_state(self, repo_path: Path, *, environment=None):
+                return ("dev", "0123456789abcdef")
+
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return []
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ):
+                return GitWorkState(branch="dev", stash_applied=False)
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                pass
+
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return True
+
+        args = SimpleNamespace(
+            projects=[],
+            branch=None,
+            no_switch_branch=False,
+            path=True,
+            url=False,
+            presets=False,
+            dependencies=False,
+            submodules=None,
+            show_build_dir=False,
+            show_install_dir=False,
+        )
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", FakeGitManager):
+            with redirect_stdout(buffer):
+                exit_code = cli._handle_list(args, self.workspace)
+
+        output = buffer.getvalue()
+        self.assertEqual(exit_code, 0)
+        header_line = output.splitlines()[0]
+        headers = re.split(r"\s{2,}", header_line.strip())
+        self.assertEqual(headers, ["Project", "Branch", "Commit", "Path"])
+        repo_path = self.workspace / "repos" / "demo"
+        self.assertIn(str(repo_path), output)
+
+    def test_list_column_order_matches_specification(self) -> None:
+        class FakeGitManager:
+            def __init__(self, runner) -> None:
+                self.runner = runner
+
+            def get_repository_state(self, repo_path: Path, *, environment=None):
+                return ("dev", "0123456789abcdef")
+
+            def list_submodules(self, repo_path: Path, *, environment=None):
+                return []
+
+            def prepare_checkout(
+                self,
+                *,
+                repo_path: Path,
+                target_branch: str,
+                auto_stash: bool,
+                no_switch_branch: bool,
+                environment=None,
+                component_dir=None,
+                component_branch=None,
+            ):
+                return GitWorkState(branch="dev", stash_applied=False)
+
+            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+                pass
+
+            def is_repository(self, repo_path: Path, *, environment=None) -> bool:
+                return True
+
+        plan_build_dir = self.workspace / "repos" / "demo" / "_build"
+        plan_build_dir.mkdir(parents=True, exist_ok=True)
+        (plan_build_dir / "CMakeCache.txt").write_text(
+            textwrap.dedent(
+                """
+                CMAKE_INSTALL_PREFIX:PATH=/opt/custom/install
+                """
+            ).strip()
+        )
+
+        args = SimpleNamespace(
+            projects=[],
+            branch=None,
+            no_switch_branch=False,
+            path=True,
+            url=True,
+            presets=True,
+            dependencies=True,
+            submodules=None,
+            show_build_dir=True,
+            show_install_dir=True,
+        )
+        buffer = io.StringIO()
+        with patch("builder.cli.GitManager", FakeGitManager):
+            with redirect_stdout(buffer):
+                exit_code = cli._handle_list(args, self.workspace)
+
+        output = buffer.getvalue()
+        self.assertEqual(exit_code, 0)
+        header_line = output.splitlines()[0]
+        headers = re.split(r"\s{2,}", header_line.strip())
+        self.assertEqual(
+            headers,
+            [
+                "Project",
+                "Branch",
+                "Commit",
+                "Path",
+                "URL",
+                "Build Dir",
+                "Install Dir",
+                "Presets",
+                "Dependencies",
+            ],
+        )
 
     def test_list_handles_missing_repository(self) -> None:
         class FakeGitManager:
@@ -302,6 +438,7 @@ class ListCommandTests(unittest.TestCase):
             projects=["demo"],
             branch=None,
             no_switch_branch=False,
+            path=False,
             url=False,
             presets=False,
             dependencies=False,
@@ -370,6 +507,7 @@ class ListCommandTests(unittest.TestCase):
             projects=[],
             branch=None,
             no_switch_branch=False,
+            path=True,
             url=True,
             presets=False,
             dependencies=False,
@@ -464,6 +602,7 @@ class ListCommandTests(unittest.TestCase):
             projects=["demo", "second"],
             branch=None,
             no_switch_branch=False,
+            path=False,
             url=False,
             presets=False,
             dependencies=False,
@@ -561,6 +700,7 @@ class ListCommandTests(unittest.TestCase):
             projects=["complex"],
             branch=None,
             no_switch_branch=False,
+            path=False,
             url=False,
             presets=True,
             dependencies=True,
@@ -642,6 +782,7 @@ class ListCommandTests(unittest.TestCase):
             projects=["component"],
             branch=None,
             no_switch_branch=False,
+            path=False,
             url=False,
             presets=False,
             dependencies=False,
@@ -744,6 +885,7 @@ class ListCommandTests(unittest.TestCase):
             projects=["component"],
             branch=None,
             no_switch_branch=False,
+            path=False,
             url=False,
             presets=False,
             dependencies=False,
@@ -842,6 +984,7 @@ class ListCommandTests(unittest.TestCase):
             projects=["component"],
             branch="component/dev",
             no_switch_branch=False,
+            path=False,
             url=False,
             presets=False,
             dependencies=False,
@@ -929,6 +1072,7 @@ class ListCommandTests(unittest.TestCase):
             projects=["single"],
             branch="release/2.0",
             no_switch_branch=False,
+            path=False,
             url=False,
             presets=False,
             dependencies=False,
