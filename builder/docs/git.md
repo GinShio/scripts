@@ -204,14 +204,27 @@ builder list
 # Focus on a single project
 builder list myapp
 
+# Inspect multiple projects in one pass
+builder list myapp backend
+
 # Include presets, dependency edges, or remote URLs
 builder list --presets --dependencies --url
+
+# Show paths alongside commit information when needed
+builder list --show-build-dir --show-install-dir
+
+# Suppress or force submodule listings explicitly
+builder list --no-submodules
+builder list --submodules
 ```
 
 - Builder temporarily checks out the requested branch to gather accurate metadata. Add `--no-switch-branch` to avoid
-  temporary branch switches (useful for very large workspaces or when working tree changes must remain untouched).
-- Submodule rows appear immediately beneath their parent project, mirroring `git submodule status` output. Pass
-  `--dependencies` or `--presets` to repurpose the listing for configuration audits instead of Git inspection.
+   temporary branch switches (useful for very large workspaces or when working tree changes must remain untouched).
+- Add `--show-build-dir` and/or `--show-install-dir` to include path columns in the listing. The install directory is
+   resolved from the active build cache (CMake cache or Meson introspection) when available, falling back to the
+   configured value when the build has not been generated yet.
+- Control submodule visibility with `--submodules` / `--no-submodules`. By default, submodules are hidden when
+   requesting preset or dependency columns, and shown otherwise.
 
 ---
 

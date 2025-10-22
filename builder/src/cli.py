@@ -4,6 +4,7 @@ from __future__ import annotations
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
 from typing import Iterable, List
+import json
 import os
 import sys
 
@@ -169,6 +170,40 @@ def _component_dir_argument(plan: BuildPlan) -> Path | None:
     return component_dir_arg
 
 
+def _resolve_install_directory(plan: BuildPlan) -> Path | None:
+    build_dir = plan.build_dir
+    if build_dir and build_dir.exists():
+        project = plan.project
+        try:
+            if project.build_system == "cmake":
+                cache_file = build_dir / "CMakeCache.txt"
+                if cache_file.exists():
+                    for line in cache_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith("CMAKE_INSTALL_PREFIX:"):
+                            value = stripped.partition("=")[2].strip()
+                            if value:
+                                return Path(value)
+            elif project.build_system == "meson":
+                intro_file = build_dir / "meson-info" / "intro-buildoptions.json"
+                if intro_file.exists():
+                    data = json.loads(intro_file.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        for option in data:
+                            if isinstance(option, dict) and option.get("name") == "prefix":
+                                value = option.get("value")
+                                if value:
+                                    return Path(str(value))
+        except Exception:
+            pass
+
+    if plan.install_dir:
+        return plan.install_dir
+    if plan.project.install_dir:
+        return Path(plan.project.install_dir)
+    return None
+
+
 def _parse_arguments(argv: Iterable[str]) -> Namespace:
     parser = ArgumentParser(prog="builder", description="Preset-driven build orchestrator")
     parser.add_argument(
@@ -257,7 +292,12 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         "list",
         help="List project repositories, their commits, and submodule information",
     )
-    list_parser.add_argument("project", nargs="?", help="Project to inspect; omit to list all projects")
+    list_parser.add_argument(
+        "projects",
+        nargs="*",
+        metavar="PROJECT",
+        help="Project names to inspect; omit to list all configured projects",
+    )
     list_parser.add_argument("--branch", help="Git branch to inspect (switches repositories unless --no-switch-branch is used)")
     list_parser.add_argument(
         "--no-switch-branch",
@@ -279,6 +319,29 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         action="store_true",
         help="Include dependency information in the listing",
     )
+    list_parser.add_argument(
+        "--submodules",
+        dest="submodules",
+        action="store_true",
+        help="Include submodules in the listing even when showing additional metadata",
+    )
+    list_parser.add_argument(
+        "--no-submodules",
+        dest="submodules",
+        action="store_false",
+        help="Hide submodule rows from the listing",
+    )
+    list_parser.add_argument(
+        "--show-build-dir",
+        action="store_true",
+        help="Include the configured build directory column in the listing",
+    )
+    list_parser.add_argument(
+        "--show-install-dir",
+        action="store_true",
+        help="Include the resolved install directory column in the listing",
+    )
+    list_parser.set_defaults(submodules=None)
 
     return parser.parse_args(list(argv))
 
@@ -513,16 +576,29 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
     git_manager = GitManager(runner)
     planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
 
-    if args.project:
-        project_names = [args.project]
-    else:
+    selected_projects = list(getattr(args, "projects", []) or [])
+    project_names: List[str] = []
+    for entry in selected_projects:
+        if not entry:
+            continue
+        if isinstance(entry, str) and "," in entry:
+            project_names.extend([part.strip() for part in entry.split(",") if part.strip()])
+        else:
+            project_names.append(str(entry))
+    if not project_names:
         project_names = sorted(store.list_projects())
 
     include_url = bool(getattr(args, "url", False))
     include_presets = bool(getattr(args, "presets", False))
     include_dependencies = bool(getattr(args, "dependencies", False))
+    include_build_dir = bool(getattr(args, "show_build_dir", False))
+    include_install_dir = bool(getattr(args, "show_install_dir", False))
     rows: List[dict[str, str]] = []
-    include_submodules = not (include_presets or include_dependencies)
+    submodule_flag = getattr(args, "submodules", None)
+    if submodule_flag is None:
+        include_submodules = not (include_presets or include_dependencies)
+    else:
+        include_submodules = bool(submodule_flag)
 
     for name in project_names:
         try:
@@ -609,8 +685,15 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
             "Project": project.name,
             "Branch": branch_display,
             "Commit": commit_display,
-            "Path": str(repo_path),
         }
+        if include_build_dir:
+            build_dir_display = str(plan.build_dir) if plan.build_dir else "-"
+            row["Build Dir"] = build_dir_display
+        if include_install_dir:
+            resolved_install_dir = _resolve_install_directory(plan)
+            install_dir_display = str(resolved_install_dir) if resolved_install_dir else "-"
+            row["Install Dir"] = install_dir_display
+        row["Path"] = str(repo_path)
         if include_url:
             row["URL"] = project_url
         if include_presets:
@@ -647,8 +730,12 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
                 "Project": "",
                 "Branch": "",
                 "Commit": hash_display,
-                "Path": submodule.get("path", "-"),
             }
+            if include_build_dir:
+                submodule_row["Build Dir"] = ""
+            if include_install_dir:
+                submodule_row["Install Dir"] = ""
+            submodule_row["Path"] = submodule.get("path", "-")
             if include_url:
                 submodule_row["URL"] = url_display
             if include_presets:
@@ -661,7 +748,12 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         print("No projects found")
         return 0
 
-    headers: List[str] = ["Project", "Branch", "Commit", "Path"]
+    headers: List[str] = ["Project", "Branch", "Commit"]
+    if include_build_dir:
+        headers.append("Build Dir")
+    if include_install_dir:
+        headers.append("Install Dir")
+    headers.append("Path")
     if include_url:
         headers.append("URL")
     if include_presets:
