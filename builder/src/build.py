@@ -386,6 +386,7 @@ class BuildEngine:
             build_dir=Path(build_dir_str) if build_dir_str else None,
             install_dir=Path(install_dir_str) if install_dir_str else None,
             component_dir=Path(component_dir_str) if component_dir_str else None,
+            org=project.org,
         )
 
         combined_context = context_builder.combined_context(user=user_ctx, project=project_ctx, system=system_ctx)
@@ -407,6 +408,7 @@ class BuildEngine:
             build_dir=paths.build_dir,
             install_dir=paths.install_dir,
             component_dir=paths.component_dir,
+            org=project.org,
         )
         combined_context = context_builder.combined_context(user=user_ctx, project=updated_project_ctx, system=system_ctx)
         resolver = TemplateResolver(combined_context)
@@ -437,6 +439,8 @@ class BuildEngine:
         preset_repo = PresetRepository(
             project_presets=project.presets,
             shared_presets=[cfg.get("presets", {}) for cfg in self._store.shared_configs.values()],
+            project_name=project.name,
+            project_org=project.org,
         )
         presets_to_resolve = self._determine_presets(
             provided_presets=options.presets,
@@ -719,9 +723,8 @@ class BuildEngine:
                     if stripped and stripped not in resolved:
                         resolved.append(stripped)
 
-        available = set(preset_repo.available())
         for preset in self._default_presets(build_type=build_type, generator=generator):
-            if preset in available and preset not in resolved:
+            if preset_repo.contains(preset) and preset not in resolved:
                 resolved.append(preset)
         return resolved
 

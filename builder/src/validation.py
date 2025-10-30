@@ -106,6 +106,7 @@ def validate_project_templates(
         install_dir=Path(project.install_dir) if project.install_dir else None,
         component_dir=Path(project.component_dir) if project.component_dir else None,
         environment=project.environment,
+        org=project.org,
     )
 
     combined_context = context_builder.combined_context(user=user_ctx, project=project_ctx, system=system_ctx)
@@ -187,12 +188,61 @@ def _validate_project_presets(project: ProjectDefinition, store: ConfigurationSt
 
 def _collect_all_preset_names(store: ConfigurationStore) -> set[str]:
     names: set[str] = set()
+
+    def _add_variants(base_name: str, *, org: str | None = None, project: str | None = None) -> None:
+        names.add(base_name)
+        if project:
+            names.add(f"{project}/{base_name}")
+        if org:
+            names.add(f"{org}/{base_name}")
+        if org and project:
+            names.add(f"{org}/{project}/{base_name}")
+
     for project in store.projects.values():
-        names.update(str(key) for key in project.presets.keys())
+        for raw_name, raw_definition in project.presets.items():
+            base_name = str(raw_name)
+            _add_variants(base_name, org=project.org, project=project.name)
+
+            if not isinstance(raw_definition, Mapping):
+                continue
+
+            org_value = raw_definition.get("org")
+            org_text = str(org_value).strip() if isinstance(org_value, str) else None
+            org_text = org_text or None
+
+            project_value = raw_definition.get("project")
+            project_text = str(project_value).strip() if isinstance(project_value, str) else None
+            project_text = project_text or None
+
+            if org_text or project_text:
+                _add_variants(base_name, org=org_text, project=project_text)
+
     for shared in store.shared_configs.values():
         presets_section = shared.get("presets")
-        if isinstance(presets_section, Mapping):
-            names.update(str(key) for key in presets_section.keys())
+        if not isinstance(presets_section, Mapping):
+            continue
+        for raw_name, raw_definition in presets_section.items():
+            base_name = str(raw_name)
+            names.add(base_name)
+
+            if not isinstance(raw_definition, Mapping):
+                continue
+
+            org_value = raw_definition.get("org")
+            org_text = str(org_value).strip() if isinstance(org_value, str) else None
+            org_text = org_text or None
+
+            project_value = raw_definition.get("project")
+            project_text = str(project_value).strip() if isinstance(project_value, str) else None
+            project_text = project_text or None
+
+            if project_text:
+                names.add(f"{project_text}/{base_name}")
+            if org_text:
+                names.add(f"{org_text}/{base_name}")
+                if project_text:
+                    names.add(f"{org_text}/{project_text}/{base_name}")
+
     return names
 
 

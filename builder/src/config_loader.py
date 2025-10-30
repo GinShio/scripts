@@ -133,6 +133,7 @@ class ProjectDefinition:
     extra_install_args: List[str] = field(default_factory=list)
     environment: Dict[str, Any] = field(default_factory=dict)
     raw: Mapping[str, Any] = field(default_factory=dict)
+    org: str | None = None
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "ProjectDefinition":
@@ -162,6 +163,9 @@ class ProjectDefinition:
             source_at_root = raw_source_at_root
         else:
             raise TypeError("project.source_at_root must be a boolean if specified")
+        org_raw = project_section.get("org")
+        org_value = str(org_raw).strip() if isinstance(org_raw, str) and org_raw.strip() else None
+
         environment_section = project_section.get("environment")
         project_environment: Dict[str, Any] = {}
         if isinstance(environment_section, Mapping):
@@ -220,6 +224,7 @@ class ProjectDefinition:
             extra_install_args=extra_install_args,
             environment=project_environment,
             raw=data,
+            org=org_value,
         )
 
     def validate_structure(self) -> list[str]:
@@ -254,6 +259,7 @@ class ProjectDefinition:
 
 @dataclass(slots=True)
 class ResolvedDependency:
+    key: str
     project: "ProjectDefinition"
     presets: List[str] = field(default_factory=list)
 
@@ -267,6 +273,7 @@ class ConfigurationStore:
     toolchains: ToolchainRegistry
     config_dirs: tuple[Path, ...] = field(default_factory=tuple)
     missing_config_dirs: tuple[Path, ...] = field(default_factory=tuple)
+    project_aliases: Dict[str, List[str]] = field(default_factory=dict)
 
     @classmethod
     def from_directory(cls, root: Path) -> "ConfigurationStore":
@@ -307,16 +314,45 @@ class ConfigurationStore:
                 continue
 
             have_projects_dir = True
-            project_files = collect_config_files(projects_dir)
-            for _, path in sorted(project_files.items()):
+            project_paths: List[Path] = []
+            for candidate in projects_dir.rglob("*"):
+                if not candidate.is_file():
+                    continue
+                if candidate.suffix.lower() not in {".toml", ".json", ".yaml", ".yml"}:
+                    continue
+                project_paths.append(candidate)
+
+            for path in sorted(project_paths):
                 data = load_config_file(path)
                 project = ProjectDefinition.from_mapping(data)
-                projects[project.name] = project
+
+                rel_path = path.relative_to(projects_dir)
+                path_org: str | None = None
+                if rel_path.parent != Path("."):
+                    path_org = rel_path.parts[0]
+
+                effective_org = project.org or path_org
+                key = f"{effective_org}/{project.name}" if effective_org else project.name
+
+                if not project.org and effective_org:
+                    project.org = effective_org
+
+                raw_mapping = dict(project.raw) if isinstance(project.raw, Mapping) else {}
+                raw_mapping["__source_path__"] = str(path)
+                project.raw = raw_mapping
+
+                projects[key] = project
 
         if not have_projects_dir or not projects:
             raise FileNotFoundError("No project configurations found in the provided directories")
 
         global_config = GlobalConfig.from_mapping(global_data)
+
+        project_aliases: Dict[str, List[str]] = {}
+        for key, project in projects.items():
+            bucket = project_aliases.setdefault(project.name, [])
+            if key not in bucket:
+                bucket.append(key)
 
         return cls(
             root=root,
@@ -326,21 +362,59 @@ class ConfigurationStore:
             shared_configs=shared_configs,
             projects=projects,
             toolchains=toolchain_registry,
+            project_aliases=project_aliases,
         )
 
     def list_projects(self) -> Iterable[str]:
         return self.projects.keys()
 
     def get_project(self, name: str) -> ProjectDefinition:
-        if name not in self.projects:
-            available = ", ".join(sorted(self.projects)) or "<none>"
-            raise KeyError(f"Project '{name}' not found. Available projects: {available}")
-        return self.projects[name]
+        key = self.resolve_project_identifier(name)
+        return self.projects[key]
 
-    def resolve_dependency_chain(self, name: str) -> List[ResolvedDependency]:
-        if name not in self.projects:
+    def resolve_project_identifier(self, identifier: str, org: str | None = None) -> str:
+        """Resolve a user-supplied project reference to the internal key."""
+        if "/" in identifier:
+            if identifier in self.projects:
+                return identifier
             available = ", ".join(sorted(self.projects)) or "<none>"
-            raise KeyError(f"Project '{name}' not found. Available projects: {available}")
+            raise KeyError(f"Project '{identifier}' not found. Available projects: {available}")
+
+        if identifier in self.projects:
+            return identifier
+
+        preferred_matches: List[str] = []
+        if org:
+            candidate = f"{org}/{identifier}"
+            if candidate in self.projects:
+                return candidate
+            preferred_matches = [key for key in self.project_aliases.get(identifier, []) if key.startswith(f"{org}/")]
+
+        matches = list(self.project_aliases.get(identifier, []))
+        if not matches:
+            available = ", ".join(sorted(self.projects)) or "<none>"
+            raise KeyError(f"Project '{identifier}' not found. Available projects: {available}")
+        if preferred_matches:
+            if len(preferred_matches) == 1:
+                return preferred_matches[0]
+            raise ValueError(
+                "Ambiguous project '{name}' in org '{org}': {candidates}. Use fully-qualified name.".format(
+                    name=identifier,
+                    org=org,
+                    candidates=", ".join(sorted(preferred_matches)),
+                )
+            )
+        if len(matches) == 1:
+            return matches[0]
+        raise ValueError(
+            "Ambiguous project '{name}': {candidates}. Use --org or the fully-qualified name.".format(
+                name=identifier,
+                candidates=", ".join(sorted(matches)),
+            )
+        )
+
+    def resolve_dependency_chain(self, identifier: str, org: str | None = None) -> List[ResolvedDependency]:
+        project_key = self.resolve_project_identifier(identifier, org=org)
 
         requested_presets: Dict[str, List[str]] = {}
         visiting: List[str] = []
@@ -356,36 +430,41 @@ class ConfigurationStore:
                 if preset not in bucket:
                     bucket.append(preset)
 
-        def visit(project_name: str) -> None:
-            if project_name in visiting:
-                cycle = " -> ".join([*visiting, project_name])
+        def visit(project_key_local: str) -> None:
+            if project_key_local in visiting:
+                cycle = " -> ".join([*visiting, project_key_local])
                 raise ValueError(f"Circular dependency detected: {cycle}")
-            if project_name in visited:
+            if project_key_local in visited:
                 return
 
-            visiting.append(project_name)
-            project_def = self.projects.get(project_name)
+            visiting.append(project_key_local)
+            project_def = self.projects.get(project_key_local)
             if project_def is None:
                 available_projects = ", ".join(sorted(self.projects)) or "<none>"
-                raise KeyError(f"Dependency '{project_name}' not found. Available projects: {available_projects}")
+                raise KeyError(f"Dependency '{project_key_local}' not found. Available projects: {available_projects}")
 
             for dependency in project_def.dependencies:
-                record_presets(dependency.name, dependency.presets)
-                visit(dependency.name)
+                dependency_key = self.resolve_project_identifier(
+                    dependency.name,
+                    org=project_def.org,
+                )
+                record_presets(dependency_key, dependency.presets)
+                visit(dependency_key)
 
             visiting.pop()
-            visited.add(project_name)
-            order.append(project_name)
+            visited.add(project_key_local)
+            order.append(project_key_local)
 
-        visit(name)
+        visit(project_key)
 
         resolved_chain: List[ResolvedDependency] = []
         for project_name in order:
-            if project_name == name:
+            if project_name == project_key:
                 continue
             project_def = self.projects[project_name]
             resolved_chain.append(
                 ResolvedDependency(
+                    key=project_name,
                     project=project_def,
                     presets=list(requested_presets.get(project_name, [])),
                 )

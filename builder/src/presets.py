@@ -53,23 +53,86 @@ class PresetDefinition:
     extra_install_args: Sequence[Any]
 
 
+@dataclass(slots=True)
+class _PresetMeta:
+    key: str
+    name: str
+    org: str | None
+    project: str | None
+    scope: str  # project | global | org | project-qualified | org-project
+
+
 class PresetRepository:
     def __init__(
         self,
         project_presets: Mapping[str, Mapping[str, Any]],
         shared_presets: Iterable[Mapping[str, Mapping[str, Any]]] | None = None,
+        *,
+        project_name: str,
+        project_org: str | None,
     ) -> None:
         self._presets: Dict[str, PresetDefinition] = {}
-        for key, value in project_presets.items():
-            self._presets[key] = self._normalize_definition(value)
+        self._meta: Dict[str, _PresetMeta] = {}
+        self._project_name = project_name
+        self._project_org = project_org
+
+        def ingest(source: Mapping[str, Mapping[str, Any]], scope_hint: str) -> None:
+            for raw_name, raw_value in source.items():
+                if not isinstance(raw_value, Mapping):
+                    continue
+
+                org_value = raw_value.get("org")
+                if isinstance(org_value, str):
+                    org_value = org_value.strip() or None
+                else:
+                    org_value = None
+
+                project_value = raw_value.get("project")
+                if isinstance(project_value, str):
+                    project_value = project_value.strip() or None
+                else:
+                    project_value = None
+
+                if org_value and project_value:
+                    key = f"{org_value}/{project_value}/{raw_name}"
+                    scope = "org-project"
+                elif project_value:
+                    key = f"{project_value}/{raw_name}"
+                    scope = "project-qualified"
+                elif org_value:
+                    key = f"{org_value}/{raw_name}"
+                    scope = "org"
+                elif scope_hint == "project":
+                    key = raw_name
+                    scope = "project"
+                else:
+                    key = raw_name
+                    scope = "global"
+
+                if key in self._presets:
+                    continue
+
+                definition = self._normalize_definition(raw_value)
+                self._presets[key] = definition
+                self._meta[key] = _PresetMeta(
+                    key=key,
+                    name=raw_name,
+                    org=org_value,
+                    project=project_value,
+                    scope=scope,
+                )
+
+        ingest(project_presets, "project")
         if shared_presets:
             for preset_group in shared_presets:
-                for key, value in preset_group.items():
-                    if key not in self._presets:
-                        self._presets[key] = self._normalize_definition(value)
+                ingest(preset_group, "global")
 
     def available(self) -> Iterable[str]:
-        return self._presets.keys()
+        return sorted(self._presets.keys())
+
+    def contains(self, name: str) -> bool:
+        key = self._select_key(name)
+        return key is not None
 
     def resolve(
         self,
@@ -230,15 +293,36 @@ class PresetRepository:
         seen: tuple[str, ...],
         cache: MutableMapping[str, ResolvedPreset],
     ) -> ResolvedPreset | None:
-        if name in seen:
-            raise TemplateError(f"Circular preset dependency detected: {' -> '.join(seen + (name,))}")
-        if name in cache:
-            return cache[name].clone()
+        key = self._select_key(name)
+        if key is None:
+            available = ", ".join(sorted(self._presets)) or "<none>"
+            raise KeyError(f"Preset '{name}' not found. Available: {available}")
+        return self._resolve_key(
+            key,
+            template_resolver=template_resolver,
+            seen=seen,
+            cache=cache,
+        )
 
-        preset_data = self._presets.get(name)
+    def _resolve_key(
+        self,
+        key: str,
+        *,
+        template_resolver: TemplateResolver,
+        seen: tuple[str, ...],
+        cache: MutableMapping[str, ResolvedPreset],
+    ) -> ResolvedPreset | None:
+        if key in seen:
+            raise TemplateError(f"Circular preset dependency detected: {' -> '.join(seen + (key,))}")
+        if key in cache:
+            return cache[key].clone()
+
+        preset_data = self._presets.get(key)
         if preset_data is None:
-            raise KeyError(f"Preset '{name}' not found. Available: {', '.join(sorted(self._presets))}")
-        next_seen = seen + (name,)
+            available = ", ".join(sorted(self._presets)) or "<none>"
+            raise KeyError(f"Preset '{key}' not found. Available: {available}")
+
+        next_seen = seen + (key,)
 
         resolved = ResolvedPreset()
         for parent_name in preset_data.extends:
@@ -258,7 +342,7 @@ class PresetRepository:
         if condition is not None:
             condition_value = template_resolver.resolve(condition)
             if not bool(condition_value):
-                cache[name] = resolved.clone()
+                cache[key] = resolved.clone()
                 return resolved
 
         environment = preset_data.environment
@@ -310,5 +394,40 @@ class PresetRepository:
         if install_args:
             ResolvedPreset._extend_unique(resolved.extra_install_args, install_args)
 
-        cache[name] = resolved.clone()
+        cache[key] = resolved.clone()
         return resolved
+
+    def _select_key(self, name: str) -> str | None:
+        parts = name.split("/")
+        if len(parts) == 3:
+            key = name
+            return key if key in self._presets else None
+
+        if len(parts) == 2:
+            key = name
+            return key if key in self._presets else None
+
+        # Bare name: prefer project -> org -> global
+        meta = self._meta.get(name)
+        if meta and meta.scope == "project":
+            return name
+
+        if self._project_org:
+            org_key = f"{self._project_org}/{name}"
+            if org_key in self._presets:
+                return org_key
+
+        proj_key = f"{self._project_name}/{name}"
+        if proj_key in self._presets:
+            return proj_key
+
+        if self._project_org:
+            org_proj_key = f"{self._project_org}/{self._project_name}/{name}"
+            if org_proj_key in self._presets:
+                return org_proj_key
+
+        meta = self._meta.get(name)
+        if meta and meta.scope == "global":
+            return name
+
+        return None

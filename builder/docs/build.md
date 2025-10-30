@@ -17,7 +17,7 @@ This document describes the technical design and usage of the build system, incl
 ### Loading Workflow
 
 1. Discover project definitions across every configured directory (repository `config/`, entries in `BUILDER_CONFIG_DIR`, and any `-C/--config-dir` values).
-2. Identify the target project configuration based on the project name.
+2. Identify the target project configuration using the supplied project name, organization hint (`--org`), or fully qualified `org/name` reference.
 3. Load project-specific configurations, including Git settings and build directory configurations.
 4. Parse preset configurations and resolve inheritance chains.
 5. Apply template variables and conditional expressions.
@@ -50,6 +50,10 @@ based on the file extension (TOML, JSON, or YAML).
 ```shell
 # Build for the main branch (default)
 builder build myapp --preset development
+
+# Disambiguate similarly named projects
+builder build vendor/myapp --preset development
+builder build --org vendor myapp --preset development
 
 # Build for a specific branch (with automatic switching)
 builder build myapp --preset development --branch feature-x
@@ -118,6 +122,7 @@ builder build myapp --preset development --verbose
 
 - `-p NAME` / `--preset NAME[,NAME]` – apply or stack presets.
 - `-b NAME` / `--branch NAME` – build against a specific branch (project and component repos).
+- `--org NAME` – select the organization when multiple projects share the same name; alternatively use the fully qualified `org/name` syntax directly.
 - `-n` / `--dry-run` – print the Git/build commands without running them.
 - `-G NAME` / `--generator NAME` – force a particular generator (Ninja, Visual Studio, etc.).
 - `-B TYPE` / `--build-type TYPE` – override the build type (Debug/Release/custom profiles).

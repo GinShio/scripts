@@ -139,6 +139,7 @@ class ListCommandTests(unittest.TestCase):
         self.assertIn("abcdef12345", output)
         self.assertNotIn("https://example.com/demo.git", output)
         header_line = output.splitlines()[0]
+        self.assertTrue(header_line.startswith("Org"))
         self.assertNotIn("Path", header_line)
         self.assertNotIn("Build Dir", header_line)
         self.assertNotIn("Install Dir", header_line)
@@ -319,7 +320,7 @@ class ListCommandTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         header_line = output.splitlines()[0]
         headers = re.split(r"\s{2,}", header_line.strip())
-        self.assertEqual(headers, ["Project", "Branch", "Commit", "Path"])
+        self.assertEqual(headers, ["Org", "Project", "Branch", "Commit", "Path"])
         repo_path = self.workspace / "repos" / "demo"
         self.assertIn(str(repo_path), output)
 
@@ -387,6 +388,7 @@ class ListCommandTests(unittest.TestCase):
         self.assertEqual(
             headers,
             [
+                "Org",
                 "Project",
                 "Branch",
                 "Commit",

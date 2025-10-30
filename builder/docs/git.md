@@ -47,6 +47,8 @@ Short aliases:
 - `-b` selects the branch to update.
 - `-s` picks the submodule strategy (`default`, `latest`, `skip`).
 - `-n` previews Git work without executing it.
+
+Use fully qualified names (`vendor/myapp`) or the `--org` flag when multiple organizations reuse the same project name.
 ```
 
 ---
@@ -204,6 +206,10 @@ builder list
 # Focus on a single project
 builder list myapp
 
+# Disambiguate organization-scoped projects
+builder list vendor/myapp
+builder list --org vendor myapp
+
 # Inspect multiple projects in one pass
 builder list myapp backend
 
@@ -223,6 +229,7 @@ builder list --submodules
 - By default, only the Project, Branch, and Commit columns are displayed. Enable `--path`, `--url`, `--show-build-dir`,
    `--show-install-dir`, `--presets`, and/or `--dependencies` to reveal additional columns. Columns appear in the
    deterministic order: Path, URL, Build Dir, Install Dir, Presets, Dependencies.
+- The leading column reports each project's organization (or `-` when unspecified) so similarly named projects remain distinguishable in the list output.
 - The install directory is resolved from the active build cache (CMake cache or Meson introspection) when available,
    falling back to the configured value when the build has not been generated yet.
 - Control submodule visibility with `--submodules` / `--no-submodules`. By default, submodules are hidden when

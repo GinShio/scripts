@@ -28,7 +28,9 @@ class PresetRepositoryTests(unittest.TestCase):
                     "environment": {"CFLAGS": "-O0"},
                     "definitions": {"BUILD_SHARED_LIBS": True},
                 },
-            }
+            },
+            project_name="demo",
+            project_org=None,
         )
         resolved = repo.resolve(["dev"], template_resolver=self.resolver)
         self.assertEqual(resolved.environment["CC"], "clang")
@@ -40,7 +42,9 @@ class PresetRepositoryTests(unittest.TestCase):
             project_presets={
                 "linux": {"condition": "[[ {{system.os}} == 'linux' ]]", "environment": {"CC": "clang"}},
                 "windows": {"condition": "[[ {{system.os}} == 'windows' ]]", "environment": {"CC": "cl"}},
-            }
+            },
+            project_name="demo",
+            project_org=None,
         )
         resolved = repo.resolve(["linux", "windows"], template_resolver=self.resolver)
         self.assertEqual(resolved.environment["CC"], "clang")
@@ -60,7 +64,9 @@ class PresetRepositoryTests(unittest.TestCase):
                     "extra_build_args": ["--build-from-child"],
                     "extra_install_args": ["--install-from-child"],
                 },
-            }
+            },
+            project_name="demo",
+            project_org=None,
         )
         resolved = repo.resolve(["child"], template_resolver=self.resolver)
         self.assertEqual(
@@ -98,7 +104,9 @@ class PresetRepositoryTests(unittest.TestCase):
                         "PATH": "{{env.PATH}}:{{env.BIN_DIR}}",
                     }
                 }
-            }
+            },
+            project_name="demo",
+            project_org=None,
         )
         resolved = repo.resolve(["tooling"], template_resolver=self.resolver)
         self.assertEqual(resolved.environment["SDK_ROOT"], "/opt/sdk")
@@ -114,7 +122,9 @@ class PresetRepositoryTests(unittest.TestCase):
                         "B": "{{env.A}}",
                     }
                 }
-            }
+            },
+            project_name="demo",
+            project_org=None,
         )
         with self.assertRaises(TemplateError) as exc_info:
             repo.resolve(["loop"], template_resolver=self.resolver)
@@ -129,11 +139,67 @@ class PresetRepositoryTests(unittest.TestCase):
                         "B": "{{preset.definitions.A}}",
                     }
                 }
-            }
+            },
+            project_name="demo",
+            project_org=None,
         )
         with self.assertRaises(TemplateError) as exc_info:
             repo.resolve(["loop"], template_resolver=self.resolver)
         self.assertIn("Circular dependency detected", str(exc_info.exception))
+
+    def test_org_scoped_preset_prefers_matching_org(self) -> None:
+        repo = PresetRepository(
+            project_presets={
+                "scoped": {
+                    "org": "vendor",
+                    "environment": {"CC": "clang"},
+                },
+                "local": {
+                    "environment": {"CC": "gcc"},
+                },
+            },
+            shared_presets=[
+                {
+                    "global": {"environment": {"CC": "icc"}},
+                    "other": {"org": "other", "environment": {"CC": "msvc"}},
+                }
+            ],
+            project_name="demo",
+            project_org="vendor",
+        )
+
+        resolved = repo.resolve(["scoped"], template_resolver=self.resolver)
+        self.assertEqual(resolved.environment["CC"], "clang")
+
+        resolved_local = repo.resolve(["local"], template_resolver=self.resolver)
+        self.assertEqual(resolved_local.environment["CC"], "gcc")
+
+        resolved_global = repo.resolve(["global"], template_resolver=self.resolver)
+        self.assertEqual(resolved_global.environment["CC"], "icc")
+
+        fully_qualified = repo.resolve(["vendor/scoped"], template_resolver=self.resolver)
+        self.assertEqual(fully_qualified.environment["CC"], "clang")
+
+    def test_org_scoped_requires_explicit_name_for_different_org(self) -> None:
+        repo = PresetRepository(
+            project_presets={},
+            shared_presets=[
+                {
+                    "scoped": {
+                        "org": "vendor",
+                        "environment": {"OPT_LEVEL": "3"},
+                    }
+                }
+            ],
+            project_name="demo",
+            project_org="other",
+        )
+
+        with self.assertRaises(KeyError):
+            repo.resolve(["scoped"], template_resolver=self.resolver)
+
+        resolved = repo.resolve(["vendor/scoped"], template_resolver=self.resolver)
+        self.assertEqual(resolved.environment["OPT_LEVEL"], "3")
 
 
 if __name__ == "__main__":  # pragma: no cover

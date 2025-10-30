@@ -52,6 +52,7 @@ class ProjectContext:
     install_dir: Path | None = None
     component_dir: Path | None = None
     environment: Mapping[str, str] | None = None
+    org: str | None = None
 
     def to_mapping(self) -> Dict[str, Any]:
         data = {
@@ -68,6 +69,8 @@ class ProjectContext:
                 data[key] = str(value)
         if self.environment:
             data["environment"] = dict(self.environment)
+        if self.org is not None:
+            data["org"] = self.org
         return data
 
 
@@ -145,6 +148,7 @@ class ContextBuilder:
         install_dir: Path | None,
         component_dir: Path | None,
         environment: Mapping[str, str] | None = None,
+        org: str | None = None,
     ) -> ProjectContext:
         return ProjectContext(
             name=name,
@@ -153,6 +157,7 @@ class ContextBuilder:
             install_dir=install_dir,
             component_dir=component_dir,
             environment=environment,
+            org=org,
         )
 
     def environment(self) -> Mapping[str, str]:

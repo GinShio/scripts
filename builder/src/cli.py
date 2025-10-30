@@ -10,7 +10,7 @@ import sys
 
 from .build import BuildEngine, BuildMode, BuildOptions, BuildPlan
 from .command_runner import RecordingCommandRunner, SubprocessCommandRunner
-from .config_loader import ConfigurationStore
+from .config_loader import ConfigurationStore, ProjectDefinition
 from .git_manager import GitManager
 from .validation import validate_project, validate_project_templates, validate_store_structure
 
@@ -219,6 +219,7 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
 
     build_parser = subparsers.add_parser("build", help="Configure and build a project")
     build_parser.add_argument("project", help="Project name to build")
+    build_parser.add_argument("--org", help="Organization/namespace of the project", dest="org")
     build_parser.add_argument("-p", "--preset", action="append", default=[], help="Preset name(s) to apply (comma-separated)")
     build_parser.add_argument("-b", "--branch", help="Git branch to use for the build")
     build_parser.add_argument("-B", "--build-type", help="Override build type (Debug/Release)")
@@ -281,9 +282,11 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
 
     validate_parser = subparsers.add_parser("validate", help="Validate configuration files")
     validate_parser.add_argument("project", nargs="?", help="Validate a single project by name")
+    validate_parser.add_argument("--org", dest="org", help="Organization/namespace for the project when validating")
 
     update_parser = subparsers.add_parser("update", help="Update Git repositories")
     update_parser.add_argument("project", nargs="?", help="Project to update; omit to update all")
+    update_parser.add_argument("--org", dest="org", help="Organization/namespace to filter projects when updating")
     update_parser.add_argument("-b", "--branch", help="Branch to checkout during update")
     update_parser.add_argument("-s", "--submodule", choices=["default", "latest", "skip"], default="default", help="Submodule update strategy")
     update_parser.add_argument("-n", "--dry-run", action="store_true", help="Preview git commands without executing them")
@@ -346,6 +349,11 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         action="store_true",
         help="Include the resolved install directory column in the listing",
     )
+    list_parser.add_argument(
+        "--org",
+        dest="org",
+        help="Organization/namespace to filter projects or disambiguate names",
+    )
     list_parser.set_defaults(submodules=None)
 
     return parser.parse_args(list(argv))
@@ -380,7 +388,18 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
     except ValueError as exc:
         print(f"Error: {exc}")
         return 2
-    dependencies = store.resolve_dependency_chain(args.project)
+    org_opt = getattr(args, "org", None)
+    try:
+        project_key = store.resolve_project_identifier(args.project, org=org_opt)
+    except (KeyError, ValueError) as exc:
+        print(f"Error: {exc}")
+        return 2
+
+    try:
+        dependencies = store.resolve_dependency_chain(project_key)
+    except (KeyError, ValueError) as exc:
+        print(f"Error: {exc}")
+        return 2
     presets = _collect_presets(args.preset)
     operation = BuildMode.AUTO
     if args.config_only:
@@ -391,7 +410,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
         operation = BuildMode.RECONFIG
 
     build_options = BuildOptions(
-        project_name=args.project,
+        project_name=project_key,
         presets=presets,
         branch=args.branch,
         build_type=args.build_type,
@@ -470,7 +489,7 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
 
     for dependency in dependencies:
         dep_options = BuildOptions(
-            project_name=dependency.project.name,
+            project_name=dependency.key,
             presets=list(dependency.presets) if dependency.presets else [],
             branch=build_options.branch,
             build_type=build_options.build_type,
@@ -501,10 +520,21 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
 def _handle_validate(args: Namespace, workspace: Path) -> int:
     store = _load_configuration_store(args, workspace)
     global_errors = validate_store_structure(store)
+    org_opt = getattr(args, "org", None)
     if args.project:
-        project_names = [args.project]
+        try:
+            project_key = store.resolve_project_identifier(args.project, org=org_opt)
+        except (KeyError, ValueError) as exc:
+            print(f"Error: {exc}")
+            return 2
+        project_names = [project_key]
     else:
         project_names = sorted(store.list_projects())
+        if org_opt:
+            project_names = [key for key in project_names if store.projects[key].org == org_opt]
+        if not project_names:
+            print("No projects found")
+            return 0
 
     errors: List[tuple[str, str]] = []
     for message in global_errors:
@@ -541,14 +571,29 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
     git_manager = GitManager(runner)
     planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
 
+    org_opt = getattr(args, "org", None)
+    project_refs: List[tuple[str, ProjectDefinition]] = []
     if args.project:
-        projects = [store.get_project(args.project)]
+        try:
+            project_key = store.resolve_project_identifier(args.project, org=org_opt)
+        except (KeyError, ValueError) as exc:
+            print(f"Error: {exc}")
+            return 2
+        project = store.get_project(project_key)
+        project_refs.append((project_key, project))
     else:
-        projects = [store.projects[name] for name in store.projects]
+        keys = sorted(store.list_projects())
+        if org_opt:
+            keys = [key for key in keys if store.projects[key].org == org_opt]
+        if not keys:
+            print("No projects found")
+            return 0
+        for key in keys:
+            project_refs.append((key, store.projects[key]))
 
-    for project in projects:
+    for project_key, project in project_refs:
         options = BuildOptions(
-            project_name=project.name,
+            project_name=project_key,
             presets=[],
             branch=args.branch,
             extra_config_args=[],
@@ -581,17 +626,36 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
     git_manager = GitManager(runner)
     planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
 
+    org_opt = getattr(args, "org", None)
     selected_projects = list(getattr(args, "projects", []) or [])
-    project_names: List[str] = []
+    user_supplied: List[str] = []
     for entry in selected_projects:
         if not entry:
             continue
         if isinstance(entry, str) and "," in entry:
-            project_names.extend([part.strip() for part in entry.split(",") if part.strip()])
+            user_supplied.extend([part.strip() for part in entry.split(",") if part.strip()])
         else:
-            project_names.append(str(entry))
-    if not project_names:
-        project_names = sorted(store.list_projects())
+            user_supplied.append(str(entry))
+
+    resolved_project_keys: List[str] = []
+    if user_supplied:
+        for candidate in user_supplied:
+            try:
+                key = store.resolve_project_identifier(candidate, org=org_opt)
+            except (KeyError, ValueError) as exc:
+                print(str(exc))
+                continue
+            if key not in resolved_project_keys:
+                resolved_project_keys.append(key)
+    else:
+        keys = sorted(store.list_projects())
+        if org_opt:
+            keys = [key for key in keys if store.projects[key].org == org_opt]
+        resolved_project_keys = keys
+
+    if not resolved_project_keys:
+        print("No projects found")
+        return 0
 
     include_url = bool(getattr(args, "url", False))
     include_path = bool(getattr(args, "path", False))
@@ -606,16 +670,12 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
     else:
         include_submodules = bool(submodule_flag)
 
-    for name in project_names:
-        try:
-            project = store.get_project(name)
-        except KeyError as exc:
-            print(str(exc))
-            continue
+    for key in resolved_project_keys:
+        project = store.get_project(key)
 
         try:
             options = BuildOptions(
-                project_name=project.name,
+                project_name=key,
                 presets=[],
                 branch=args.branch,
                 no_switch_branch=args.no_switch_branch,
@@ -623,10 +683,10 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
             )
             plan = planning_engine.plan(options)
         except ValueError as exc:
-            print(f"Warning: Configuration error for project '{name}': {exc}")
+            print(f"Warning: Configuration error for project '{key}': {exc}")
             continue
         except Exception as exc:
-            print(f"Warning: Error processing project '{name}': {exc}")
+            print(f"Warning: Error processing project '{key}': {exc}")
             continue
 
         repo_path = plan.source_dir
@@ -671,7 +731,7 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
                     submodules = git_manager.list_submodules(repo_path, environment=plan.git_environment)
 
             if checkout_error is not None:
-                print(f"Warning: Could not prepare repository '{name}': {checkout_error}")
+                print(f"Warning: Could not prepare repository '{key}': {checkout_error}")
 
             if state is not None:
                 try:
@@ -681,13 +741,14 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
                         environment=plan.git_environment,
                     )
                 except RuntimeError as exc:
-                    print(f"Warning: Could not restore repository '{name}': {exc}")
+                    print(f"Warning: Could not restore repository '{key}': {exc}")
         else:
             branch, commit = git_manager.get_repository_state(repo_path, environment=plan.git_environment)
 
         branch_display = branch or "-"
         commit_display = commit[:11] if commit else "<missing>"
         row: dict[str, str] = {
+            "Org": project.org or "-",
             "Project": project.name,
             "Branch": branch_display,
             "Commit": commit_display,
@@ -719,11 +780,11 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         rows.append(row)
 
         if not repo_path.exists():
-            print(f"Warning: Repository path '{repo_path}' does not exist for project '{name}'")
+            print(f"Warning: Repository path '{repo_path}' does not exist for project '{key}'")
             continue
 
         if not repo_ready:
-            print(f"Warning: Git repository not found at '{repo_path}' for project '{name}'")
+            print(f"Warning: Git repository not found at '{repo_path}' for project '{key}'")
             continue
 
         if not include_submodules:
@@ -734,6 +795,7 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
             hash_display = hash_value[:11] if hash_value else "<missing>"
             url_display = submodule.get("url") or "-"
             submodule_row: dict[str, str] = {
+                "Org": "",
                 "Project": "",
                 "Branch": "",
                 "Commit": hash_display,
@@ -756,7 +818,7 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         print("No projects found")
         return 0
 
-    headers: List[str] = ["Project", "Branch", "Commit"]
+    headers: List[str] = ["Org", "Project", "Branch", "Commit"]
     column_order: List[tuple[str, bool]] = [
         ("Path", include_path),
         ("URL", include_url),

@@ -489,6 +489,142 @@ class ConfigurationLoaderTests(unittest.TestCase):
                         ["--install-from-project", "--shared"],
                 )
 
+        def test_infers_org_from_directory_structure(self) -> None:
+                (self.config_dir / "config.toml").write_text("[global]\n")
+                org_dir = self.projects_dir / "org1"
+                org_dir.mkdir(parents=True, exist_ok=True)
+                (org_dir / "demo.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "demo"
+                                source_dir = "/src/org1/demo"
+
+                                [git]
+                                url = "https://example.com/org1/demo.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                self.assertIn("org1/demo", store.projects)
+
+                project = store.get_project("org1/demo")
+                self.assertEqual(project.name, "demo")
+                self.assertEqual(project.org, "org1")
+
+                resolved = store.resolve_project_identifier("demo")
+                self.assertEqual(resolved, "org1/demo")
+
+        def test_explicit_project_org_overrides_path(self) -> None:
+                (self.config_dir / "config.toml").write_text("[global]\n")
+                org_dir = self.projects_dir / "filesystem"
+                org_dir.mkdir(parents=True, exist_ok=True)
+                (org_dir / "demo.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "demo"
+                                org = "explicit"
+                                source_dir = "/src/demo"
+
+                                [git]
+                                url = "https://example.com/demo.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                self.assertIn("explicit/demo", store.projects)
+                project = store.get_project("explicit/demo")
+                self.assertEqual(project.org, "explicit")
+
+                resolved = store.resolve_project_identifier("demo", org="explicit")
+                self.assertEqual(resolved, "explicit/demo")
+
+        def test_resolve_project_identifier_handles_duplicate_names(self) -> None:
+                (self.config_dir / "config.toml").write_text("[global]\n")
+                for org in ("alpha", "beta"):
+                        org_dir = self.projects_dir / org
+                        org_dir.mkdir(parents=True, exist_ok=True)
+                        (org_dir / "shared.toml").write_text(
+                                textwrap.dedent(
+                                        f"""
+                                        [project]
+                                        name = "shared"
+                                        source_dir = "/src/{org}/shared"
+
+                                        [git]
+                                        url = "https://example.com/{org}/shared.git"
+                                        main_branch = "main"
+                                        """
+                                ).strip()
+                        )
+
+                store = ConfigurationStore.from_directory(self.root)
+
+                with self.assertRaises(ValueError) as ctx:
+                        store.resolve_project_identifier("shared")
+                self.assertIn("Ambiguous project", str(ctx.exception))
+
+                resolved_alpha = store.resolve_project_identifier("shared", org="alpha")
+                resolved_beta = store.resolve_project_identifier("shared", org="beta")
+                self.assertEqual(resolved_alpha, "alpha/shared")
+                self.assertEqual(resolved_beta, "beta/shared")
+
+        def test_dependency_resolution_prefers_same_org(self) -> None:
+                (self.config_dir / "config.toml").write_text("[global]\n")
+
+                for org in ("alpha", "beta"):
+                        org_dir = self.projects_dir / org
+                        org_dir.mkdir(parents=True, exist_ok=True)
+                        (org_dir / "lib.toml").write_text(
+                                textwrap.dedent(
+                                        f"""
+                                        [project]
+                                        name = "lib"
+                                        source_dir = "{{builder.path}}/{org}/lib"
+                                        build_dir = "_build/{org}/lib"
+                                        build_system = "cmake"
+
+                                        [git]
+                                        url = "https://example.com/{org}/lib.git"
+                                        main_branch = "main"
+                                        """
+                                ).strip()
+                        )
+
+                alpha_app_dir = (self.projects_dir / "alpha")
+                (alpha_app_dir / "app.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "app"
+                                source_dir = "{{builder.path}}/alpha/app"
+                                build_dir = "_build/alpha/app"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/alpha/app.git"
+                                main_branch = "main"
+
+                                [[dependencies]]
+                                name = "lib"
+                                presets = ["common"]
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                chain = store.resolve_dependency_chain("alpha/app")
+                self.assertEqual(len(chain), 1)
+                dependency = chain[0]
+                self.assertEqual(dependency.key, "alpha/lib")
+                self.assertEqual(dependency.project.org, "alpha")
+                self.assertEqual(dependency.presets, ["common"])
+
 
 if __name__ == "__main__":  # pragma: no cover
         unittest.main()

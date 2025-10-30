@@ -25,13 +25,15 @@ The configuration files are organized in the following structure as an example w
 └── projects/                      # Project-specific configuration
     ├── myapp.toml
     ├── libcore.toml
-    └── webserver.toml
+    ├── webserver.toml
+    └── vendor/                    # Optional organization nesting
+        └── graphics.toml
 ```
 
 ### Key Points
 
 - **Shared base configuration**: Files such as `company-base.toml`, `company-base.json`, or `company-base.yaml` contain reusable settings shared across multiple projects. Higher-priority directories can override these entries with updated values.
-- **Project configuration**: Each project has its own configuration file under `projects/`, named after the project. Only one file per stem is allowed (e.g. `myapp.toml` *or* `myapp.yaml`, not both).
+- **Project configuration**: Each project has its own configuration file under `projects/`, named after the project. Only one file per stem is allowed (e.g. `myapp.toml` *or* `myapp.yaml`, not both). Projects can also live under organization folders (for example `projects/vendor/graphics.toml`) to declare their owning organization.
 - **Layered overrides**: Project files discovered later in the precedence chain replace earlier definitions for the same project name, enabling local or user-specific overrides without editing the shared repository copy.
 
 
@@ -83,6 +85,11 @@ Each project configuration file defines the project-specific settings.
 [project]
 # Project identifier (required)
 name = "myapp"
+
+# Owning organization (optional)
+# If omitted, Builder infers it from the config path (e.g. projects/<org>/myapp.toml)
+# or treats the project as unscoped.
+org = "example"
 
 # Project root directory (required)
 source_dir = "/home/user/projects/{{project.name}}"
@@ -145,6 +152,8 @@ clone_script = "{{project.source_dir}}/scripts/clone.sh"
 SSH_COMMAND = "ssh -i {{project.environment.TOOLS_ROOT}}/keys/deploy_rsa"
 ```
 
+If you omit `project.org`, Builder infers it from the file path (for example `config/projects/vendor/myapp.toml` produces `org = "vendor"`). Files stored directly under `projects/` remain unscoped and keep using the bare project name.
+
 The `toolchain` field selects the default toolchain for the project. It must match either a built-in entry (`clang`,
 `gcc`, `msvc`, or `rustc`) or a name provided by your configuration's `toolchains` registry. The CLI `--toolchain`
 flag can temporarily override this selection when running a build.
@@ -167,6 +176,7 @@ array of tables named `dependencies`:
 ```toml
 [[dependencies]]
 name = "libcore"          # Project name declared in another file
+org = "example"           # Optional organization hint when the name is reused
 presets = ["ci", "asan"]  # Optional presets applied when building the dependency
 
 [[dependencies]]
@@ -177,6 +187,13 @@ Dependencies are resolved transitively and executed in topological order before
 the requested project. Cycles are rejected during planning. To track a project
 without executing build steps, omit its `build_dir`; the dependency will still
 be planned so variables resolve, but no configure/build commands will run.
+
+### Organizations and Fully Qualified Project Names
+
+- Every project can declare an organization via `project.org`. When the field is missing Builder infers it from the configuration path (`config/projects/<org>/<project>.toml`) when possible.
+- Projects are uniquely addressed by `org/name` once an organization is known. Unscoped projects remain addressable by the bare name.
+- CLI commands accept either the bare name or the fully qualified form. Supply `--org` to disambiguate a project when multiple organizations reuse the same name.
+- Dependency entries may include `org` to reference a specific organization; otherwise Builder picks the matching project when the name is unique. You can also provide a fully qualified name directly (for example `name = "vendor/libcore"`).
 
 ---
 
@@ -200,6 +217,10 @@ environment = {
     CXX = "clang++",
     CFLAGS = "-O2 -Wall"
 }
+
+# Optional scoping metadata (defaults to global visibility)
+# org = "example"
+# project = "myapp"
 
 # Newly defined environment variables can reference other entries using the
 # `{{env.NAME}}` placeholder. Resolution happens after each preset merges, so
@@ -227,6 +248,7 @@ extra_build_args = ["--warn-uninitialized"]
 - Use the `extends` field to inherit other presets.
 - Inheritance is static, and the order determines override priority (later overrides earlier).
 - Cyclic inheritance is not allowed and will be validated.
+- Scoped presets (those declaring `org` and/or `project`) are only considered when they match the active project. Resolution prefers project-scoped presets, then organization-scoped, then global entries.
 
 ---
 
@@ -245,6 +267,7 @@ extra_build_args = ["--warn-uninitialized"]
 2. **Project Variables**:
    - `{{project.name}}`: Project name.
    - `{{project.source_dir}}`: Project source directory.
+   - `{{project.org}}`: Owning organization (if defined).
 3. **System Variables**:
    - `{{system.os}}`: Operating system name.
    - `{{system.architecture}}`: System architecture.
@@ -261,7 +284,8 @@ extra_build_args = ["--warn-uninitialized"]
 ## Validation Rules
 
 ### Required Fields:
-- `project.name`: Must be defined and unique.
+- `project.name`: Must be defined and unique within its organization (or globally when no organization is set).
+- `project.org`: Optional; when present the combination `project.org` + `project.name` must be unique across the configuration set.
 - `project.source_dir`: Must exist and be accessible.
 - `git.url`: Remote repository URL must be defined.
 - `git.main_branch`: Main branch must be specified.
@@ -314,11 +338,12 @@ log_file = "{{builder.path}}/logs/build.log"
 default_operation = "auto"
 ```
 
-### Project Configuration (`projects/myapp.toml`):
+### Project Configuration (`projects/example/myapp.toml`):
 
 ```toml
 [project]
 name = "myapp"
+org = "example"
 source_dir = "/home/user/projects/myapp"
 build_dir = "_build/main_Debug"
 install_dir = "_install/main_Debug"
