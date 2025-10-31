@@ -22,18 +22,18 @@ The configuration files are organized in the following structure as an example w
 /config
 ├── config.toml                    # Global configuration file
 ├── company-base.toml              # Shared base configuration
-└── projects/                      # Project-specific configuration
-    ├── myapp.toml
-    ├── libcore.toml
-    ├── webserver.toml
-    └── vendor/                    # Optional organization nesting
-        └── graphics.toml
+└── projects/                      # Project-specific configuration (optional)
+   ├── myapp.toml
+   ├── libcore.toml
+   ├── webserver.toml
+   └── vendor/                    # Optional organization nesting
+      └── graphics.toml
 ```
 
 ### Key Points
 
 - **Shared base configuration**: Files such as `company-base.toml`, `company-base.json`, or `company-base.yaml` contain reusable settings shared across multiple projects. Higher-priority directories can override these entries with updated values.
-- **Project configuration**: Each project has its own configuration file under `projects/`, named after the project. Only one file per stem is allowed (e.g. `myapp.toml` *or* `myapp.yaml`, not both). Projects can also live under organization folders (for example `projects/vendor/graphics.toml`) to declare their owning organization.
+- **Project configuration**: Builder auto-detects project configuration files wherever they appear inside `config/` (or any configured directory). You can place `*.toml`/`*.json`/`*.yaml` project files directly in the root or in arbitrarily nested subdirectories. Only one file per stem is allowed (e.g. `myapp.toml` *or* `myapp.yaml`, not both). When a file resides in a subdirectory Builder uses the first directory segment to infer the owning organization (for example `config/vendor/demo.toml` → `org = "vendor"`). If the first segment is `projects`, the next segment (if any) is used instead to ease migrations from the previous layout.
 - **Layered overrides**: Project files discovered later in the precedence chain replace earlier definitions for the same project name, enabling local or user-specific overrides without editing the shared repository copy.
 
 
@@ -152,7 +152,7 @@ clone_script = "{{project.source_dir}}/scripts/clone.sh"
 SSH_COMMAND = "ssh -i {{project.environment.TOOLS_ROOT}}/keys/deploy_rsa"
 ```
 
-If you omit `project.org`, Builder infers it from the file path (for example `config/projects/vendor/myapp.toml` produces `org = "vendor"`). Files stored directly under `projects/` remain unscoped and keep using the bare project name.
+If you omit `project.org`, Builder infers it from the file path: the first folder beneath each configuration directory becomes the organization (for example `config/vendor/myapp.toml` or `config/projects/vendor/myapp.toml` both produce `org = "vendor"`). Files stored at the configuration root (or directly inside `projects/`) remain unscoped and keep using the bare project name.
 
 The `toolchain` field selects the default toolchain for the project. It must match either a built-in entry (`clang`,
 `gcc`, `msvc`, or `rustc`) or a name provided by your configuration's `toolchains` registry. The CLI `--toolchain`

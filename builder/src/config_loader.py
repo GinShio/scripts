@@ -292,58 +292,65 @@ class ConfigurationStore:
         shared_configs: Dict[str, Mapping[str, Any]] = {}
         toolchain_registry = ToolchainRegistry.with_builtins()
         projects: Dict[str, ProjectDefinition] = {}
-        have_projects_dir = False
+        projects_found = False
+
+        allowed_suffixes = {".toml", ".json", ".yaml", ".yml"}
 
         for config_dir in resolved_dirs:
+            processed_paths: set[Path] = set()
+
             top_level_files = collect_config_files(config_dir)
             global_path = top_level_files.pop("config", None)
             if global_path is not None:
                 data = load_config_file(global_path)
+                processed_paths.add(global_path)
                 global_data = merge_mappings(global_data, data)
 
             toolchains_path = top_level_files.pop("toolchains", None)
             if toolchains_path is not None:
                 toolchain_data = load_config_file(toolchains_path)
+                processed_paths.add(toolchains_path)
                 toolchain_registry.merge_from_mapping(toolchain_data)
 
             for stem, path in sorted(top_level_files.items()):
-                shared_configs[stem] = load_config_file(path)
+                data = load_config_file(path)
+                processed_paths.add(path)
+                if cls._looks_like_project(data):
+                    projects_found = cls._ingest_project_file(
+                        projects,
+                        data,
+                        path,
+                        inferred_org=None,
+                    ) or projects_found
+                else:
+                    shared_configs[stem] = data
 
-            projects_dir = config_dir / "projects"
-            if not projects_dir.exists():
-                continue
-
-            have_projects_dir = True
-            project_paths: List[Path] = []
-            for candidate in projects_dir.rglob("*"):
+            # Scan entire tree for arbitrarily placed project definitions.
+            for candidate in sorted(config_dir.rglob("*")):
                 if not candidate.is_file():
                     continue
-                if candidate.suffix.lower() not in {".toml", ".json", ".yaml", ".yml"}:
+                if candidate.suffix.lower() not in allowed_suffixes:
                     continue
-                project_paths.append(candidate)
+                if candidate in processed_paths:
+                    continue
 
-            for path in sorted(project_paths):
-                data = load_config_file(path)
-                project = ProjectDefinition.from_mapping(data)
+                data = load_config_file(candidate)
+                processed_paths.add(candidate)
+                if not cls._looks_like_project(data):
+                    continue
 
-                rel_path = path.relative_to(projects_dir)
-                path_org: str | None = None
-                if rel_path.parent != Path("."):
-                    path_org = rel_path.parts[0]
+                rel_path = candidate.relative_to(config_dir)
+                rel_dir_parts = rel_path.parts[:-1]
+                inferred_org = cls._infer_org_from_parts(rel_dir_parts)
 
-                effective_org = project.org or path_org
-                key = f"{effective_org}/{project.name}" if effective_org else project.name
+                projects_found = cls._ingest_project_file(
+                    projects,
+                    data,
+                    candidate,
+                    inferred_org=inferred_org,
+                ) or projects_found
 
-                if not project.org and effective_org:
-                    project.org = effective_org
-
-                raw_mapping = dict(project.raw) if isinstance(project.raw, Mapping) else {}
-                raw_mapping["__source_path__"] = str(path)
-                project.raw = raw_mapping
-
-                projects[key] = project
-
-        if not have_projects_dir or not projects:
+        if not projects_found:
             raise FileNotFoundError("No project configurations found in the provided directories")
 
         global_config = GlobalConfig.from_mapping(global_data)
@@ -364,6 +371,49 @@ class ConfigurationStore:
             toolchains=toolchain_registry,
             project_aliases=project_aliases,
         )
+
+    @staticmethod
+    def _ingest_project_file(
+        projects: Dict[str, ProjectDefinition],
+        data: Mapping[str, Any],
+        source_path: Path,
+        *,
+        inferred_org: str | None,
+    ) -> bool:
+        project = ProjectDefinition.from_mapping(data)
+
+        effective_org = project.org or inferred_org
+        key = f"{effective_org}/{project.name}" if effective_org else project.name
+
+        if not project.org and effective_org:
+            project.org = effective_org
+
+        raw_mapping = dict(project.raw) if isinstance(project.raw, Mapping) else {}
+        raw_mapping["__source_path__"] = str(source_path)
+        project.raw = raw_mapping
+
+        projects[key] = project
+        return True
+
+    @staticmethod
+    def _looks_like_project(data: Mapping[str, Any]) -> bool:
+        project_section = data.get("project") if isinstance(data, Mapping) else None
+        return isinstance(project_section, Mapping)
+
+    @staticmethod
+    def _infer_org_from_parts(parts: Sequence[str]) -> str | None:
+        if not parts:
+            return None
+        meaningful_parts = [segment for segment in parts if segment]
+        if not meaningful_parts:
+            return None
+
+        first = meaningful_parts[0]
+        if first == "projects" and len(meaningful_parts) > 1:
+            return meaningful_parts[1]
+        if first == "projects":
+            return None
+        return first
 
     def list_projects(self) -> Iterable[str]:
         return self.projects.keys()

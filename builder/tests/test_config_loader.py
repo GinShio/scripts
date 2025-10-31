@@ -18,8 +18,9 @@ class ConfigurationLoaderTests(unittest.TestCase):
                 self.temp_dir = tempfile.TemporaryDirectory()
                 self.root = Path(self.temp_dir.name)
                 self.config_dir = self.root / "config"
+                self.config_dir.mkdir(parents=True, exist_ok=True)
                 self.projects_dir = self.config_dir / "projects"
-                self.projects_dir.mkdir(parents=True)
+                self.projects_dir.mkdir(parents=True, exist_ok=True)
 
         def tearDown(self) -> None:
                 self.temp_dir.cleanup()
@@ -185,6 +186,52 @@ class ConfigurationLoaderTests(unittest.TestCase):
                 self.assertEqual(project.dependencies[0].presets, ["debug"])
                 self.assertEqual(project.dependencies[1].name, "tools")
                 self.assertEqual(project.dependencies[1].presets, [])
+
+        def test_from_directories_merges_overrides_in_priority_order(self) -> None:
+                base_shared = self.config_dir / "company-base.toml"
+        def test_loads_project_from_config_root(self) -> None:
+                project_path = self.config_dir / "standalone.toml"
+                project_path.write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "standalone"
+                                source_dir = "/src/standalone"
+
+                                [git]
+                                url = "https://example.com/standalone.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                self.assertIn("standalone", store.projects)
+                project = store.get_project("standalone")
+                self.assertEqual(project.name, "standalone")
+                self.assertIsNone(project.org)
+
+        def test_loads_project_from_nested_directory(self) -> None:
+                nested_dir = self.config_dir / "orgA"
+                nested_dir.mkdir(parents=True, exist_ok=True)
+                (nested_dir / "demo.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "demo"
+                                source_dir = "/src/demo"
+
+                                [git]
+                                url = "https://example.com/orgA/demo.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directory(self.root)
+                self.assertIn("orgA/demo", store.projects)
+                project = store.get_project("orgA/demo")
+                self.assertEqual(project.org, "orgA")
 
         def test_from_directories_merges_overrides_in_priority_order(self) -> None:
                 base_shared = self.config_dir / "company-base.toml"
@@ -516,6 +563,95 @@ class ConfigurationLoaderTests(unittest.TestCase):
 
                 resolved = store.resolve_project_identifier("demo")
                 self.assertEqual(resolved, "org1/demo")
+
+        def test_from_directories_merges_overrides_in_priority_order(self) -> None:
+                base_shared = self.config_dir / "company-base.toml"
+                base_shared.write_text(
+                        textwrap.dedent(
+                                """
+                                [presets.default.environment]
+                                CC = "gcc"
+                                """
+                        ).strip()
+                )
+                base_project = self.projects_dir / "demo.toml"
+                base_project.write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "demo"
+                                source_dir = "{{builder.path}}/demo"
+                                build_dir = "_build/base"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/demo.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+
+                override_dir = self.root / "override"
+                override_projects = override_dir / "projects"
+                override_projects.mkdir(parents=True)
+                (override_dir / "config.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [global]
+                                default_build_type = "Release"
+                                """
+                        ).strip()
+                )
+                (override_dir / "company-base.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [presets.default.environment]
+                                CC = "clang"
+                                """
+                        ).strip()
+                )
+                (override_projects / "demo.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "demo"
+                                source_dir = "{{builder.path}}/demo"
+                                build_dir = "_build/override"
+                                build_system = "cmake"
+
+                                [git]
+                                url = "https://example.com/demo.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+                (override_projects / "tools.toml").write_text(
+                        textwrap.dedent(
+                                """
+                                [project]
+                                name = "tools"
+                                source_dir = "{{builder.path}}/tools"
+
+                                [git]
+                                url = "https://example.com/tools.git"
+                                main_branch = "main"
+                                """
+                        ).strip()
+                )
+
+                store = ConfigurationStore.from_directories(self.root, [self.config_dir, override_dir])
+
+                self.assertEqual(store.config_dirs, (self.config_dir.resolve(), override_dir.resolve()))
+                self.assertEqual(store.global_config.default_build_type, "Release")
+
+                shared = store.shared_configs["company-base"]
+                env = shared.get("presets", {}).get("default", {}).get("environment", {})
+                self.assertEqual(env.get("CC"), "clang")
+
+                demo = store.get_project("demo")
+                self.assertEqual(demo.build_dir, "_build/override")
+
+                self.assertIn("tools", store.projects)
 
         def test_explicit_project_org_overrides_path(self) -> None:
                 (self.config_dir / "config.toml").write_text("[global]\n")
