@@ -185,8 +185,8 @@ builder build myapp --install
 ### Toolchain Management
 
 - **Explicit selection**:
-   - Every project must set `project.toolchain` (or `project.default_toolchain` via shared config) when a build system is
-      configured.
+   - Projects that define a build system must set `project.toolchain` (or `project.default_toolchain` via shared config).
+   - Projects without a build system may omit the field entirely.
    - The CLI `--toolchain NAME` flag can override the project default at runtime.
 
 - **Built-in registry**:

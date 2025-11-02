@@ -291,7 +291,7 @@ extra_build_args = ["--warn-uninitialized"]
 - `git.main_branch`: Main branch must be specified.
 - `project.build_system`: Required when `project.build_dir` is provided. Supported values: `cmake`, `meson`, `bazel`, `cargo`, `make`.
 - `project.build_dir`: Required for `cmake`, `meson`, `cargo`, and `make`. Optional otherwise—omit it to mark a project as "validate only".
-- `project.toolchain`: Required whenever a project defines a build system; determines the default toolchain used during planning.
+- `project.toolchain`: Required whenever a project defines a build system; optional when no build system is configured.
 
 ### Preset Validation:
 - Preset names must be unique.

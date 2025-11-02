@@ -200,7 +200,6 @@ class BuildEngineTests(unittest.TestCase):
                 [project]
                 name = "meta"
                 source_dir = "{{builder.path}}/meta"
-                toolchain = "clang"
 
                 [git]
                 url = "https://example.com/meta.git"
@@ -726,6 +725,7 @@ class BuildEngineTests(unittest.TestCase):
         plan = self.engine.plan(options)
         self.assertIsNone(plan.build_dir)
         self.assertEqual(plan.steps, [])
+        self.assertIsNone(plan.context["user"].get("toolchain"))
         results = self.engine.execute(plan, dry_run=False)
         self.assertEqual(results, [])
 

@@ -334,33 +334,42 @@ class BuildEngine:
         generator = self._resolve_generator(options, project)
         system_ctx = context_builder.system()
 
-        selected_toolchain = options.toolchain or project.default_toolchain
-        if not selected_toolchain:
+        requires_toolchain = project.build_system is not None
+        selected_toolchain_raw = options.toolchain or project.default_toolchain
+        toolchain_key: str | None = None
+        definition: ToolchainDefinition | None = None
+        cc: str | None = None
+        cxx: str | None = None
+        linker: str | None = None
+        launcher: str | None = None
+
+        if selected_toolchain_raw:
+            selected_toolchain = selected_toolchain_raw.strip()
+            if not selected_toolchain:
+                raise ValueError("Toolchain name cannot be empty")
+
+            toolchain_key = selected_toolchain.lower()
+            definition = self._store.toolchains.get(toolchain_key)
+            if definition is None:
+                available = ", ".join(sorted(self._store.toolchains.available())) or "<none>"
+                raise ValueError(f"Unknown toolchain '{selected_toolchain}'. Available toolchains: {available}")
+
+            preview_env: Dict[str, str] = {}
+            preview_defs: Dict[str, Any] = {}
+            definition.apply(
+                build_system=project.build_system,
+                environment=preview_env,
+                definitions=preview_defs,
+                explicit=True,
+            )
+            cc = preview_env.get("CC") or definition.resolved_cc
+            cxx = preview_env.get("CXX") or definition.resolved_cxx
+            linker = self._determine_linker(toolchain=toolchain_key, os_name=system_ctx.os_name, definition=definition)
+            launcher = definition.resolve_launcher(project.build_system)
+        elif requires_toolchain:
             raise ValueError(
                 f"No toolchain specified for project '{project.name}'. Provide one via project.toolchain or --toolchain."
             )
-
-        toolchain_key = selected_toolchain.strip().lower()
-        if not toolchain_key:
-            raise ValueError("Toolchain name cannot be empty")
-
-        definition = self._store.toolchains.get(toolchain_key)
-        if definition is None:
-            available = ", ".join(sorted(self._store.toolchains.available())) or "<none>"
-            raise ValueError(f"Unknown toolchain '{selected_toolchain}'. Available toolchains: {available}")
-
-        preview_env: Dict[str, str] = {}
-        preview_defs: Dict[str, Any] = {}
-        definition.apply(
-            build_system=project.build_system,
-            environment=preview_env,
-            definitions=preview_defs,
-            explicit=True,
-        )
-        cc = preview_env.get("CC") or definition.resolved_cc
-        cxx = preview_env.get("CXX") or definition.resolved_cxx
-        linker = self._determine_linker(toolchain=toolchain_key, os_name=system_ctx.os_name, definition=definition)
-        launcher = definition.resolve_launcher(project.build_system)
 
         user_ctx = context_builder.user(
             branch=branch,
@@ -493,6 +502,11 @@ class BuildEngine:
 
             if project.build_system == "cargo":
                 environment.setdefault("CARGO_TARGET_DIR", str(paths.build_dir))
+
+            if toolchain_key is None:
+                raise ValueError(
+                    f"No toolchain specified for project '{project.name}'. Provide one via project.toolchain or --toolchain."
+                )
 
             cc, cxx, linker, launcher = self._apply_toolchain_environment(
                 project=project,
