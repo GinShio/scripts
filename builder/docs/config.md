@@ -161,12 +161,13 @@ flag can temporarily override this selection when running a build.
 Use `extra_config_args` to append arguments only to the configuration command
 (for example, extra `-D` definitions for CMake). Use `extra_build_args`
 for flags that should only be passed to the build step (such as `--target`).
+When running the CLI, the shorthand `-Xconfig,-DNAME=VALUE` (or
+`--extra-config-args -DNAME=VALUE`) forwards the same argument to the
+configuration step without mutating the resolved definition map.
 
 Project-level environment variables are resolved before presets run and merge into the build environment. They support all template placeholders (including references to other `project.environment` entries) and become available through `{{env.NAME}}` and `{{project.environment.NAME}}`. The optional `[git.environment]` section behaves similarly but applies only to Git operations and custom clone/update scripts.
 
 After presets apply, configuration fields (such as `extra_config_args`, `extra_build_args`, or script paths) can reference preset outputs using `{{preset.environment.NAME}}` and `{{preset.definitions.NAME}}`.
-
-> **Runtime overrides**: The CLI `-DNAME=VALUE` / `--definition NAME=VALUE` flags temporarily extend or replace resolved definitions without editing configuration files.
 
 ## Project Dependencies
 
@@ -260,7 +261,10 @@ Builder constructs the final build environment and definition map by layering so
 4. Resolve and merge `[project.environment]` so project variables can reference toolchain-provided values.
 5. Apply default presets supplied by Builder (for example `configs.debug` / `configs.release`, when present).
 6. Apply presets supplied on the CLI (`--preset`) in the order they are declared; each preset can override earlier sources.
-7. Finally apply CLI `-DNAME=VALUE` / `--definition NAME=VALUE` overrides.
+
+CLI-provided configuration arguments (via `-Xconfig` or `--extra-config-args`)
+are appended directly to the generated commands and therefore operate outside
+this layered map.
 
 This layering ensures presets and ad-hoc overrides see the complete context produced by the toolchain while still retaining the ability to supersede any earlier value.
 

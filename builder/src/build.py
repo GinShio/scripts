@@ -42,7 +42,6 @@ class BuildOptions:
     toolchain: str | None = None
     install_dir: str | None = None
     operation: BuildMode = BuildMode.AUTO
-    definitions: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -614,10 +613,6 @@ class BuildEngine:
             linker=linker,
             launcher=launcher,
         )
-
-        # 7. CLI -D overrides have highest priority
-        if options.definitions:
-            definitions.update(options.definitions)
 
         # Reinforce CLI build-type semantics so presets cannot override explicit flags
         self._apply_cmake_build_type(

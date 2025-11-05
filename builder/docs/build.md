@@ -127,7 +127,6 @@ builder build myapp --preset development --verbose
 - `-G NAME` / `--generator NAME` – force a particular generator (Ninja, Visual Studio, etc.).
 - `-B TYPE` / `--build-type TYPE` – override the build type (Debug/Release/custom profiles).
 - `-t TARGET` / `--target TARGET` – build a single target when the backend supports it.
-- `-DNAME=VALUE` / `--definition NAME=VALUE` – inject temporary build definitions (applies during configuration).
 - `-T NAME` / `--toolchain NAME` – select a toolchain (clang, gcc, msvc, rustc).
 
 #### Mode Details
@@ -204,8 +203,8 @@ builder build myapp --install
 - **Configurable metadata**:
    - Toolchain entries can pin compiler executables, preferred linkers, and build-system definitions such as
       `CMAKE_*`. Builder injects toolchain values first, derives build-system defaults (compilers, launchers, build
-      type, Cargo target dir, color diagnostics), then evaluates project environment, default presets, CLI presets, and
-      finally CLI `-D/--definition` overrides so downstream layers remain predictable.
+      type, Cargo target dir, color diagnostics), then evaluates project environment and preset layers so downstream
+      overrides remain predictable.
 
 **Example Error**:
 ```
