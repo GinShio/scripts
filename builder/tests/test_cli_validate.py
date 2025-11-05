@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import io
+import os
 import tempfile
 import textwrap
 import unittest
@@ -16,6 +17,7 @@ class ValidateCommandTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temp_dir.name)
+        self._orig_config_dir = os.environ.pop("BUILDER_CONFIG_DIR", None)
         config_dir = self.workspace / "config"
         projects_dir = config_dir / "projects"
         projects_dir.mkdir(parents=True)
@@ -60,6 +62,8 @@ class ValidateCommandTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        if self._orig_config_dir is not None:
+            os.environ["BUILDER_CONFIG_DIR"] = self._orig_config_dir
         self.temp_dir.cleanup()
 
     def test_parse_arguments_accepts_positional_project(self) -> None:

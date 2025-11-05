@@ -106,54 +106,88 @@ class BuildEngine:
             return project.git.component_branch
         return project.git.main_branch
 
-    def _apply_toolchain_environment(
+    def _apply_toolchain_definitions(
         self,
         *,
         project: ProjectDefinition,
         environment: Dict[str, str],
         definitions: Dict[str, Any],
-        options: BuildOptions,
-        toolchain: str,
+        toolchain: str | None,
+        definition: ToolchainDefinition | None,
         cc: str | None,
         cxx: str | None,
         linker: str | None,
         launcher: str | None,
-        definition: ToolchainDefinition | None,
     ) -> tuple[str | None, str | None, str | None, str | None]:
+        if not toolchain or definition is None:
+            return cc, cxx, linker, launcher
+
         self._ensure_toolchain_compatibility(
             build_system=project.build_system,
             toolchain=toolchain,
             definition=definition,
         )
 
+        # Apply toolchain environment/definitions first so downstream overrides can layer cleanly.
+        definition.apply(
+            build_system=project.build_system,
+            environment=environment,
+            definitions=definitions,
+            explicit=True,
+        )
+
+        resolved_cc = definition.resolved_cc
+        resolved_cxx = definition.resolved_cxx
+        resolved_linker = definition.resolved_linker
+        override_launcher = definition.resolve_launcher(project.build_system)
+
+        if resolved_cc:
+            cc = resolved_cc
+        if resolved_cxx:
+            cxx = resolved_cxx
+        if resolved_linker:
+            linker = resolved_linker
+        if override_launcher is not None:
+            launcher = override_launcher
+
+        return cc, cxx, linker, launcher
+
+    def _apply_toolchain_runtime_environment(
+        self,
+        *,
+        project: ProjectDefinition,
+        environment: Dict[str, str],
+        toolchain: str | None,
+        definition: ToolchainDefinition | None,
+        options: BuildOptions,
+        cc: str | None,
+        cxx: str | None,
+        linker: str | None,
+        launcher: str | None,
+        allow_overwrite: bool = True,
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        if not toolchain or definition is None:
+            return cc, cxx, linker, launcher
+
         explicit = options.toolchain is not None
-        resolved_launcher = launcher
-        if definition is not None:
-            definition.apply(
-                build_system=project.build_system,
-                environment=environment,
-                definitions=definitions,
-                explicit=explicit,
-            )
-            if definition.resolved_cc:
-                cc = definition.resolved_cc
-            if definition.resolved_cxx:
-                cxx = definition.resolved_cxx
-            if definition.resolved_linker:
-                linker = definition.resolved_linker
-            override_launcher = definition.resolve_launcher(project.build_system)
-            if override_launcher is not None:
-                resolved_launcher = override_launcher
+
+        # Fall back to toolchain metadata when preview values are missing.
+        if definition.resolved_cc is not None:
+            cc = definition.resolved_cc
+        if definition.resolved_cxx is not None:
+            cxx = definition.resolved_cxx
+        linker = definition.resolved_linker or linker
+        launcher_override = definition.resolve_launcher(project.build_system)
+        if launcher_override is not None:
+            launcher = launcher_override
 
         def apply_value(key: str, value: str | None) -> None:
             if not value:
                 return
-            if explicit:
+            if explicit or allow_overwrite:
                 environment[key] = value
             else:
-                existing = environment.get(key)
-                if existing != value:
-                    environment[key] = value
+                environment.setdefault(key, value)
 
         apply_value("CC", cc)
         apply_value("CXX", cxx)
@@ -162,12 +196,12 @@ class BuildEngine:
             apply_value("CC_LD", linker)
             apply_value("CXX_LD", linker)
 
-        if resolved_launcher:
+        if launcher:
             def prepend(value: str | None) -> str | None:
                 if not value:
                     return value
-                prefix = f"{resolved_launcher} "
-                return value if value.startswith(prefix) else f"{resolved_launcher} {value}"
+                prefix = f"{launcher} "
+                return value if value.startswith(prefix) else f"{launcher} {value}"
 
             current_cc = environment.get("CC")
             current_cxx = environment.get("CXX")
@@ -176,7 +210,54 @@ class BuildEngine:
             if current_cxx:
                 environment["CXX"] = prepend(current_cxx)
 
-        return cc, cxx, linker, resolved_launcher
+        return cc, cxx, linker, launcher
+
+    def _apply_build_system_defaults(
+        self,
+        *,
+        project: ProjectDefinition,
+        environment: Dict[str, str],
+        definitions: Dict[str, Any],
+        build_type: str,
+        build_type_override: str | None,
+        generator: str | None,
+        build_dir: Path | None,
+        toolchain: str | None,
+        cc: str | None,
+        cxx: str | None,
+        linker: str | None,
+        launcher: str | None,
+    ) -> None:
+        if project.build_system is None:
+            return
+
+        self._apply_cmake_build_type(
+            project=project,
+            definitions=definitions,
+            build_type=build_type,
+            build_type_override=build_type_override,
+            generator=generator,
+        )
+
+        if project.build_system == "cargo" and build_dir is not None:
+            environment.setdefault("CARGO_TARGET_DIR", str(build_dir))
+
+        if toolchain:
+            self._apply_color_diagnostics(
+                project=project,
+                environment=environment,
+                definitions=definitions,
+                toolchain=toolchain,
+            )
+            self._apply_cmake_toolchain(
+                build_system=project.build_system,
+                definitions=definitions,
+                environment=environment,
+                cc=cc,
+                cxx=cxx,
+                linker=linker,
+                launcher=launcher,
+            )
 
     @staticmethod
     def _resolve_generator(options: BuildOptions, project: ProjectDefinition) -> str | None:
@@ -422,6 +503,66 @@ class BuildEngine:
         combined_context = context_builder.combined_context(user=user_ctx, project=updated_project_ctx, system=system_ctx)
         resolver = TemplateResolver(combined_context)
 
+        # 1. Initialize empty containers
+        environment: Dict[str, str] = {}
+        definitions: Dict[str, Any] = {}
+
+        # 2. Apply toolchain definitions/environment (base + overrides)
+        cc, cxx, linker, launcher = self._apply_toolchain_definitions(
+            project=project,
+            environment=environment,
+            definitions=definitions,
+            toolchain=toolchain_key,
+            definition=definition,
+            cc=cc,
+            cxx=cxx,
+            linker=linker,
+            launcher=launcher,
+        )
+
+        # 3. Update template context so project environment can reference toolchain outputs
+        combined_context = self._apply_environment_to_context(
+            context=combined_context,
+            environment=environment,
+            definitions=definitions,
+        )
+        resolver = TemplateResolver(combined_context)
+
+        # 4. Apply build-system specific runtime defaults derived from the toolchain
+        cc, cxx, linker, launcher = self._apply_toolchain_runtime_environment(
+            project=project,
+            environment=environment,
+            toolchain=toolchain_key,
+            definition=definition,
+            options=options,
+            cc=cc,
+            cxx=cxx,
+            linker=linker,
+            launcher=launcher,
+        )
+        self._apply_build_system_defaults(
+            project=project,
+            environment=environment,
+            definitions=definitions,
+            build_type=build_type,
+            build_type_override=options.build_type,
+            generator=generator,
+            build_dir=paths.build_dir,
+            toolchain=toolchain_key,
+            cc=cc,
+            cxx=cxx,
+            linker=linker,
+            launcher=launcher,
+        )
+
+        combined_context = self._apply_environment_to_context(
+            context=combined_context,
+            environment=environment,
+            definitions=definitions,
+        )
+        resolver = TemplateResolver(combined_context)
+
+        # 5. Resolve project environment so it can build on the toolchain context
         base_env_context = {str(key): str(value) for key, value in resolver.context.get("env", {}).items()}
         project_environment = self._resolve_environment_mapping(
             mapping=project.environment,
@@ -433,18 +574,17 @@ class BuildEngine:
         )
 
         if project_environment:
-            updated_context: Dict[str, Any] = dict(combined_context)
-            env_context = dict(updated_context.get("env", {}))
-            env_context.update(project_environment)
-            updated_context["env"] = env_context
-            project_mapping = dict(updated_context.get("project", {}))
-            project_mapping["environment"] = dict(project_environment)
-            updated_context["project"] = project_mapping
-            combined_context = updated_context
+            environment.update(project_environment)
+            combined_context = self._apply_environment_to_context(
+                context=combined_context,
+                environment=environment,
+                definitions=definitions,
+            )
             resolver = TemplateResolver(combined_context)
         else:
             project_environment = {}
 
+        # 6. Resolve presets (defaults first, then CLI-provided)
         preset_repo = PresetRepository(
             project_presets=project.presets,
             shared_presets=[cfg.get("presets", {}) for cfg in self._store.shared_configs.values()],
@@ -459,13 +599,48 @@ class BuildEngine:
         )
         resolved_presets = preset_repo.resolve(presets_to_resolve, template_resolver=resolver)
 
-        environment = dict(project_environment)
         environment.update(resolved_presets.environment)
-        definitions = dict(resolved_presets.definitions)
+        definitions.update(resolved_presets.definitions)
 
+        # Re-assert toolchain environment after presets so toolchain defaults remain authoritative.
+        cc, cxx, linker, launcher = self._apply_toolchain_runtime_environment(
+            project=project,
+            environment=environment,
+            toolchain=toolchain_key,
+            definition=definition,
+            options=options,
+            cc=cc,
+            cxx=cxx,
+            linker=linker,
+            launcher=launcher,
+        )
+
+        # 7. CLI -D overrides have highest priority
         if options.definitions:
-            for key, value in options.definitions.items():
-                definitions[key] = value
+            definitions.update(options.definitions)
+
+        # Reinforce CLI build-type semantics so presets cannot override explicit flags
+        self._apply_cmake_build_type(
+            project=project,
+            definitions=definitions,
+            build_type=build_type,
+            build_type_override=options.build_type,
+            generator=generator,
+        )
+
+        # Finalize toolchain-runner adjustments without clobbering user overrides
+        cc, cxx, linker, launcher = self._apply_toolchain_runtime_environment(
+            project=project,
+            environment=environment,
+            toolchain=toolchain_key,
+            definition=definition,
+            options=options,
+            cc=cc,
+            cxx=cxx,
+            linker=linker,
+            launcher=launcher,
+            allow_overwrite=False,
+        )
 
         combined_context = self._apply_environment_to_context(
             context=combined_context,
@@ -492,49 +667,10 @@ class BuildEngine:
 
         plan_steps: List[BuildStep] = []
         if build_enabled and paths.build_dir is not None:
-            self._apply_cmake_build_type(
-                project=project,
-                definitions=definitions,
-                build_type=build_type,
-                build_type_override=options.build_type,
-                generator=generator,
-            )
-
-            if project.build_system == "cargo":
-                environment.setdefault("CARGO_TARGET_DIR", str(paths.build_dir))
-
             if toolchain_key is None:
                 raise ValueError(
                     f"No toolchain specified for project '{project.name}'. Provide one via project.toolchain or --toolchain."
                 )
-
-            cc, cxx, linker, launcher = self._apply_toolchain_environment(
-                project=project,
-                environment=environment,
-                definitions=definitions,
-                options=options,
-                toolchain=toolchain_key,
-                cc=cc,
-                cxx=cxx,
-                linker=linker,
-                launcher=launcher,
-                definition=definition,
-            )
-            self._apply_color_diagnostics(
-                project=project,
-                environment=environment,
-                definitions=definitions,
-                toolchain=toolchain_key,
-            )
-            self._apply_cmake_toolchain(
-                build_system=project.build_system,
-                definitions=definitions,
-                environment=environment,
-                cc=cc,
-                cxx=cxx,
-                linker=linker,
-                launcher=launcher,
-            )
 
             plan_steps = self._create_build_steps(
                 project=project,
@@ -729,18 +865,26 @@ class BuildEngine:
         generator: str | None,
         preset_repo: PresetRepository,
     ) -> List[str]:
-        resolved: List[str] = []
+        user_presets: List[str] = []
         if provided_presets:
             for preset in provided_presets:
                 for part in preset.split(","):
                     stripped = part.strip()
-                    if stripped and stripped not in resolved:
-                        resolved.append(stripped)
+                    if stripped and stripped not in user_presets:
+                        user_presets.append(stripped)
 
-        for preset in self._default_presets(build_type=build_type, generator=generator):
-            if preset_repo.contains(preset) and preset not in resolved:
-                resolved.append(preset)
-        return resolved
+        default_presets = [
+            preset
+            for preset in self._default_presets(build_type=build_type, generator=generator)
+            if preset_repo.contains(preset)
+        ]
+
+        ordered: List[str] = list(default_presets)
+        for preset in user_presets:
+            if preset in ordered:
+                ordered.remove(preset)
+            ordered.append(preset)
+        return ordered
 
     def _default_presets(self, *, build_type: str, generator: str | None) -> List[str]:
         if self._is_multi_config_generator(generator):

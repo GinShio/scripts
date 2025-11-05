@@ -203,8 +203,9 @@ builder build myapp --install
 
 - **Configurable metadata**:
    - Toolchain entries can pin compiler executables, preferred linkers, and build-system definitions such as
-      `CMAKE_*`. Builder applies these values ahead of preset/project configuration so downstream overrides remain
-      predictable.
+      `CMAKE_*`. Builder injects toolchain values first, derives build-system defaults (compilers, launchers, build
+      type, Cargo target dir, color diagnostics), then evaluates project environment, default presets, CLI presets, and
+      finally CLI `-D/--definition` overrides so downstream layers remain predictable.
 
 **Example Error**:
 ```

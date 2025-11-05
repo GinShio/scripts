@@ -250,6 +250,20 @@ extra_build_args = ["--warn-uninitialized"]
 - Cyclic inheritance is not allowed and will be validated.
 - Scoped presets (those declaring `org` and/or `project`) are only considered when they match the active project. Resolution prefers project-scoped presets, then organization-scoped, then global entries.
 
+### Resolution Order
+
+Builder constructs the final build environment and definition map by layering sources in a strict order (later entries override earlier data while retaining access to previously resolved variables):
+
+1. Initialize empty `environment` / `definitions` containers.
+2. Apply the active toolchain's base values (global environment + definitions + build-system overrides).
+3. Derive build-system defaults from the toolchain (compiler/linker commands, launchers, color diagnostics, default `CMAKE_BUILD_TYPE`, `CARGO_TARGET_DIR`, etc.).
+4. Resolve and merge `[project.environment]` so project variables can reference toolchain-provided values.
+5. Apply default presets supplied by Builder (for example `configs.debug` / `configs.release`, when present).
+6. Apply presets supplied on the CLI (`--preset`) in the order they are declared; each preset can override earlier sources.
+7. Finally apply CLI `-DNAME=VALUE` / `--definition NAME=VALUE` overrides.
+
+This layering ensures presets and ad-hoc overrides see the complete context produced by the toolchain while still retaining the ability to supersede any earlier value.
+
 ---
 
 ## Variable Resolution

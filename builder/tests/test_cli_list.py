@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 import io
+import os
 import re
 import tempfile
 import textwrap
@@ -20,6 +21,7 @@ class ListCommandTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.workspace = Path(self.temp_dir.name)
+        self._orig_config_dir = os.environ.pop("BUILDER_CONFIG_DIR", None)
         config_dir = self.workspace / "config"
         projects_dir = config_dir / "projects"
         projects_dir.mkdir(parents=True)
@@ -65,6 +67,8 @@ class ListCommandTests(unittest.TestCase):
         (repo_dir / ".git").mkdir(parents=True, exist_ok=True)
 
     def tearDown(self) -> None:
+        if self._orig_config_dir is not None:
+            os.environ["BUILDER_CONFIG_DIR"] = self._orig_config_dir
         self.temp_dir.cleanup()
 
     def test_list_all_projects_displays_commit_information(self) -> None:
