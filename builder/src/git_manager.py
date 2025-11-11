@@ -455,6 +455,22 @@ class GitManager:
 
             self._run_script(update_script, repo_path, environment=environment, dry_run=dry_run)
 
+            if component_repo_path is not None:
+                target_switch_branch = component_branch or main_branch
+                if target_switch_branch:
+                    self._checkout_component_branch(
+                        component_repo_path,
+                        target_branch=target_switch_branch,
+                        dry_run=dry_run,
+                        environment=environment,
+                    )
+                self._fast_forward_component_repository(
+                    component_repo_path,
+                    target_branch=component_branch,
+                    dry_run=dry_run,
+                    environment=environment,
+                )
+
             if restore_branch:
                 self._run_repo_command(
                     repo_path,
@@ -462,12 +478,11 @@ class GitManager:
                     dry_run=dry_run,
                     environment=environment,
                 )
-                if component_repo_path is None or not component_is_submodule:
-                    self._update_submodules(
-                        repo_path,
-                        dry_run=dry_run,
-                        environment=environment,
-                    )
+                self._update_submodules(
+                    repo_path,
+                    dry_run=dry_run,
+                    environment=environment,
+                )
 
             if component_repo_path and component_original_branch and component_original_branch != (component_branch or component_original_branch):
                 self._run_repo_command(
@@ -548,20 +563,21 @@ class GitManager:
             component_needs_switch = component_current_branch != component_target_branch
 
         if component_branch:
-            component_switch_required = bool(
-                component_repo_path
-                and (component_current_branch is None or component_current_branch != component_branch)
-            )
-            if component_switch_required:
-                component_stash_applied = self._stash_if_dirty(
-                    component_repo_path,
-                    auto_stash=auto_stash,
-                    dry_run=dry_run,
-                    environment=environment,
-                    error_message=(
-                        f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
-                    ),
-                )
+            component_switch_required = False
+            if component_repo_path:
+                component_switch_required = component_original_branch != component_branch
+                if component_original_branch is None:
+                    component_switch_required = True
+                if component_switch_required:
+                    component_stash_applied = self._stash_if_dirty(
+                        component_repo_path,
+                        auto_stash=auto_stash,
+                        dry_run=dry_run,
+                        environment=environment,
+                        error_message=(
+                            f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
+                        ),
+                    )
             self._run_repo_command(
                 component_target_path,
                 ["git", "fetch", "--all"],
@@ -577,17 +593,32 @@ class GitManager:
             )
             if result.returncode != 0:
                 raise RuntimeError(f"Component branch '{component_branch}' does not exist")
-            self._run_repo_command(
-                component_target_path,
-                ["git", "pull", "--ff-only", "origin", component_branch],
-                dry_run=dry_run,
-                environment=environment,
-            )
-            self._update_submodules(
-                component_target_path,
-                dry_run=dry_run,
-                environment=environment,
-            )
+            if component_repo_path:
+                self._checkout_component_branch(
+                    component_repo_path,
+                    target_branch=component_branch,
+                    dry_run=dry_run,
+                    environment=environment,
+                )
+                self._fast_forward_component_repository(
+                    component_repo_path,
+                    target_branch=component_branch,
+                    dry_run=dry_run,
+                    environment=environment,
+                    already_fetched=True,
+                )
+            else:
+                self._run_repo_command(
+                    component_target_path,
+                    ["git", "pull", "--ff-only", "origin", component_branch],
+                    dry_run=dry_run,
+                    environment=environment,
+                )
+                self._update_submodules(
+                    component_target_path,
+                    dry_run=dry_run,
+                    environment=environment,
+                )
             if component_repo_path and component_original_branch and component_original_branch != component_branch:
                 component_switched = True
         elif component_needs_switch and component_is_submodule and component_repo_path:
@@ -600,6 +631,12 @@ class GitManager:
                     f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
                 ),
             )
+            self._run_repo_command(
+                component_repo_path,
+                ["git", "fetch", "--all"],
+                dry_run=dry_run,
+                environment=environment,
+            )
             result = self._run_repo_command(
                 component_repo_path,
                 ["git", "switch", component_target_branch],
@@ -611,16 +648,18 @@ class GitManager:
                 raise RuntimeError(
                     f"Unable to switch component repository at '{component_repo_path}' to branch '{component_target_branch}'."
                 )
-            self._run_repo_command(
+            self._checkout_component_branch(
                 component_repo_path,
-                ["git", "pull", "--ff-only", "origin", component_target_branch],
+                target_branch=component_target_branch,
                 dry_run=dry_run,
                 environment=environment,
             )
-            self._update_submodules(
+            self._fast_forward_component_repository(
                 component_repo_path,
+                target_branch=component_target_branch,
                 dry_run=dry_run,
                 environment=environment,
+                already_fetched=True,
             )
             component_switched = component_original_branch not in {None, component_target_branch}
 
@@ -631,12 +670,11 @@ class GitManager:
                 dry_run=dry_run,
                 environment=environment,
             )
-            if component_repo_path is None or not component_is_submodule:
-                self._update_submodules(
-                    repo_path,
-                    dry_run=dry_run,
-                    environment=environment,
-                )
+            self._update_submodules(
+                repo_path,
+                dry_run=dry_run,
+                environment=environment,
+            )
 
         if component_repo_path and component_original_branch and component_original_branch != component_target_branch:
             self._run_repo_command(
@@ -776,6 +814,86 @@ class GitManager:
             dry_run=dry_run,
             environment=environment,
             stream=stream,
+        )
+
+    def _checkout_component_branch(
+        self,
+        component_repo_path: Path,
+        *,
+        target_branch: str | None,
+        dry_run: bool,
+        environment: Mapping[str, str] | None = None,
+    ) -> None:
+        if not target_branch:
+            return
+        result = self._run_repo_command(
+            component_repo_path,
+            ["git", "switch", target_branch],
+            dry_run=dry_run,
+            environment=environment,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Unable to switch component repository at '{component_repo_path}' to branch '{target_branch}'."
+            )
+
+    def _fast_forward_component_repository(
+        self,
+        component_repo_path: Path,
+        *,
+        target_branch: str | None,
+        dry_run: bool,
+        environment: Mapping[str, str] | None = None,
+        already_fetched: bool = False,
+    ) -> None:
+        if not already_fetched:
+            self._run_repo_command(
+                component_repo_path,
+                ["git", "fetch", "--all"],
+                dry_run=dry_run,
+                environment=environment,
+            )
+
+        try:
+            current_branch = self._current_branch(component_repo_path, environment=environment)
+        except CommandError:
+            current_branch = None
+
+        desired_branch = target_branch
+        if not desired_branch:
+            if current_branch and current_branch not in {"", "HEAD"}:
+                desired_branch = current_branch
+
+        merge_candidates: list[str] = []
+        if desired_branch:
+            if not desired_branch.startswith("origin/"):
+                merge_candidates.append(f"origin/{desired_branch}")
+            merge_candidates.append(desired_branch)
+
+        merge_succeeded = not merge_candidates
+        for candidate in merge_candidates:
+            result = self._run_repo_command(
+                component_repo_path,
+                ["git", "merge", "--ff-only", candidate],
+                dry_run=dry_run,
+                environment=environment,
+                check=False,
+            )
+            if result.returncode == 0:
+                merge_succeeded = True
+                break
+
+        if not merge_succeeded:
+            branch_name = desired_branch or "current HEAD"
+            raise RuntimeError(
+                f"Unable to fast-forward component repository at '{component_repo_path}' to branch '{branch_name}'."
+            )
+
+        self._update_submodules(
+            component_repo_path,
+            dry_run=dry_run,
+            environment=environment,
         )
 
     def _is_git_directory(self, path: Path) -> bool:

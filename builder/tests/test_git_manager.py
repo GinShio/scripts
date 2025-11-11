@@ -117,6 +117,14 @@ class FakeGitRunner(CommandRunner):
                     return CommandResult(command=cmd_list, returncode=0, stdout=f"{url}\n", stderr="")
                 return CommandResult(command=cmd_list, returncode=0, stdout=f"{path_key}\n", stderr="")
             return CommandResult(command=cmd_list, returncode=1, stdout="", stderr="not found")
+        if cmd_list[:3] == ["git", "merge", "--ff-only"] and len(cmd_list) >= 4:
+            target = cmd_list[3]
+            current_branch = state["branch"]  # type: ignore[index]
+            target_branch = target.split("/", 1)[1] if target.startswith("origin/") else target
+            target_commit = commits_map.get(target_branch)
+            if target_commit is not None:
+                commits_map[current_branch] = target_commit
+            return CommandResult(command=cmd_list, returncode=0, stdout="", stderr="")
         if cmd_list[:4] == ["git", "submodule", "status", "--recursive"]:
             lines: list[str] = []
             for commit_hash, submodule_path, branch_name in self.submodule_status_entries:
@@ -202,12 +210,24 @@ class GitManagerTests(unittest.TestCase):
             if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
         self.assertGreaterEqual(len(root_updates), 2)
-        switch_feature_index = next(
-            index
-            for index, entry in enumerate(runner.history)
-            if entry["cwd"] == self.repo_path and entry["command"] == ["git", "switch", "feature"]
+
+    def test_restore_checkout_pops_stash_after_branch_restored(self) -> None:
+        runner = FakeGitRunner(initial_branch="feature", dirty=True, commits={"feature": "f1", "main": "m2"})
+        manager = GitManager(runner)
+        state = manager.prepare_checkout(
+            repo_path=self.repo_path,
+            target_branch="main",
+            auto_stash=True,
+            no_switch_branch=False,
         )
-        self.assertTrue(any(index > switch_feature_index for index, _ in root_updates))
+        history_length_before_restore = len(runner.history)
+        manager.restore_checkout(self.repo_path, state)
+        restoration_entries = runner.history[history_length_before_restore:]
+        commands = [entry["command"] for entry in restoration_entries]
+        stash_pop_index = commands.index(["git", "stash", "pop"])
+        checkout_indices = [idx for idx, cmd in enumerate(commands) if cmd == ["git", "checkout", "feature"]]
+        self.assertTrue(checkout_indices)
+        self.assertLess(max(checkout_indices), stash_pop_index)
 
     def test_update_restores_branch_when_auto_stash(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", dirty=True, commits={"feature": "f1", "main": "m1"})
@@ -551,12 +571,24 @@ class GitManagerTests(unittest.TestCase):
             if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
         ]
         self.assertTrue(component_switches)
-        component_pulls = [
+        component_fetches = [
             entry
             for entry in runner.history
-            if entry["cwd"] == component_path and entry["command"] == ["git", "pull", "--ff-only", "origin", "comp-target"]
+            if entry["cwd"] == component_path and entry["command"] == ["git", "fetch", "--all"]
         ]
-        self.assertTrue(component_pulls)
+        self.assertTrue(component_fetches)
+        component_merges = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"] == ["git", "merge", "--ff-only", "origin/comp-target"]
+        ]
+        self.assertTrue(component_merges)
+        component_updates = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertTrue(component_updates)
         component_switch_commands = [entry["command"] for entry in component_switches]
         self.assertIn(["git", "switch", "comp-target"], component_switch_commands)
         self.assertIn(["git", "switch", "comp-old"], component_switch_commands)
@@ -610,6 +642,40 @@ class GitManagerTests(unittest.TestCase):
             if entry["cwd"] == component_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
         self.assertTrue(component_updates)
+
+    def test_update_repository_switch_back_updates_submodules_with_component_submodule(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "main": "c2"},
+        )
+
+        manager = GitManager(runner)
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+            component_dir=component_rel,
+        )
+
+        root_updates = [
+            (index, entry)
+            for index, entry in enumerate(runner.history)
+            if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertGreaterEqual(len(root_updates), 2)
+        switch_feature_index = next(
+            index
+            for index, entry in enumerate(runner.history)
+            if entry["cwd"] == self.repo_path and entry["command"] == ["git", "switch", "feature"]
+        )
+        self.assertTrue(any(index > switch_feature_index for index, _ in root_updates))
 
     def test_update_repository_component_switches_when_commits_match(self) -> None:
         component_rel = Path("components/library")
@@ -674,10 +740,9 @@ class GitManagerTests(unittest.TestCase):
             for entry in runner.history
             if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
         ]
-        self.assertEqual(
-            [entry["command"] for entry in component_switches],
-            [["git", "switch", "comp-target"], ["git", "switch", "comp-old"]],
-        )
+        switch_commands = [entry["command"] for entry in component_switches]
+        self.assertGreaterEqual(switch_commands.count(["git", "switch", "comp-target"]), 1)
+        self.assertEqual(switch_commands[-1], ["git", "switch", "comp-old"])
 
         state = runner.repo_states.get(component_path)
         self.assertIsNotNone(state)
@@ -792,13 +857,90 @@ class GitManagerTests(unittest.TestCase):
         self.assertIn(["git", "switch", "main"], commands)
         self.assertIn(["sh", "-c", "echo update"], commands)
         self.assertIn(["git", "switch", "feature"], commands)
-
         switch_main_index = commands.index(["git", "switch", "main"])
         script_index = commands.index(["sh", "-c", "echo update"])
         restore_index = commands.index(["git", "switch", "feature"])
         self.assertLess(switch_main_index, script_index)
         self.assertLess(script_index, restore_index)
+        submodule_updates = [
+            (index, entry)
+            for index, entry in enumerate(runner.history)
+            if entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertEqual(len(submodule_updates), 1)
+        self.assertGreater(submodule_updates[0][0], restore_index)
+        self.assertEqual(submodule_updates[0][1]["cwd"], self.repo_path)
         self.assertNotIn(["git", "fetch", "--all"], commands)
+
+    def test_update_repository_update_script_updates_component_without_restore(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="main", commits={"main": "m2"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-old",
+            commits={"comp-old": "c1", "comp-target": "c2"},
+        )
+
+        manager = GitManager(runner)
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+            component_branch="comp-target",
+            component_dir=component_rel,
+            update_script="echo update",
+        )
+
+        commands = [entry["command"] for entry in runner.history]
+        self.assertIn(["sh", "-c", "echo update"], commands)
+
+        component_entries = [
+            (index, entry)
+            for index, entry in enumerate(runner.history)
+            if entry["cwd"] == component_path
+        ]
+        component_commands = [entry["command"] for _, entry in component_entries]
+        self.assertIn(["git", "fetch", "--all"], component_commands)
+        self.assertIn(["git", "merge", "--ff-only", "origin/comp-target"], component_commands)
+        self.assertIn(["git", "submodule", "update", "--recursive"], component_commands)
+
+        script_index = commands.index(["sh", "-c", "echo update"])
+        fetch_index = next(
+            index for index, entry in component_entries if entry["command"] == ["git", "fetch", "--all"]
+        )
+        merge_index = next(
+            index
+            for index, entry in component_entries
+            if entry["command"] == ["git", "merge", "--ff-only", "origin/comp-target"]
+        )
+        update_index = next(
+            index
+            for index, entry in component_entries
+            if entry["command"] == ["git", "submodule", "update", "--recursive"]
+        )
+
+        self.assertGreater(fetch_index, script_index)
+        self.assertGreater(merge_index, fetch_index)
+        self.assertGreater(update_index, merge_index)
+
+        root_updates = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertFalse(root_updates)
+
+        switch_indices = [
+            index
+            for index, entry in component_entries
+            if entry["command"] == ["git", "switch", "comp-target"]
+        ]
+        self.assertTrue(switch_indices)
+        self.assertTrue(any(index > script_index for index in switch_indices))
 
     def test_update_repository_update_script_stash_handling(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", dirty=True, commits={"feature": "f1", "main": "m2"})
@@ -816,7 +958,6 @@ class GitManagerTests(unittest.TestCase):
         self.assertIn(["git", "stash", "push", "-m", "builder auto-stash"], commands)
         self.assertIn(["git", "stash", "pop"], commands)
         self.assertIn(["sh", "-c", "echo update"], commands)
-
         stash_push_index = commands.index(["git", "stash", "push", "-m", "builder auto-stash"])
         script_index = commands.index(["sh", "-c", "echo update"])
         stash_pop_index = commands.index(["git", "stash", "pop"])
@@ -825,6 +966,14 @@ class GitManagerTests(unittest.TestCase):
         self.assertLess(stash_push_index, script_index)
         self.assertLess(script_index, restore_index)
         self.assertLess(restore_index, stash_pop_index)
+        submodule_updates = [
+            (index, entry)
+            for index, entry in enumerate(runner.history)
+            if entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertEqual(len(submodule_updates), 1)
+        self.assertGreater(submodule_updates[0][0], restore_index)
+        self.assertEqual(submodule_updates[0][1]["cwd"], self.repo_path)
 
     def test_update_repository_update_script_restores_component_branch(self) -> None:
         component_rel = Path("components/library")
@@ -854,15 +1003,60 @@ class GitManagerTests(unittest.TestCase):
         self.assertIn(["sh", "-c", "echo update"], commands)
         self.assertIn(["git", "switch", "feature"], commands)
 
-        component_switch_commands = [
-            entry["command"]
-            for entry in runner.history
+        script_index = commands.index(["sh", "-c", "echo update"])
+        restore_index = commands.index(["git", "switch", "feature"])
+
+        component_entries = [
+            (index, entry)
+            for index, entry in enumerate(runner.history)
+            if entry["cwd"] == component_path
+        ]
+        component_fetch_index = next(
+            index
+            for index, entry in component_entries
+            if entry["command"] == ["git", "fetch", "--all"]
+        )
+        component_merge_index = next(
+            index
+            for index, entry in component_entries
+            if entry["command"] == ["git", "merge", "--ff-only", "origin/comp-target"]
+        )
+        component_update_index = next(
+            index
+            for index, entry in component_entries
+            if entry["command"] == ["git", "submodule", "update", "--recursive"]
+        )
+
+        self.assertGreater(component_fetch_index, script_index)
+        self.assertGreater(component_merge_index, component_fetch_index)
+        self.assertGreater(component_update_index, component_merge_index)
+
+        root_updates = [
+            (index, entry)
+            for index, entry in enumerate(runner.history)
+            if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertEqual(len(root_updates), 1)
+        self.assertGreater(root_updates[0][0], restore_index)
+
+        component_switch_entries = [
+            (index, entry)
+            for index, entry in enumerate(runner.history)
             if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
         ]
-        self.assertEqual(
-            component_switch_commands,
-            [["git", "switch", "comp-target"], ["git", "switch", "comp-old"]],
+        self.assertTrue(component_switch_entries)
+        switch_commands = [entry["command"] for _, entry in component_switch_entries]
+        self.assertGreaterEqual(
+            switch_commands.count(["git", "switch", "comp-target"]),
+            1,
         )
+        self.assertEqual(component_switch_entries[-1][1]["command"], ["git", "switch", "comp-old"])
+
+        switch_target_indices = [
+            index for index, entry in component_switch_entries if entry["command"] == ["git", "switch", "comp-target"]
+        ]
+        self.assertTrue(any(index < component_fetch_index for index in switch_target_indices))
+        self.assertTrue(any(index > script_index for index in switch_target_indices))
 
         state = runner.repo_states.get(component_path)
         self.assertIsNotNone(state)
@@ -1004,23 +1198,24 @@ class GitManagerTests(unittest.TestCase):
                 component_branch="comp-target",
             )
 
-    def test_restore_checkout_pops_stash_after_branch_restored(self) -> None:
-        runner = FakeGitRunner(initial_branch="feature", dirty=True, commits={"feature": "f1", "main": "m2"})
-        manager = GitManager(runner)
-        state = manager.prepare_checkout(
-            repo_path=self.repo_path,
-            target_branch="main",
-            auto_stash=True,
-            no_switch_branch=False,
-        )
-        history_length_before_restore = len(runner.history)
-        manager.restore_checkout(self.repo_path, state)
-        restoration_entries = runner.history[history_length_before_restore:]
-        commands = [entry["command"] for entry in restoration_entries]
-        stash_pop_index = commands.index(["git", "stash", "pop"])
-        checkout_indices = [idx for idx, cmd in enumerate(commands) if cmd == ["git", "checkout", "feature"]]
-        self.assertTrue(checkout_indices)
-        self.assertLess(max(checkout_indices), stash_pop_index)
+        component_fetches = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"] == ["git", "fetch", "--all"]
+        ]
+        self.assertFalse(component_fetches)
+        component_merges = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"] == ["git", "merge", "--ff-only", "origin/comp-target"]
+        ]
+        self.assertFalse(component_merges)
+        component_updates = [
+            entry
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
+        ]
+        self.assertFalse(component_updates)
 
     def test_restore_checkout_updates_submodules_for_root(self) -> None:
         runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2"})
