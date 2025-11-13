@@ -919,7 +919,8 @@ class BuildEngine:
             raise ValueError("Build directory is not configured; run configuration first or use auto mode")
 
         if mode is BuildMode.RECONFIG and build_dir_exists:
-            shutil.rmtree(build_dir)
+            if not options.dry_run:
+                shutil.rmtree(build_dir)
             build_dir_exists = False
             configured = False
 
@@ -1020,7 +1021,8 @@ class BuildEngine:
             raise ValueError("Build directory is not configured; run configuration first or use auto mode")
 
         if mode is BuildMode.RECONFIG and build_dir_exists:
-            shutil.rmtree(build_dir)
+            if not options.dry_run:
+                shutil.rmtree(build_dir)
             build_dir_exists = False
             configured = False
             should_configure = True

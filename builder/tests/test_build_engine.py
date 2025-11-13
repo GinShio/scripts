@@ -321,6 +321,48 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(plan.branch_slug, "feature_awesome")
         self.assertIn("feature_awesome", str(plan.build_dir))
 
+    def test_reconfig_dry_run_preserves_cmake_build_dir(self) -> None:
+        demo_source = self.workspace / "examples" / "demo"
+        build_dir = demo_source / "_build" / "main_Release"
+        build_dir.mkdir(parents=True, exist_ok=True)
+        (build_dir / "CMakeCache.txt").write_text("")
+
+        options = BuildOptions(
+            project_name="demo",
+            presets=["dev"],
+            operation=BuildMode.RECONFIG,
+            dry_run=True,
+        )
+
+        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+            plan = self.engine.plan(options)
+
+        self.assertTrue(build_dir.exists())
+        self.assertTrue((build_dir / "CMakeCache.txt").exists())
+        self.assertEqual(len(plan.steps), 1)
+        self.assertEqual(plan.steps[0].description, "Configure project")
+
+    def test_reconfig_dry_run_preserves_meson_build_dir(self) -> None:
+        meson_source = self.workspace / "examples" / "meson-app"
+        build_dir = meson_source / "_build"
+        (build_dir / "meson-private").mkdir(parents=True, exist_ok=True)
+        (build_dir / "meson-private" / "coredata.dat").write_text("")
+
+        options = BuildOptions(
+            project_name="meson-app",
+            presets=["dev"],
+            operation=BuildMode.RECONFIG,
+            dry_run=True,
+        )
+
+        with patch("builder.build.shutil.which", return_value=None):
+            plan = self.engine.plan(options)
+
+        self.assertTrue(build_dir.exists())
+        self.assertTrue((build_dir / "meson-private" / "coredata.dat").exists())
+        self.assertEqual(len(plan.steps), 1)
+        self.assertEqual(plan.steps[0].description, "Configure project")
+
     def test_build_at_root_true_uses_project_source_dir(self) -> None:
         options = BuildOptions(
             project_name="mono-root",
