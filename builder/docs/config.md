@@ -44,7 +44,7 @@ The configuration files are organized in the following structure as an example w
 - Shared configuration files can use descriptive names such as `company-base.yaml` or `linux-defaults.toml`.
 - Builder automatically selects the parser based on the file extension (TOML, JSON, or YAML).
 
-> **Dependency note**: YAML parsing relies on `PyYAML`. The package depends on it by default, but custom environments must ensure it is installed.
+> **Dependency note**: YAML parsing relies on `ruamel.yaml`. The package depends on it by default, but custom environments must ensure it is installed.
 
 ---
 

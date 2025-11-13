@@ -18,7 +18,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "PyYAML>=6.0",
+    "ruamel.yaml>=0.17",
 ]
 
 [project.scripts]

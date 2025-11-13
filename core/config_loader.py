@@ -8,9 +8,11 @@ import json
 import tomllib
 
 try:  # Optional dependency for YAML support
-    import yaml
-except ModuleNotFoundError:  # pragma: no cover - exercised when PyYAML absent
-    yaml = None
+    from ruamel.yaml import YAML as _YamlFactory
+except ModuleNotFoundError:  # pragma: no cover - exercised when ruamel.yaml absent
+    _yaml_parser = None
+else:
+    _yaml_parser = _YamlFactory(typ="safe")
 
 
 ConfigLoader = Callable[[Any], Mapping[str, Any]]
@@ -18,15 +20,21 @@ ConfigLoader = Callable[[Any], Mapping[str, Any]]
 
 def _raise_yaml_missing() -> Mapping[str, Any]:
     raise RuntimeError(
-        "PyYAML is required to load YAML configuration files. Install with `pip install PyYAML`."
+        "ruamel.yaml is required to load YAML configuration files. Install with `pip install ruamel.yaml`."
     )
+
+
+def _load_yaml(stream: Any) -> Mapping[str, Any]:
+    if _yaml_parser is None:
+        return _raise_yaml_missing()
+    return _yaml_parser.load(stream)
 
 
 FILE_LOADERS: Dict[str, ConfigLoader] = {
     ".toml": lambda stream: tomllib.load(stream),
     ".json": lambda stream: json.load(stream),
-    ".yaml": lambda stream: yaml.safe_load(stream) if yaml else _raise_yaml_missing(),
-    ".yml": lambda stream: yaml.safe_load(stream) if yaml else _raise_yaml_missing(),
+    ".yaml": _load_yaml,
+    ".yml": _load_yaml,
 }
 """Mapping of file suffixes to loader callables."""
 

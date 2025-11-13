@@ -7,10 +7,12 @@ import unittest
 
 from builder.config_loader import ConfigurationStore
 
-try:  # PyYAML is optional
-        import yaml  # type: ignore
+try:  # ruamel.yaml is optional
+        from ruamel.yaml import YAML  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - optional dependency absent
-        yaml = None
+        HAVE_RUAMEL = False
+else:
+        HAVE_RUAMEL = True
 
 
 class ConfigurationLoaderTests(unittest.TestCase):
@@ -79,7 +81,7 @@ class ConfigurationLoaderTests(unittest.TestCase):
                 self.assertEqual(project.name, "demo")
                 self.assertEqual(project.build_system, "cmake")
 
-        @unittest.skipUnless(yaml is not None, "PyYAML is required for YAML config tests")
+        @unittest.skipUnless(HAVE_RUAMEL, "ruamel.yaml is required for YAML config tests")
         def test_supports_yaml_configs(self) -> None:
                 (self.config_dir / "config.yaml").write_text(
                         textwrap.dedent(
