@@ -1,6 +1,6 @@
 # Git System Technical Documentation
 
-This document describes the Git-related functionality in the system, including update processes, Submodule handling, and error management.
+This document describes how Builder manages Git repositories for projects and optional components, covering the update workflow, submodule handling, and common error scenarios.
 
 ---
 
@@ -9,6 +9,8 @@ This document describes the Git-related functionality in the system, including u
 1. [Core Design Principles](#core-design-principles)
 2. [Update Command Suite](#update-command-suite)
 3. [Update Process Logic](#update-process-logic)
+   1. [Clone Process](#clone-process)
+   2. [Existing Repository Update](#existing-repository-update)
 4. [Working Tree State Handling](#working-tree-state-handling)
 5. [Submodule Handling](#submodule-handling)
 6. [Custom Script Support](#custom-script-support)
@@ -18,239 +20,109 @@ This document describes the Git-related functionality in the system, including u
 
 ## Core Design Principles
 
-### Design Principles
-
-1. **Intelligent Updates**: Automatically detect repository states and execute appropriate update actions.
-2. **Branch Awareness**: Correctly handle components with different branch strategies.
-3. **Working Tree Safety**: Ensure user changes are not lost during updates.
-4. **Zero-Configuration Defaults**: Provide sensible defaults while allowing optional customization.
+1. **Intelligent Updates** – Detect repository state and select the appropriate workflow automatically.
+2. **Branch Awareness** – Support different strategies for the root project and component repositories (submodule or standalone checkout).
+3. **Working Tree Safety** – Protect local changes by stashing when allowed, or halt with a clear error when not.
+4. **Unified Code Path** – Script-driven and built-in updates share the same switching, stashing, and restore logic to minimize maintenance effort.
 
 ---
 
 ## Update Command Suite
 
 ```shell
-# Update a specific project and recursively update all Submodules
+# Update a specific project and recursively update all submodules
 builder update myapp
 
 # Update all projects
 builder update --all
 
-# Specify a branch for the update (for components or main project)
+# Specify a branch for the update (root/component)
 builder update -b feature-x myapp
 
 # Preview Git activity without executing it
 builder update -n myapp
+```
 
 Short aliases:
 
 - `-b` selects the branch to update.
-- `-s` picks the submodule strategy (`default`, `latest`, `skip`).
-- `-n` previews Git work without executing it.
+- `-s` selects the submodule strategy (`default`, `latest`, `skip`).
+- `-n` performs a dry run, printing the commands instead of executing them.
 
-Use fully qualified names (`vendor/myapp`) or the `--org` flag when multiple organizations reuse the same project name.
-```
+Use fully qualified names (`vendor/myapp`) or the `--org` flag when multiple organizations share the same project name.
 
 ---
 
 ## Update Process Logic
 
-### Overall Update Process
-
-```fundamental
-builder update <project>
-├── Detect project type and repository state
-├── If repository does not exist → Perform clone process
-├── If repository exists → Perform update process
-└── Restore working environment
-```
-
----
-
 ### Clone Process
 
-If the repository does not exist, the system performs the following steps:
+When the repository does not exist, Builder executes the clone process:
 
 ```fundamental
 Clone Process:
-├── If clone_script is configured
-│   └── Execute the custom clone script
-└── If no clone_script is configured
-    ├── git clone <url> <source_dir>
-    ├── Switch to the main branch
-    └── Initialize and update all Submodules
+├── If clone_script is configured → run the script
+└── Otherwise → git clone <url> <source_dir> --recursive
 ```
 
-**Example Command**:
-```shell
-git clone $PROJECT_URL $PROJECT_SOURCE_DIR --recursive
-```
+After cloning, the repository is ready on the configured main branch with all submodules initialized.
 
----
+### Existing Repository Update
 
-### Update Process
-
-If the repository exists, the following update process is executed:
+When the repository already exists, Builder applies the unified update flow:
 
 ```fundamental
-Update Process:
-├── Check working tree state
-├── If necessary and auto_stash is true → Stash changes; otherwise, report error
-├── Fetch remote updates (git fetch --all)
-├── Update main branch (git checkout origin/main_branch)
-├── Update components based on project type
-└── Restore working environment
+Existing Repository Update:
+├── Step 1: Stash dirty worktrees (root + optional component) when auto_stash = true
+├── Step 2: Switch the root repository to main_branch and update it
+│   ├── Script mode → run update_script
+│   └── Built-in mode → git fetch --all + git merge --ff-only origin/main_branch
+│   └── Update root submodules → git submodule update --recursive
+├── Step 3: Update the component repository (standalone or submodule)
+│   ├── Switch to component_branch if provided; otherwise main_branch
+│   ├── git fetch --all + git merge --ff-only origin/<component_branch>
+│   └── git submodule update --recursive
+├── Step 4: Restore the component (if switched/stashed)
+│   ├── Switch back to the original branch and refresh its submodules
+│   └── Pop the component stash when one was created
+└── Step 5: Restore the root (if switched/stashed)
+    ├── Switch back to the original branch and refresh submodules while skipping the component path when it is a submodule
+    └── Pop the root stash when one was created
 ```
 
-**Example Command**:
-```shell
-cd $PROJECT_SOURCE_DIR
-git fetch --all
-git stash push # If auto_stash is enabled
-git checkout origin/main
-git submodule update --recursive
-git checkout $PROJECT_ORIG_BRANCH && git stash pop # If auto_stash is enabled
-```
+Key details:
 
-For monorepo projects or Submodule components:
-```shell
-cd $PROJECT_SOURCE_DIR
-git fetch --all
-git checkout origin/$PROJECT_MAIN_BRANCH
-git submodule update --recursive
-cd $PROJECT_COMPONENT_DIR
-git fetch --all
-git stash push # If auto_stash is enabled
-git checkout origin/$PROJECT_COMPONENT_BRANCH
-git submodule update --recursive
-git checkout $PROJECT_ORIG_BRANCH && git stash pop # If auto_stash is enabled
-```
-
-### Branch Management Flags
-
-- `builder build` and `builder list` temporarily switch branches to gather state. Add `--no-switch-branch` to skip
-   temporary checkouts while still planning or inspecting repositories. This is helpful when uncommitted work should
-   remain on the current branch.
-- The `builder update` command always ensures the requested branch is fetched; pair it with `auto_stash = true` for
-   safe automation when local changes exist.
+- Fast-forward merges (`git merge --ff-only origin/<branch>`) keep history linear and avoid implicit merge commits.
+- The same stashing/switching logic applies whether an `update_script` is present, so scripts simply replace the fetch/merge step without diverging behavior.
+- When the component lives inside the root repo as a submodule, the final root submodule refresh skips that path; the component remains on the freshly updated commit instead of reverting to the recorded SHA.
 
 ---
 
 ## Working Tree State Handling
 
-### Auto Stash Mechanism
-
 ```toml
 [git]
-auto_stash = false  # Default: false
+auto_stash = false  # default
 ```
 
-#### Stash Workflow:
-1. Check if the working tree has uncommitted changes.
-2. If `auto_stash = true` and there are changes:
-   - Execute `git stash push -m "builder auto-stash"`.
-   - Record the stash identifier.
-3. Perform the update operation.
-4. If changes were stashed:
-   - Switch back to the original branch.
-   - Execute `git stash pop` to restore changes.
-
-#### Error Example (When auto_stash is false):
-```
-Error: Uncommitted changes prevent the update.
-Solutions:
-- Commit or stash changes manually.
-- Set [git] auto_stash=true in your configuration file to automate stashing.
-```
+1. Builder checks whether the root and component repositories are dirty.
+2. If dirty and `auto_stash = true`, Builder runs `git stash push -m "builder auto-stash"` and remembers to pop it later.
+3. If dirty and `auto_stash = false`, Builder aborts the update so users can resolve the state manually.
+4. Stashes are restored only after the original branches have been switched back.
 
 ---
 
 ## Submodule Handling
 
-### Default Submodule Behavior
-
-- After all Git operations, automatically execute:
-  ```shell
-  git submodule update --recursive
-  ```
-- Ensure all Submodules match the versions recorded in the main repository.
-
----
-
-### Submodule Update Strategies
-
-Users can specify different Submodule update behaviors using the `--submodule` parameter:
-
-```shell
-builder update -s <strategy> myapp
-```
-
-#### Supported Strategies:
-1. **`default`** (Default Behavior):
-   - Update Submodules to match the versions recorded in the main repository.
-2. **`latest`**:
-   - Update all Submodules to their latest versions.
-3. **`skip`**:
-   - Skip all Submodule updates.
-
----
-
-## Repository Inspection
-
-Use the `builder list` command to audit repository status without performing updates:
-
-```shell
-# Summarize every configured project
-builder list
-
-# Focus on a single project
-builder list myapp
-
-# Disambiguate organization-scoped projects
-builder list vendor/myapp
-builder list --org vendor myapp
-
-# Inspect multiple projects in one pass
-builder list myapp backend
-
-# Include presets, dependency edges, or remote URLs
-builder list --presets --dependencies --url
-
-# Show repository paths or build/install directories alongside commits
-builder list --path --show-build-dir --show-install-dir
-
-# Suppress or force submodule listings explicitly
-builder list --no-submodules
-builder list --submodules
-```
-
-- Builder temporarily checks out the requested branch to gather accurate metadata. Add `--no-switch-branch` to avoid
-   temporary branch switches (useful for very large workspaces or when working tree changes must remain untouched).
-- By default, only the Project, Branch, and Commit columns are displayed. Enable `--path`, `--url`, `--show-build-dir`,
-   `--show-install-dir`, `--presets`, and/or `--dependencies` to reveal additional columns. Columns appear in the
-   deterministic order: Path, URL, Build Dir, Install Dir, Presets, Dependencies.
-- The leading column reports each project's organization (or `-` when unspecified) so similarly named projects remain distinguishable in the list output.
-- The install directory is resolved from the active build cache (CMake cache or Meson introspection) when available,
-   falling back to the configured value when the build has not been generated yet.
-- Control submodule visibility with `--submodules` / `--no-submodules`. By default, submodules are hidden when
-   requesting preset or dependency columns, and shown otherwise.
-
----
-
-### Component Branch Handling
-
-- `component_branch` is considered the primary branch for each component and must always exist.
-- If the branch is not found, the system reports an error:
-  ```
-  Error: Component branch "develop" does not exist for Submodule "libcore".
-  Hint: Ensure the branch exists or update the configuration.
-  ```
+- Root and component updates both run `git submodule update --recursive` while on their respective update branches.
+- During root restoration, Builder issues a selective submodule update that skips the component path when it was treated as a submodule. This preserves the component fast-forward.
+- CLI submodule strategies (`default`, `latest`, `skip`) continue to be honored by higher-level commands.
 
 ---
 
 ## Custom Script Support
 
-### Supported Scripts
+Scripts keep the same branch and stash orchestration as the built-in logic:
 
 ```toml
 [git]
@@ -258,44 +130,22 @@ clone_script = "{{project.source_dir}}/scripts/bootstrap.sh"
 update_script = "{{project.source_dir}}/scripts/bootstrap.sh --update"
 ```
 
-Both script entries support the full templating language. You can reference values
-from `user.*`, `project.*`, `system.*`, `env.*`, or any preset-provided
-environment/definition (for example `{{env.SDK_ROOT}}`), and they will be
-resolved before execution.
-
-#### Script Execution Workflow:
-1. If a custom script is configured, execute it.
-2. If the script fails, handle the failure as a Git operation failure (e.g., `git fetch`).
-3. Log the failure and exit the process with an appropriate error code.
+- `update_script` runs after the root repository is switched to `main_branch` and before submodules are refreshed.
+- Script failures are surfaced like Git command failures, leaving any created stashes in place so users can recover safely.
 
 ---
 
 ## Error Scenarios and Solutions
 
-### Common Errors and Messages
-
-#### Uncommitted Changes
-```
-Error: Uncommitted changes prevent the update.
-Solutions:
-- Commit or stash changes manually.
-- Set [git] auto_stash=true in your configuration file to automate stashing.
-```
-
-#### Missing Component Branch
-```
-Error: Component branch "develop" does not exist for Submodule "libcore".
-Hint: Ensure the branch exists or update the configuration.
-```
-
-#### Script Execution Failure
-```
-Error: Failed to execute custom update script.
-Hint: Check the script's log for details or verify its execution manually.
-```
+| Scenario | Message | Resolution |
+| --- | --- | --- |
+| Uncommitted changes without auto_stash | "Working tree has uncommitted changes; enable auto_stash to proceed" | Commit/stash manually or enable `auto_stash`. |
+| Component branch missing | "Unable to switch component repository … to branch" | Ensure the branch exists or update configuration. |
+| Fast-forward denied | "Unable to fast-forward …" | Rebase local work onto the remote branch or resolve conflicts manually. |
+| Script failure | "Failed to execute custom update script" | Inspect the script logs, fix the issue, and re-run the update. |
 
 ---
 
 ## Conclusion
 
-This Git system provides a robust and flexible framework for managing project updates, ensuring working tree safety, and supporting custom workflows. With configurable options like `auto_stash` and `--submodule`, it balances ease of use with advanced customization.
+The unified update implementation keeps script-driven and built-in workflows aligned, protects local work through stashing, and ensures component repositories stay current without fighting submodule constraints. Use the documented commands and configuration options above to tailor the process to each project.

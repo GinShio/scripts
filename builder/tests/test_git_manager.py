@@ -628,7 +628,7 @@ class GitManagerTests(unittest.TestCase):
             for index, entry in enumerate(runner.history)
             if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
-        self.assertGreaterEqual(len(root_updates), 2)
+        self.assertEqual(len(root_updates), 2)
         switch_feature_index = next(
             index
             for index, entry in enumerate(runner.history)
@@ -637,11 +637,11 @@ class GitManagerTests(unittest.TestCase):
         self.assertTrue(any(index > switch_feature_index for index, _ in root_updates))
 
         component_updates = [
-            entry
-            for entry in runner.history
+            (index, entry)
+            for index, entry in enumerate(runner.history)
             if entry["cwd"] == component_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
-        self.assertTrue(component_updates)
+        self.assertGreaterEqual(len(component_updates), 2)
 
     def test_update_repository_switch_back_updates_submodules_with_component_submodule(self) -> None:
         component_rel = Path("components/library")
@@ -669,13 +669,14 @@ class GitManagerTests(unittest.TestCase):
             for index, entry in enumerate(runner.history)
             if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
-        self.assertGreaterEqual(len(root_updates), 2)
+        self.assertEqual(len(root_updates), 1)
         switch_feature_index = next(
             index
             for index, entry in enumerate(runner.history)
             if entry["cwd"] == self.repo_path and entry["command"] == ["git", "switch", "feature"]
         )
-        self.assertTrue(any(index > switch_feature_index for index, _ in root_updates))
+        self.assertLess(root_updates[0][0], switch_feature_index)
+        self.assertFalse(any(index > switch_feature_index for index, _ in root_updates))
 
     def test_update_repository_component_switches_when_commits_match(self) -> None:
         component_rel = Path("components/library")
@@ -867,9 +868,11 @@ class GitManagerTests(unittest.TestCase):
             for index, entry in enumerate(runner.history)
             if entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
-        self.assertEqual(len(submodule_updates), 1)
-        self.assertGreater(submodule_updates[0][0], restore_index)
+        self.assertEqual(len(submodule_updates), 2)
+        self.assertGreater(submodule_updates[0][0], script_index)
+        self.assertGreater(submodule_updates[1][0], restore_index)
         self.assertEqual(submodule_updates[0][1]["cwd"], self.repo_path)
+        self.assertEqual(submodule_updates[1][1]["cwd"], self.repo_path)
         self.assertNotIn(["git", "fetch", "--all"], commands)
 
     def test_update_repository_update_script_updates_component_without_restore(self) -> None:
@@ -928,11 +931,12 @@ class GitManagerTests(unittest.TestCase):
         self.assertGreater(update_index, merge_index)
 
         root_updates = [
-            entry
-            for entry in runner.history
+            (index, entry)
+            for index, entry in enumerate(runner.history)
             if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
-        self.assertFalse(root_updates)
+        self.assertEqual(len(root_updates), 1)
+        self.assertGreater(root_updates[0][0], script_index)
 
         switch_indices = [
             index
@@ -971,9 +975,11 @@ class GitManagerTests(unittest.TestCase):
             for index, entry in enumerate(runner.history)
             if entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
-        self.assertEqual(len(submodule_updates), 1)
-        self.assertGreater(submodule_updates[0][0], restore_index)
+        self.assertEqual(len(submodule_updates), 2)
+        self.assertGreater(submodule_updates[0][0], script_index)
+        self.assertGreater(submodule_updates[1][0], restore_index)
         self.assertEqual(submodule_updates[0][1]["cwd"], self.repo_path)
+        self.assertEqual(submodule_updates[1][1]["cwd"], self.repo_path)
 
     def test_update_repository_update_script_restores_component_branch(self) -> None:
         component_rel = Path("components/library")
@@ -1037,7 +1043,8 @@ class GitManagerTests(unittest.TestCase):
             if entry["cwd"] == self.repo_path and entry["command"] == ["git", "submodule", "update", "--recursive"]
         ]
         self.assertEqual(len(root_updates), 1)
-        self.assertGreater(root_updates[0][0], restore_index)
+        self.assertGreater(root_updates[0][0], script_index)
+        self.assertLess(root_updates[0][0], restore_index)
 
         component_switch_entries = [
             (index, entry)

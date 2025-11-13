@@ -95,7 +95,7 @@ class UpdateCommandTests(unittest.TestCase):
         with redirect_stdout(buffer):
             cli._handle_update(args, self.workspace)
         output = buffer.getvalue()
-        self.assertIn("git pull --ff-only origin main", output)
+        self.assertIn("git merge --ff-only origin/main", output)
         self.assertNotIn("git clone", output)
 
     def test_update_clone_script_template_is_resolved(self) -> None:
