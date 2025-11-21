@@ -1,12 +1,6 @@
-"""Compatibility wrapper exposing core command runner utilities."""
+"""Deprecated module preserved only to provide a clearer error message."""
 from __future__ import annotations
 
-from core.command_runner import *  # noqa: F401,F403
-
-__all__ = [
-    "CommandError",
-    "CommandResult",
-    "CommandRunner",
-    "RecordingCommandRunner",
-    "SubprocessCommandRunner",
-]
+raise ImportError(
+    "builder.command_runner has been removed. Import from core.command_runner instead."
+)

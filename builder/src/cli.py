@@ -9,7 +9,7 @@ import os
 import sys
 
 from .build import BuildEngine, BuildMode, BuildOptions, BuildPlan
-from .command_runner import RecordingCommandRunner, SubprocessCommandRunner
+from core.command_runner import RecordingCommandRunner, SubprocessCommandRunner
 from .config_loader import ConfigurationStore, ProjectDefinition
 from .git_manager import GitManager
 from .validation import validate_project, validate_project_templates, validate_store_structure

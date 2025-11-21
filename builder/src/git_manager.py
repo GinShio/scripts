@@ -188,9 +188,9 @@ class GitManager:
         root_switched = False
         if should_switch_root and dirty:
             if auto_stash:
-                self._run_repo_command(
-                    repo_path,
+                self._run_command(
                     ["git", "stash", "push", "-m", "builder auto-stash"],
+                    cwd=repo_path,
                     dry_run=dry_run,
                     environment=environment,
                     stream=False,
@@ -201,9 +201,9 @@ class GitManager:
 
         if should_switch_component and component_dirty:
             if auto_stash:
-                self._run_repo_command(
-                    component_path,
+                self._run_command(
                     ["git", "stash", "push", "-m", "builder auto-stash"],
+                    cwd=component_path,
                     dry_run=dry_run,
                     environment=environment,
                     stream=False,
@@ -215,9 +215,9 @@ class GitManager:
                 )
 
         if should_switch_root:
-            result = self._run_repo_command(
-                repo_path,
+            result = self._run_command(
                 ["git", "switch", target_branch],
+                cwd=repo_path,
                 dry_run=dry_run,
                 environment=environment,
                 check=False,
@@ -282,9 +282,9 @@ class GitManager:
         branch_restored = current_branch == state.branch
         restored_now = False
         if not branch_restored:
-            self._run_repo_command(
-                repo_path,
+            self._run_command(
                 ["git", "checkout", state.branch],
+                cwd=repo_path,
                 dry_run=dry_run,
                 environment=environment,
                 stream=False,
@@ -305,9 +305,9 @@ class GitManager:
                 except CommandError:
                     component_current = None
                 if component_current is not None and component_current != state.component_branch:
-                    result = self._run_repo_command(
-                        state.component_path,
+                    result = self._run_command(
                         ["git", "switch", state.component_branch],
+                        cwd=state.component_path,
                         dry_run=dry_run,
                         environment=environment,
                         check=False,
@@ -324,18 +324,18 @@ class GitManager:
                     stream=False,
                 )
             if state.component_stash_applied:
-                self._run_repo_command(
-                    state.component_path,
+                self._run_command(
                     ["git", "stash", "pop"],
+                    cwd=state.component_path,
                     dry_run=dry_run,
                     environment=environment,
                     check=False,
                     stream=False,
                 )
         if state.stash_applied:
-            self._run_repo_command(
-                repo_path,
+            self._run_command(
                 ["git", "stash", "pop"],
+                cwd=repo_path,
                 dry_run=dry_run,
                 environment=environment,
                 check=False,
@@ -431,27 +431,29 @@ class GitManager:
 
         # Step 2: update root repository
         if root_original_branch != main_branch:
-            self._switch_or_create_branch(
-                repo_path,
-                main_branch,
+            self._run_command(
+                ["git", "switch", main_branch],
+                cwd=repo_path,
                 dry_run=dry_run,
                 environment=environment,
+                check=False,
+                stream=False,
             )
             root_switched = True
 
         if update_script:
             self._run_script(update_script, repo_path, environment=environment, dry_run=dry_run)
         else:
-            self._run_repo_command(
-                repo_path,
+            self._run_command(
                 ["git", "fetch", "--all"],
+                cwd=repo_path,
                 dry_run=dry_run,
                 environment=environment,
             )
             merge_target = f"origin/{main_branch}"
-            result = self._run_repo_command(
-                repo_path,
+            result = self._run_command(
                 ["git", "merge", "--ff-only", merge_target],
+                cwd=repo_path,
                 dry_run=dry_run,
                 environment=environment,
                 check=False,
@@ -476,9 +478,9 @@ class GitManager:
         # Step 3: update component repository when available
         if component_repo_path is not None and component_target_branch:
             if component_switch_required or component_current_branch != component_target_branch:
-                result = self._run_repo_command(
-                    component_repo_path,
+                result = self._run_command(
                     ["git", "switch", component_target_branch],
+                    cwd=component_repo_path,
                     dry_run=dry_run,
                     environment=environment,
                     check=False,
@@ -490,16 +492,16 @@ class GitManager:
                 component_switch_required = True
                 component_current_branch = component_target_branch
 
-            self._run_repo_command(
-                component_repo_path,
+            self._run_command(
                 ["git", "fetch", "--all"],
+                cwd=component_repo_path,
                 dry_run=dry_run,
                 environment=environment,
             )
             merge_target = f"origin/{component_target_branch}"
-            result = self._run_repo_command(
-                component_repo_path,
+            result = self._run_command(
                 ["git", "merge", "--ff-only", merge_target],
+                cwd=component_repo_path,
                 dry_run=dry_run,
                 environment=environment,
                 check=False,
@@ -517,9 +519,9 @@ class GitManager:
         # Step 4: restore component branch and stash before restoring root
         if component_repo_path is not None:
             if component_switch_required and component_original_branch and component_original_branch != component_target_branch:
-                result = self._run_repo_command(
-                    component_repo_path,
+                result = self._run_command(
                     ["git", "switch", component_original_branch],
+                    cwd=component_repo_path,
                     dry_run=dry_run,
                     environment=environment,
                     check=False,
@@ -548,9 +550,9 @@ class GitManager:
 
         can_restore_root = root_switched and bool(root_original_branch) and root_original_branch not in {"", "HEAD"}
         if can_restore_root:
-            result = self._run_repo_command(
-                repo_path,
+            result = self._run_command(
                 ["git", "switch", root_original_branch],
+                cwd=repo_path,
                 dry_run=dry_run,
                 environment=environment,
                 check=False,
@@ -559,7 +561,7 @@ class GitManager:
                 raise RuntimeError(
                     f"Unable to restore repository at '{repo_path}' to branch '{root_original_branch}'."
                 )
-            self._update_submodules_selective(
+            self._update_submodules(
                 repo_path,
                 dry_run=dry_run,
                 environment=environment,
@@ -567,7 +569,7 @@ class GitManager:
             )
         elif skip_paths:
             # Ensure other submodules still refresh even when we stay on main
-            self._update_submodules_selective(
+            self._update_submodules(
                 repo_path,
                 dry_run=dry_run,
                 environment=environment,
@@ -583,7 +585,7 @@ class GitManager:
 
     def _run_command(
         self,
-        command: list[str],
+        command: Sequence[str],
         *,
         cwd: Path | None,
         dry_run: bool,
@@ -592,52 +594,7 @@ class GitManager:
         stream: bool | None = None,
     ) -> CommandResult:
         run_stream = stream if stream is not None else not dry_run
-        return self._runner.run(command, cwd=cwd, env=environment, check=check, stream=run_stream)
-
-    def _run_repo_command(
-        self,
-        repo_path: Path,
-        command: Sequence[str],
-        *,
-        dry_run: bool,
-        environment: Mapping[str, str] | None = None,
-        check: bool = True,
-        stream: bool | None = None,
-    ) -> CommandResult:
-        return self._run_command(
-            list(command),
-            cwd=repo_path,
-            dry_run=dry_run,
-            environment=environment,
-            check=check,
-            stream=stream,
-        )
-
-    def _switch_or_create_branch(
-        self,
-        repo_path: Path,
-        branch: str,
-        *,
-        dry_run: bool,
-        environment: Mapping[str, str] | None = None,
-        stream: bool | None = None,
-    ) -> None:
-        result = self._run_repo_command(
-            repo_path,
-            ["git", "switch", branch],
-            dry_run=dry_run,
-            environment=environment,
-            check=False,
-            stream=stream,
-        )
-        if result.returncode != 0:
-            self._run_repo_command(
-                repo_path,
-                ["git", "switch", "-c", branch, f"origin/{branch}"],
-                dry_run=dry_run,
-                environment=environment,
-                stream=stream,
-            )
+        return self._runner.run(list(command), cwd=cwd, env=environment, check=check, stream=run_stream)
 
     def _stash_if_dirty(
         self,
@@ -654,9 +611,9 @@ class GitManager:
             return False
         if not auto_stash:
             raise RuntimeError(error_message)
-        self._run_repo_command(
-            repo_path,
+        self._run_command(
             ["git", "stash", "push", "-m", "builder auto-stash"],
+            cwd=repo_path,
             dry_run=dry_run,
             environment=environment,
             stream=stream,
@@ -674,9 +631,9 @@ class GitManager:
     ) -> None:
         if not stash_applied or repo_path is None:
             return
-        self._run_repo_command(
-            repo_path,
+        self._run_command(
             ["git", "stash", "pop"],
+            cwd=repo_path,
             dry_run=dry_run,
             environment=environment,
             check=False,
@@ -690,27 +647,12 @@ class GitManager:
         dry_run: bool,
         environment: Mapping[str, str] | None = None,
         stream: bool | None = None,
-    ) -> CommandResult:
-        return self._run_repo_command(
-            repo_path,
-            ["git", "submodule", "update", "--recursive"],
-            dry_run=dry_run,
-            environment=environment,
-            stream=stream,
-        )
-
-    def _update_submodules_selective(
-        self,
-        repo_path: Path,
-        *,
-        dry_run: bool,
-        environment: Mapping[str, str] | None = None,
-        stream: bool | None = None,
         skip_paths: set[str] | None = None,
     ) -> CommandResult:
         if not skip_paths:
-            return self._update_submodules(
-                repo_path,
+            return self._run_command(
+                ["git", "submodule", "update", "--recursive"],
+                cwd=repo_path,
                 dry_run=dry_run,
                 environment=environment,
                 stream=stream,
@@ -731,92 +673,12 @@ class GitManager:
             return CommandResult(command=["git", "submodule", "update", "--recursive"], returncode=0, stdout="", stderr="")
 
         args = ["git", "submodule", "update", "--recursive", "--", *sorted(include_paths)]
-        return self._run_repo_command(
-            repo_path,
+        return self._run_command(
             args,
+            cwd=repo_path,
             dry_run=dry_run,
             environment=environment,
             stream=stream,
-        )
-
-    def _checkout_component_branch(
-        self,
-        component_repo_path: Path,
-        *,
-        target_branch: str | None,
-        dry_run: bool,
-        environment: Mapping[str, str] | None = None,
-    ) -> None:
-        if not target_branch:
-            return
-        result = self._run_repo_command(
-            component_repo_path,
-            ["git", "switch", target_branch],
-            dry_run=dry_run,
-            environment=environment,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"Unable to switch component repository at '{component_repo_path}' to branch '{target_branch}'."
-            )
-
-    def _fast_forward_component_repository(
-        self,
-        component_repo_path: Path,
-        *,
-        target_branch: str | None,
-        dry_run: bool,
-        environment: Mapping[str, str] | None = None,
-        already_fetched: bool = False,
-    ) -> None:
-        if not already_fetched:
-            self._run_repo_command(
-                component_repo_path,
-                ["git", "fetch", "--all"],
-                dry_run=dry_run,
-                environment=environment,
-            )
-
-        try:
-            current_branch = self._current_branch(component_repo_path, environment=environment)
-        except CommandError:
-            current_branch = None
-
-        desired_branch = target_branch
-        if not desired_branch:
-            if current_branch and current_branch not in {"", "HEAD"}:
-                desired_branch = current_branch
-
-        merge_candidates: list[str] = []
-        if desired_branch:
-            if not desired_branch.startswith("origin/"):
-                merge_candidates.append(f"origin/{desired_branch}")
-            merge_candidates.append(desired_branch)
-
-        merge_succeeded = not merge_candidates
-        for candidate in merge_candidates:
-            result = self._run_repo_command(
-                component_repo_path,
-                ["git", "merge", "--ff-only", candidate],
-                dry_run=dry_run,
-                environment=environment,
-                check=False,
-            )
-            if result.returncode == 0:
-                merge_succeeded = True
-                break
-
-        if not merge_succeeded:
-            branch_name = desired_branch or "current HEAD"
-            raise RuntimeError(
-                f"Unable to fast-forward component repository at '{component_repo_path}' to branch '{branch_name}'."
-            )
-
-        self._update_submodules(
-            component_repo_path,
-            dry_run=dry_run,
-            environment=environment,
         )
 
     def _is_git_directory(self, path: Path) -> bool:
@@ -882,9 +744,9 @@ class GitManager:
             branch_switch_needed = True
 
         if branch_switch_needed:
-            result = self._run_repo_command(
-                component_path,
+            result = self._run_command(
                 ["git", "switch", target_branch],
+                cwd=component_path,
                 dry_run=dry_run,
                 environment=environment,
                 check=False,
@@ -1046,10 +908,7 @@ class GitManager:
         environment: Mapping[str, str] | None,
         dry_run: bool,
     ) -> None:
-        if script.startswith(".") or script.startswith("/"):
-            command = ["sh", "-c", script]
-        else:
-            command = ["sh", "-c", script]
+        command = ["sh", "-c", script]
         run_stream = not dry_run
         if dry_run:
             self._runner.run(command, cwd=cwd, env=environment, stream=False)
