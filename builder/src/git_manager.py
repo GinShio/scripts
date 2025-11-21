@@ -376,6 +376,7 @@ class GitManager:
         component_is_submodule = False
         component_stash_applied = False
         component_rel_path: str | None = None
+        component_switch_required = False
         if component_dir is not None:
             component_candidate = Path(component_dir)
             candidate_path = (
@@ -408,12 +409,16 @@ class GitManager:
             error_message="Working tree has uncommitted changes; enable auto_stash to proceed",
         )
 
+        component_target_branch = component_branch or main_branch
+
         component_current_branch: Optional[str] = None
         if component_repo_path is not None:
             try:
                 component_current_branch = self._current_branch(component_repo_path, environment=environment)
             except CommandError:
                 component_current_branch = None
+            if component_target_branch:
+                component_switch_required = component_current_branch != component_target_branch
             component_stash_applied = self._stash_if_dirty(
                 component_repo_path,
                 auto_stash=auto_stash,
@@ -423,8 +428,6 @@ class GitManager:
                     f"Component working tree at '{component_repo_path}' has uncommitted changes; enable auto_stash to proceed"
                 ),
             )
-
-        component_target_branch = component_branch or main_branch
 
         # Step 2: update root repository
         if root_original_branch != main_branch:
@@ -462,10 +465,17 @@ class GitManager:
             environment=environment,
         )
 
-        # Step 3: update component repository when available
-        component_switched = False
         if component_repo_path is not None and component_target_branch:
-            if component_current_branch != component_target_branch:
+            try:
+                refreshed_branch = self._current_branch(component_repo_path, environment=environment)
+            except CommandError:
+                refreshed_branch = None
+            else:
+                component_current_branch = refreshed_branch
+
+        # Step 3: update component repository when available
+        if component_repo_path is not None and component_target_branch:
+            if component_switch_required or component_current_branch != component_target_branch:
                 result = self._run_repo_command(
                     component_repo_path,
                     ["git", "switch", component_target_branch],
@@ -477,7 +487,8 @@ class GitManager:
                     raise RuntimeError(
                         f"Unable to switch component repository at '{component_repo_path}' to branch '{component_target_branch}'."
                     )
-                component_switched = True
+                component_switch_required = True
+                component_current_branch = component_target_branch
 
             self._run_repo_command(
                 component_repo_path,
@@ -505,7 +516,7 @@ class GitManager:
 
         # Step 4: restore component branch and stash before restoring root
         if component_repo_path is not None:
-            if component_switched and component_original_branch and component_original_branch != component_target_branch:
+            if component_switch_required and component_original_branch and component_original_branch != component_target_branch:
                 result = self._run_repo_command(
                     component_repo_path,
                     ["git", "switch", component_original_branch],
@@ -563,13 +574,12 @@ class GitManager:
                 skip_paths=skip_paths,
             )
 
-        if root_stash_applied:
-            self._restore_stash(
-                repo_path,
-                stash_applied=root_stash_applied,
-                dry_run=dry_run,
-                environment=environment,
-            )
+        self._restore_stash(
+            repo_path,
+            stash_applied=root_stash_applied,
+            dry_run=dry_run,
+            environment=environment,
+        )
 
     def _run_command(
         self,
@@ -1016,7 +1026,7 @@ class GitManager:
         return text or None
 
     def _is_dirty(self, repo_path: Path, *, environment: Mapping[str, str] | None = None) -> bool:
-        result = self._runner.run(["git", "status", "--porcelain"], cwd=repo_path, env=environment)
+        result = self._runner.run(["git", "status", "--porcelain", "--ignore-submodules", "--untracked-files=no"], cwd=repo_path, env=environment)
         return bool(result.stdout.strip())
 
     def _ensure_repository(

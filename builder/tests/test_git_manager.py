@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 import tempfile
 import unittest
 
@@ -30,6 +31,7 @@ class FakeGitRunner(CommandRunner):
         self.submodule_status_entries: list[tuple[str, str, str | None]] = []
         self.sparse_checkout: bool = False
         self.root_path: Path | None = None
+        self.submodule_update_hooks: list[Callable[[Path | None], None]] = []
 
     @property
     def branch(self) -> str:
@@ -134,6 +136,10 @@ class FakeGitRunner(CommandRunner):
             if stdout:
                 stdout += "\n"
             return CommandResult(command=cmd_list, returncode=0, stdout=stdout, stderr="")
+        if cmd_list[:3] == ["git", "submodule", "update"]:
+            for hook in self.submodule_update_hooks:
+                hook(key_path)
+            return CommandResult(command=cmd_list, returncode=0, stdout="", stderr="")
         return CommandResult(command=cmd_list, returncode=0, stdout="", stderr="")
 
     def _state(self, key: Path | None) -> dict[str, object]:
@@ -169,6 +175,9 @@ class FakeGitRunner(CommandRunner):
         self.submodule_paths.add(path)
         if url is not None:
             self.submodule_urls[path] = url
+
+    def add_submodule_update_hook(self, hook: Callable[[Path | None], None]) -> None:
+        self.submodule_update_hooks.append(hook)
 
     @staticmethod
     def _extract_submodule_path(key: str) -> str | None:
@@ -749,6 +758,56 @@ class GitManagerTests(unittest.TestCase):
         self.assertIsNotNone(state)
         if state:
             self.assertEqual(state.get("branch"), "comp-old")
+
+    def test_update_repository_component_reswitches_after_submodule_update(self) -> None:
+        component_rel = Path("components/library")
+        component_path = (self.repo_path / component_rel).resolve()
+        (component_path / ".git").mkdir(parents=True)
+
+        runner = FakeGitRunner(initial_branch="feature", commits={"feature": "f1", "main": "m2", "comp-target": "c2"})
+        runner.add_submodule_path(component_rel.as_posix())
+        runner.set_repo_state(
+            path=component_path,
+            branch="comp-target",
+            commits={"comp-target": "c2"},
+        )
+
+        detach_triggered = False
+
+        def detach_component_on_root_update(cwd: Path | None) -> None:
+            nonlocal detach_triggered
+            if detach_triggered or cwd is None:
+                return
+            if cwd.resolve() != self.repo_path.resolve():
+                return
+            state = runner.repo_states.get(component_path.resolve())
+            if state is not None:
+                state["branch"] = "HEAD"
+            detach_triggered = True
+
+        runner.add_submodule_update_hook(detach_component_on_root_update)
+
+        manager = GitManager(runner)
+        manager.update_repository(
+            repo_path=self.repo_path,
+            url="https://example.com/demo.git",
+            main_branch="main",
+            component_branch="comp-target",
+            component_dir=component_rel,
+        )
+
+        component_switch_commands = [
+            entry["command"]
+            for entry in runner.history
+            if entry["cwd"] == component_path and entry["command"][:2] == ["git", "switch"]
+        ]
+        self.assertIn(["git", "switch", "comp-target"], component_switch_commands)
+        self.assertEqual(component_switch_commands.count(["git", "switch", "comp-target"]), 1)
+
+        state = runner.repo_states.get(component_path.resolve())
+        self.assertIsNotNone(state)
+        if state:
+            self.assertEqual(state.get("branch"), "comp-target")
 
     def test_update_repository_component_auto_stash_when_switching(self) -> None:
         component_rel = Path("components/library")
