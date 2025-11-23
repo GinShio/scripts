@@ -1,5 +1,6 @@
 """Shared core utilities for build orchestration and templating."""
 
+from .archive import ArchiveArtifact, ArchiveConsole, ArchiveManager
 from .template import TemplateError, TemplateResolver, build_dependency_map, extract_placeholders, topological_order
 from .command_runner import (
     CommandError,
@@ -25,6 +26,9 @@ __all__ = [
     "build_dependency_map",
     "extract_placeholders",
     "topological_order",
+    "ArchiveConsole",
+    "ArchiveManager",
+    "ArchiveArtifact",
     "CommandError",
     "CommandResult",
     "CommandRunner",
