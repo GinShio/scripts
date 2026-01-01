@@ -221,15 +221,6 @@ def run_tests(ctx: Context, test_names: List[str]):
         # Backend Env
         merged_env.update(resolve_env(backend.get("env", {}), env_vars))
 
-        # Add CPU count
-        # Use 75% of available cores, minimum 1
-        # cpu_count = os.cpu_count() or 1
-        # available_cpus = int(cpu_count * 0.75)
-        # merged_env["AVAILABLE_CPUS_CNT"] = str(max(1, available_cpus))
-
-        # Pass cpu_count to variables for template resolution
-        # env_vars["cpu_count"] = os.cpu_count() or 1
-
         # Detect GPU ID for this test environment
         # Heuristic: if suite name or exe contains 'gl' or 'piglit', try GL
         # first, else Vulkan
@@ -438,136 +429,140 @@ def run_tests(ctx: Context, test_names: List[str]):
         ctx.console.debug(f"Environment: {merged_env}")
         ctx.console.debug(f"Command: {cmd}")
 
-        if ctx.console.dry_run:
-            ctx.runner.run(cmd, cwd=cwd, env=merged_env, check=False)
-        else:
-            try:
-                # Create output dir if not exists (it might have been created for excludes/testlist)
+        try:
+            # Create output dir if not exists (it might have been created for excludes/testlist)
+            if not ctx.console.dry_run:
                 output_dir.mkdir(parents=True, exist_ok=True)
 
-                # Prepare hook variables
-                hook_vars = env_vars.copy()
-                hook_vars.update({
-                    "name": suite_name,
-                    "output_dir": str(output_dir),
-                    "test_name": test_name
-                })
+            # Prepare hook variables
+            hook_vars = env_vars.copy()
+            hook_vars.update({
+                "name": suite_name,
+                "output_dir": str(output_dir),
+                "test_name": test_name
+            })
 
-                # Run pre-run hooks
-                pre_hooks = suite.get(
-                    "pre_run_hooks", []) + test_def.get("pre_run", [])
-                # So I should probably default to running 'get_git_info' if
-                # it exists, or add a global 'default_pre_hooks'.
+            # Run pre-run hooks
+            pre_hooks = suite.get(
+                "pre_run_hooks", []) + test_def.get("pre_run", [])
+            # So I should probably default to running 'get_git_info' if
+            # it exists, or add a global 'default_pre_hooks'.
 
-                # Let's implement generic hooks execution
-                def run_hooks(hooks_list, phase_name):
-                    for hook_name in hooks_list:
-                        hook_cmd_tpl = hooks_cfg.get(hook_name)
-                        if not hook_cmd_tpl:
-                            ctx.console.error(
-                                f"Hook '{hook_name}' not found in [hooks]")
-                            continue
-
-                        ctx.console.info(
-                            f"Running {phase_name} hook: {hook_name}")
-                        try:
-                            ctx.runner.run(
-                                ["sh", "-c", substitute(hook_cmd_tpl, hook_vars)], cwd=output_dir, check=False)
-                        except Exception as e:
-                            ctx.console.error(
-                                f"{phase_name} hook '{hook_name}' failed: {e}")
-
-                # Run explicit pre-run hooks
-                run_hooks(pre_hooks, "pre-run")
-
-                # Run the test
-                ctx.runner.run(
-                    cmd,
-                    cwd=cwd,
-                    env=merged_env,
-                    check=True,
-                    stream=True)
-
-                # Run post-run hooks
-                post_hooks = suite.get(
-                    "post_run_hooks", []) + test_def.get("post_run", [])
-                run_hooks(post_hooks, "post-run")
-
-                # Archive results
-                # Naming: vendor/suite_device_date.arch
-                archive_filename = f"{suite_name}_{
-                    test_vars['gpu_id']}_{
-                    test_vars['date']}.tar.zst"
-                archive_parent = ctx.result_dir / driver_name
-                archive_parent.mkdir(parents=True, exist_ok=True)
-                archive_path = archive_parent / archive_filename
-
-                ctx.console.info(f"Archiving results to {archive_path}")
-
-                # Baseline naming: vendor_suite_date
-                baseline_name = f"{driver_name}_{suite_name}_{
-                    test_vars['date']}"
-
-                # Determine what to archive
-                archive_files = suite.get("archive_files")
-                source_dir_for_archive = output_dir
-
-                if archive_files:
-                    # Create a staging directory
-                    staging_dir = output_dir / ".archive_staging"
-                    if staging_dir.exists():
-                        shutil.rmtree(staging_dir)
-                    staging_dir.mkdir()
+            # Let's implement generic hooks execution
+            def run_hooks(hooks_list, phase_name):
+                for hook_name in hooks_list:
+                    hook_cmd_tpl = hooks_cfg.get(hook_name)
+                    if not hook_cmd_tpl:
+                        ctx.console.error(
+                            f"Hook '{hook_name}' not found in [hooks]")
+                        continue
 
                     ctx.console.info(
-                        f"Collecting artifacts matching: {archive_files}")
+                        f"Running {phase_name} hook: {hook_name}")
+                    try:
+                        ctx.runner.run(
+                            ["sh", "-c", substitute(hook_cmd_tpl, hook_vars)], cwd=output_dir, check=False)
+                    except Exception as e:
+                        ctx.console.error(
+                            f"{phase_name} hook '{hook_name}' failed: {e}")
 
-                    for pattern in archive_files:
-                        # Use glob to find matches
-                        matches = list(output_dir.glob(pattern))
-                        for match in matches:
-                            if match == staging_dir:
-                                continue
+            # Run explicit pre-run hooks
+            run_hooks(pre_hooks, "pre-run")
 
-                            rel_path = match.relative_to(output_dir)
-                            dest_path = staging_dir / rel_path
+            # Run the test
+            ctx.runner.run(
+                cmd,
+                cwd=cwd,
+                env=merged_env,
+                check=True,
+                stream=True)
 
-                            if match.is_file():
-                                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(match, dest_path)
-                            elif match.is_dir():
-                                # For directories, we copy the whole tree
-                                # If dest exists (e.g. from another pattern), we might need to merge?
-                                # shutil.copytree fails if dest exists.
-                                # Let's use a simple approach: if dest exists, skip or merge?
-                                # For now, assume distinct matches or handle simple cases.
-                                if not dest_path.exists():
-                                    shutil.copytree(match, dest_path)
+            # Run post-run hooks
+            post_hooks = suite.get(
+                "post_run_hooks", []) + test_def.get("post_run", [])
+            run_hooks(post_hooks, "post-run")
 
-                    source_dir_for_archive = staging_dir
+            # Archive results
+            # Naming: vendor/suite_device_date.arch
+            archive_filename = f"{suite_name}_{
+                test_vars['gpu_id']}_{
+                test_vars['date']}.tar.zst"
+            archive_parent = ctx.result_dir / driver_name
 
-                # Use ArchiveManager for archiving
-                archive_manager = ArchiveManager(ctx.console)
-                artifact = ArchiveArtifact(
-                    source_dir=source_dir_for_archive,
-                    label=test_name
-                )
+            if not ctx.console.dry_run:
+                archive_parent.mkdir(parents=True, exist_ok=True)
 
-                try:
+            archive_path = archive_parent / archive_filename
+
+            ctx.console.info(f"Archiving results to {archive_path}")
+
+            # Baseline naming: vendor_suite_date
+            baseline_name = f"{driver_name}_{suite_name}_{
+                test_vars['date']}"
+
+            # Determine what to archive
+            archive_files = suite.get("archive_files")
+            source_dir_for_archive = output_dir
+
+            if archive_files and not ctx.console.dry_run:
+                # Create a staging directory
+                staging_dir = output_dir / ".archive_staging"
+                if staging_dir.exists():
+                    shutil.rmtree(staging_dir)
+                staging_dir.mkdir()
+
+                ctx.console.info(
+                    f"Collecting artifacts matching: {archive_files}")
+
+                for pattern in archive_files:
+                    # Use glob to find matches
+                    matches = list(output_dir.glob(pattern))
+                    for match in matches:
+                        if match == staging_dir:
+                            continue
+
+                        rel_path = match.relative_to(output_dir)
+                        dest_path = staging_dir / rel_path
+
+                        if match.is_file():
+                            dest_path.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(match, dest_path)
+                        elif match.is_dir():
+                            # For directories, we copy the whole tree
+                            # If dest exists (e.g. from another pattern), we might need to merge?
+                            # shutil.copytree fails if dest exists.
+                            # Let's use a simple approach: if dest exists, skip or merge?
+                            # For now, assume distinct matches or handle simple cases.
+                            if not dest_path.exists():
+                                shutil.copytree(match, dest_path)
+
+                source_dir_for_archive = staging_dir
+
+            # Use ArchiveManager for archiving
+            archive_manager = ArchiveManager(ctx.console)
+            artifact = ArchiveArtifact(
+                source_dir=source_dir_for_archive,
+                label=test_name
+            )
+
+            try:
+                if source_dir_for_archive.exists():
                     archive_manager.create_archive(
                         artifact=artifact,
                         target_path=archive_path,
                         overwrite=True
                     )
-                except Exception as e:
-                    ctx.console.error(f"Failed to archive results: {e}")
-                finally:
-                    # Cleanup staging directory
-                    if archive_files and source_dir_for_archive.exists() and source_dir_for_archive.name == ".archive_staging":
-                        shutil.rmtree(source_dir_for_archive, ignore_errors=True)
+                elif ctx.console.dry_run:
+                    ctx.console.info(f"[dry-run] Would archive {test_name} to {archive_path}")
+            except Exception as e:
+                ctx.console.error(f"Failed to archive results: {e}")
+            finally:
+                # Cleanup staging directory
+                if archive_files and source_dir_for_archive.exists() and source_dir_for_archive.name == ".archive_staging":
+                    shutil.rmtree(source_dir_for_archive, ignore_errors=True)
 
-            except CommandError as e:
-                ctx.console.error(f"Test failed: {e}")
-                # If dry run, we don't care about failure
-                if not ctx.console.dry_run:
-                    pass  # Or exit? Usually we want to continue to next test.
+        except CommandError as e:
+            ctx.console.error(f"Test failed: {e}")
+            # If dry run, we don't care about failure
+            if not ctx.console.dry_run:
+                pass  # Or exit? Usually we want to continue to next test.

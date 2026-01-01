@@ -19,10 +19,7 @@ def run_restore(ctx: Context, days: int = 10):
         return
 
     baseline_dir = ctx.runner_root / "baseline"
-    if not ctx.console.dry_run:
-        baseline_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        ctx.runner.run(["mkdir", "-p", str(baseline_dir)], check=False)
+    ctx.runner.run(["mkdir", "-p", str(baseline_dir)], check=False)
 
     now = time.time()
     cutoff = now - (days * 86400)
@@ -64,22 +61,10 @@ def run_restore(ctx: Context, days: int = 10):
 
             target_dir = baseline_dir / driver_name / clean_stem
 
-            if ctx.console.dry_run:
-                ctx.runner.run(["mkdir", "-p", str(target_dir)], check=False)
-                ctx.runner.run(["tar",
-                                "-I",
-                                "zstd",
-                                "-xf",
-                                str(archive),
-                                "-C",
-                                str(target_dir)],
-                               check=False)
-            else:
-                try:
-                    target_dir.mkdir(parents=True, exist_ok=True)
-                    archive_manager.extract_archive(
-                        archive_path=archive,
-                        destination_dir=target_dir
-                    )
-                except Exception as e:
-                    ctx.console.error(f"Failed to extract {archive}: {e}")
+            try:
+                archive_manager.extract_archive(
+                    archive_path=archive,
+                    destination_dir=target_dir
+                )
+            except Exception as e:
+                ctx.console.error(f"Failed to extract {archive}: {e}")

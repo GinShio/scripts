@@ -93,10 +93,10 @@ class TestCleanup(unittest.TestCase):
 
         run_cleanup(self.ctx)
 
-        old_file.unlink.assert_called()
+        self.runner.run.assert_any_call(["rm", str(old_file)], check=False)
         new_file.unlink.assert_not_called()
 
-        mock_shutil.rmtree.assert_called_with(old_result)
+        self.runner.run.assert_any_call(["rm", "-rf", str(old_result)], check=False)
 
         # Verify glob pattern
         mock_glob.assert_called_with("**/*.tar.zst")

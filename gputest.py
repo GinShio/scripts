@@ -25,7 +25,7 @@ if str(project_root) not in sys.path:
 try:
     from core.command_runner import SubprocessCommandRunner
     from core.config_loader import load_config_file
-    from gputest.src.context import Context, Console
+    from gputest.src.context import Context, Console, DryRunCommandRunner
     from gputest.src.toolbox import run_toolbox
     from gputest.src.runner import run_tests
     from gputest.src.restore import run_restore
@@ -160,6 +160,7 @@ def main():
 
     # Global settings
     global_cfg = config.get("global", {})
+    console.debug(global_cfg)
     project_root = Path(
         os.path.expanduser(
             global_cfg.get(
@@ -176,10 +177,15 @@ def main():
                 "result_dir",
                 "~/Public/result"))).resolve()
 
+    if args.dry_run:
+        runner = DryRunCommandRunner()
+    else:
+        runner = SubprocessCommandRunner()
+
     ctx = Context(
         config=config,
         console=console,
-        runner=SubprocessCommandRunner(),
+        runner=runner,
         project_root=project_root,
         runner_root=runner_root,
         result_dir=result_dir

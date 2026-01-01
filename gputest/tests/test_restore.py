@@ -64,7 +64,7 @@ class TestRestore(unittest.TestCase):
         )
 
         # Verify glob pattern
-        mock_glob.assert_called_with("*/*_gpu1_*.tar.zst")
+        mock_glob.assert_any_call("*/*_gpu1_*.tar.zst")
 
     @patch("gputest.src.restore.get_gpu_device_id", return_value="gpu1")
     @patch("gputest.src.restore.ArchiveManager")
@@ -93,11 +93,8 @@ class TestRestore(unittest.TestCase):
 
         run_restore(self.ctx, days=10)
 
-        # Should NOT call extract_archive
-        mock_archive_manager.return_value.extract_archive.assert_not_called()
+        # Should call extract_archive (ArchiveManager handles dry_run internally)
+        mock_archive_manager.return_value.extract_archive.assert_called()
 
-        # Should call tar command
+        # Should call mkdir via runner
         self.runner.run.assert_called()
-        # Check for tar command
-        tar_calls = [c for c in self.runner.run.call_args_list if c[0][0][0] == "tar"]
-        self.assertTrue(len(tar_calls) > 0)

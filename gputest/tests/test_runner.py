@@ -100,12 +100,10 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
     @patch("gputest.src.runner.ArchiveManager")
     @patch("gputest.src.runner.get_gpu_id_from_vulkan")
-    @patch("pathlib.Path.mkdir")
     @patch("gputest.src.runner.generate_testlist")
     def test_run_tests_with_archive(
             self,
             mock_gen_testlist,
-            mock_mkdir,
             mock_get_vk,
             mock_archive_manager,
             mock_cpu,
@@ -125,8 +123,11 @@ class TestRunner(unittest.TestCase):
         self.assertIn("driver1", str(target_path))
         self.assertIn("suite1_1002:73bf", target_path.name)
 
-        # Verify mkdir calls
-        self.assertTrue(mock_mkdir.called)
+        # Verify mkdir calls - implicitly verified by successful execution and directory existence if we checked it
+        # Since we are not patching mkdir, we can check if the directory exists in the temp dir
+        # But the exact path depends on timestamp.
+        # We can check if result_dir/driver1 exists
+        self.assertTrue((self.ctx.result_dir / "driver1").exists())
 
     @patch("gputest.src.runner.get_gpu_device_id", return_value="gpu1")
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
@@ -299,14 +300,12 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
     @patch("gputest.src.runner.ArchiveManager")
     @patch("gputest.src.runner.get_gpu_id_from_vulkan")
-    @patch("pathlib.Path.mkdir")
     @patch("gputest.src.runner.shutil")
     @patch("gputest.src.runner.generate_testlist")
     def test_run_tests_with_archive_files(
             self,
             mock_gen_testlist,
             mock_shutil,
-            mock_mkdir,
             mock_get_vk,
             mock_archive_manager,
             mock_cpu,

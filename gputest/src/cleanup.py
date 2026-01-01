@@ -28,10 +28,7 @@ def run_cleanup(ctx: Context):
         for f in ctx.result_dir.glob("**/*.tar.zst"):
             if f.stat().st_mtime < (now - archive_retention * 86400):
                 ctx.console.info(f"Deleting old archive: {f.name}")
-                if ctx.console.dry_run:
-                    ctx.runner.run(["rm", str(f)], check=False)
-                else:
-                    f.unlink()
+                ctx.runner.run(["rm", str(f)], check=False)
 
         # Clean empty directories in result_dir
         if not ctx.console.dry_run:
@@ -59,13 +56,7 @@ def run_cleanup(ctx: Context):
                     if item.stat().st_mtime < (now - result_retention * 86400):
                         ctx.console.info(
                             f"Deleting old result: {subdir}/{group_dir.name}/{item.name}")
-                        if ctx.console.dry_run:
-                            ctx.runner.run(["rm", "-rf", str(item)], check=False)
-                        else:
-                            if item.is_dir():
-                                shutil.rmtree(item)
-                            else:
-                                item.unlink()
+                        ctx.runner.run(["rm", "-rf", str(item)], check=False)
 
                 # Clean up empty grouping directories
                 if not ctx.console.dry_run and not any(group_dir.iterdir()):
