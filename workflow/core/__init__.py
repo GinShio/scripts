@@ -19,6 +19,7 @@ from .config_loader import (
     register_loader,
     resolve_config_paths,
 )
+from .crypto import decrypt, encrypt
 
 __all__ = [
     "TemplateError",
@@ -42,4 +43,6 @@ __all__ = [
     "normalize_string_list",
     "register_loader",
     "resolve_config_paths",
+    "encrypt",
+    "decrypt",
 ]
