@@ -1,7 +1,9 @@
-#!/usr/bin/env bash
+#!/bin/sh
+set -eu
 
-source $XDG_CONFIG_HOME/workflow/.env
+# shellcheck disable=SC1091
+. "$XDG_CONFIG_HOME/workflow/.env"
 trap "sudo -k" EXIT
 
-sudo -A -- mount --all --fstab $HOME/Public/.config.d/$DOTFILES_CURRENT_PROFILE.imm.fstab
-# sudo -A -- bash -c "nohup mount --all --fstab $HOME/Public/.config.d/$DOTFILES_CURRENT_PROFILE.nohup.fstab &"
+sudo -A -- mount --all --fstab "$HOME/Public/.config.d/$DOTFILES_CURRENT_PROFILE.imm.fstab"
+#sudo -A -- sh -c "nohup mount --all --fstab $HOME/Public/.config.d/$DOTFILES_CURRENT_PROFILE.nohup.fstab &"

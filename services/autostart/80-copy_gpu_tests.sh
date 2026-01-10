@@ -1,5 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
+set -eu
 
-source $XDG_CONFIG_HOME/workflow/.env
-python3 $PROJECTS_SCRIPT_DIR/gputest.py install
-python3 $PROJECTS_SCRIPT_DIR/gputest.py restore --days 10
+# shellcheck disable=SC1091
+. "$XDG_CONFIG_HOME/workflow/.env"
+python3 "$PROJECTS_SCRIPT_DIR/gputest.py" install
+python3 "$PROJECTS_SCRIPT_DIR/gputest.py" restore --days 10

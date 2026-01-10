@@ -328,6 +328,11 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         dest="org",
         help="Organization/namespace to filter projects or disambiguate names",
     )
+    list_parser.add_argument(
+        "--simple",
+        action="store_true",
+        help="Machine-readable output: list only project names, one per line",
+    )
     list_parser.set_defaults(submodules=None)
 
     return parser.parse_args(list(argv))
@@ -622,6 +627,23 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
 
     if not resolved_project_keys:
         print("No projects found")
+        return 0
+
+    if getattr(args, "simple", False):
+        counts: dict[str, int] = {}
+        for key in resolved_project_keys:
+            base = key.split("/")[-1]
+            counts[base] = counts.get(base, 0) + 1
+
+        output_list: List[str] = []
+        for key in resolved_project_keys:
+            base = key.split("/")[-1]
+            if counts[base] == 1:
+                output_list.append(base)
+            else:
+                output_list.append(key)
+
+        print("\n".join(sorted(output_list)))
         return 0
 
     include_url = bool(getattr(args, "url", False))

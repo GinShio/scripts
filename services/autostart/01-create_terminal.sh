@@ -1,6 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
+set -eu
 
-tmux new-session -d -s runner -c $XDG_RUNTIME_DIR/runner \
+tmux new-session -d -s runner -c "$XDG_RUNTIME_DIR/runner" \
   systemd-run --user --scope \
     -p MemoryMax=32G \
     -p MemorySwapMax=0 \
@@ -9,5 +10,5 @@ tmux new-session -d -s runner -c $XDG_RUNTIME_DIR/runner \
     --shell
 # systemctl --user show tmux-runner.scope -p MemoryCurrent -p MemoryMax
 
-tmux new-session -d -s editor -c $HOME
+tmux new-session -d -s editor -c "$HOME"
 tmux send-keys -t editor "emacsclient -nw --eval '(doom/load-session \"$HOME/.config/emacs/.local/etc/workspaces/projs\")'" ENTER

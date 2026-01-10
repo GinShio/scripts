@@ -1,37 +1,45 @@
-#!/usr/bin/env bash
+#!/bin/sh
+set -eu
 
-source $XDG_CONFIG_HOME/workflow/.env
+# shellcheck disable=SC1091
+. "$XDG_CONFIG_HOME/workflow/.env"
+# shellcheck disable=SC1091
+. "$PROJECTS_SCRIPT_DIR/common/proxy.sh"
 
-source $PROJECTS_SCRIPT_DIR/common/proxy.sh
-trap "source $PROJECTS_SCRIPT_DIR/common/unproxy.sh" EXIT
+cleanup() {
+    # shellcheck disable=SC1091
+    . "$PROJECTS_SCRIPT_DIR/common/unproxy.sh"
+}
+trap cleanup EXIT
 
-exisit_projects=( $(python3 $PROJECTS_SCRIPT_DIR/builder.py list --no-submodule |sed '/^Warning:/d' |tail -n +3 |awk '{if ($4 != "<missing>") print $2}') )
+# Get existing projects list (one per line)
+EXISTING_PROJECTS=$(python3 "$PROJECTS_SCRIPT_DIR/builder.py" list --no-submodule --simple)
 
 build_projects() {
-    local -n extra_args="$1"
-    local -n projects="$2"
-    for project in ${projects[@]}; do
-        if ! [[ "${exisit_projects[*]}" =~ "$project" ]]; then
+    _extra_args="$1"
+    _projects="$2"
+
+    for proj in $_projects; do
+        # Check if project exists in EXISTING_PROJECTS
+        if ! echo "$EXISTING_PROJECTS" | grep -Fqx "$proj" > /dev/null 2>&1; then
             continue
         fi
-        python3 $PROJECTS_SCRIPT_DIR/builder.py update $project
-        if [ $? -eq 0 ]; then
-            eval "python3 $PROJECTS_SCRIPT_DIR/builder.py build $project --build-type Release ${extra_args[@]}"
-            eval "python3 $PROJECTS_SCRIPT_DIR/builder.py build $project --build-type Debug"
+
+        echo "=> Updating $proj..."
+        if python3 "$PROJECTS_SCRIPT_DIR/builder.py" update "$proj"; then
+            # Release build (word splitting on _extra_args is intended here)
+            # shellcheck disable=SC2086
+            python3 "$PROJECTS_SCRIPT_DIR/builder.py" build "$proj" --build-type Release $_extra_args
+
+            # Debug build
+            python3 "$PROJECTS_SCRIPT_DIR/builder.py" build "$proj" --build-type Debug
         fi
     done
 }
 
-if [[ "khronos3d" = "$DOTFILES_CURRENT_PROFILE" ]]; then
-    work_extra_args=(--install)
-    work_projects=(amdvlk)
-    build_projects work_extra_args work_projects
+if [ "khronos3d" = "${DOTFILES_CURRENT_PROFILE}" ]; then
+    build_projects "--install" "amdvlk"
 fi
 
-installable_extra_args=(--install-dir $HOME/.local --install)
-installable_projects=(mesa spirv-tools slang)
-build_projects installable_extra_args installable_projects
-
-common_extra_args=()
-common_projects=(llvm)
-build_projects common_extra_args common_projects
+build_projects "--install-dir $HOME/.local --install" "mesa slang"
+build_projects "" "llvm"

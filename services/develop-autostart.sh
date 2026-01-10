@@ -1,28 +1,29 @@
-#!/usr/bin/env bash
+#!/bin/sh
+set -u
 
-source $XDG_CONFIG_HOME/workflow/.env
-set -uo pipefail
+# shellcheck disable=SC1091
+. "$XDG_CONFIG_HOME/workflow/.env"
 
 SCRIPTS_DIR="$PROJECTS_SCRIPT_DIR/services/autostart"
 
-if [[ ! -d "$SCRIPTS_DIR" ]]; then
+if [ ! -d "$SCRIPTS_DIR" ]; then
 	printf '[autostart] scripts directory not found: %s\n' "$SCRIPTS_DIR" >&2
 	exit 1
 fi
 
 run_script() {
-	local script_path=$1
-	local script_name
-	script_name=$(basename "$script_path")
+	_script_path="$1"
+	_script_name=$(basename "$_script_path")
 
-	if [[ ! -f "$script_path" ]]; then
-		printf '[autostart] skip missing script: %s\n' "$script_name" >&2
+	if [ ! -f "$_script_path" ]; then
+		printf '[autostart] skip missing script: %s\n' "$_script_name" >&2
 		return 0
 	fi
 
-	printf '[autostart] running %s\n' "$script_name"
-	if ! bash "$script_path"; then
-		printf '[autostart] %s failed\n' "$script_name" >&2
+	printf '[autostart] running %s\n' "$_script_name"
+	# Execute with standard sh since we posix-ified sub-scripts
+	if ! /bin/sh "$_script_path"; then
+		printf '[autostart] %s failed\n' "$_script_name" >&2
 		return 1
 	fi
 
@@ -30,12 +31,12 @@ run_script() {
 }
 
 status=0
-shopt -s nullglob
 for script in "$SCRIPTS_DIR"/*.sh; do
+    [ -e "$script" ] || continue
+
 	if ! run_script "$script"; then
 		status=1
 	fi
 done
-shopt -u nullglob
 
 exit $status
