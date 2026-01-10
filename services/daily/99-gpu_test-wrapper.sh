@@ -36,20 +36,60 @@ check_driver() {
     IFS="$newline"
     set -f
     found=0
+
+    # Create a reference file with timestamp to compare against
+    # Use mktemp for security (atomic creation, safe permissions)
+    ref_file=$(mktemp) || {
+        set +f
+        IFS="$old_ifs"
+        echo "Error: Failed to create temporary file" >&2
+        return 1
+    }
+
+    # Use native touch command to set file timestamp
+    # Convert Unix timestamp to touch format: [[CC]YY]MMDDhhmm[.SS]
+    # Try GNU date first, then BSD date
+    touch_time=$(date -d "@$now_timestamps" +%Y%m%d%H%M.%S 2>/dev/null || \
+                 date -r "$now_timestamps" +%Y%m%d%H%M.%S 2>/dev/null || true)
+
+    if [ -z "$touch_time" ]; then
+        # If date conversion fails, restore state and return error
+        rm -f "$ref_file"
+        set +f
+        IFS="$old_ifs"
+        echo "Error: Failed to convert timestamp (date command not compatible)" >&2
+        return 1
+    fi
+
+    # Set the timestamp on the already-created temporary file
+    if ! touch -t "$touch_time" "$ref_file" 2>/dev/null; then
+        # Restore state and clean up on error
+        rm -f "$ref_file"
+        set +f
+        IFS="$old_ifs"
+        echo "Error: Failed to set file timestamp" >&2
+        return 1
+    fi
+
     for info in $output; do
         clean_info=$(echo "$info" | tr -d '[:space:]')
         item=${clean_info%%:*}
         value=${clean_info#*:}
         if [ "$item" = "Library" ] && [ -e "$value" ]; then
-            file_ts=$(stat -c "%Y" "$value" 2>/dev/null)
-            if [ -n "$file_ts" ] && [ "$now_timestamps" -lt "$file_ts" ]; then
+            # POSIX compatible: use -nt (newer than) test operator
+            # This checks if file modification time > now_timestamps
+            if [ "$value" -nt "$ref_file" ]; then
                 found=1
                 break
             fi
         fi
     done
+
+    # Always clean up reference file
+    rm -f "$ref_file"
     set +f
     IFS="$old_ifs"
+
     if [ "$found" -eq 1 ]; then
         return 0
     else
@@ -61,5 +101,13 @@ for elem in $drivers_tuple; do
     driver=${elem%,*}
     suite=${elem#*,}
     check_driver || continue
-    tmux send-keys -t runner "python3 $PROJECTS_SCRIPT_DIR/gputest.py run $driver-$suite" ENTER
+
+    # Run test and signal completion (even on failure)
+    # Using a unique channel per iteration to avoid conflicts
+    signal_name="gputest-done-$$-$driver-$suite"
+    tmux send-keys -t runner \
+        "python3 $PROJECTS_SCRIPT_DIR/gputest.py run $driver-$suite; tmux wait-for -S $signal_name" ENTER
+
+    # Wait for the test to complete
+    tmux wait-for "$signal_name"
 done
