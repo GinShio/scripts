@@ -1,0 +1,6 @@
+DOTFILES_ROOT_PATH: (Optional) Path to the dotfiles repository. (default: ../dotfiles)
+TRANSCRYPT_<PROFILE>_<KEY>: (Optional) <KEY> for decrypting secrets for the specific profile. e.g.
+    + TRANSCRYPT_PERSONAL_PASSWORD
+    + TRANSCRYPT_PERSONAL_CIPHER
+    + TRANSCRYPT_PERSONAL_DIGEST
+    + TRANSCRYPT_PERSONAL_ITERATIONS
