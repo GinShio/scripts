@@ -23,6 +23,6 @@ is_laptop() {
 
 # Only configure power profiles on laptops
 if is_laptop; then
-    powerprofilesctl configure-action --enable amdgpu_dpm
-    powerprofilesctl configure-action --enable amdgpu_panel_power
+    powerprofilesctl configure-action --enable amdgpu_dpm || true
+    powerprofilesctl configure-action --enable amdgpu_panel_power || true
 fi
