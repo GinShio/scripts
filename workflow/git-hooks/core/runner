@@ -3,7 +3,7 @@
 # Git Hook Runner
 
 SCRIPT_NAME=$(basename "$0")
-HOOK_NAME="$SCRIPT_NAME"
+export HOOK_NAME="$SCRIPT_NAME"
 
 current_dir=$(cd "$(dirname "$0")" && pwd)
 export HOOKS_DIR="$current_dir"

@@ -228,11 +228,23 @@ resolve_build_dirs() {
 get_main_branch() {
     _remote="${1:-origin}"
     
+    # 0. Check User Configuration (Highest Priority)
+    # Useful for monorepos or non-standard layouts.
+    _cfg_branch=$(git config ginshio.workflow.main-branch 2>/dev/null)
+    if [ -n "$_cfg_branch" ]; then
+        echo "$_cfg_branch"
+        return
+    fi
+    
     # 1. Check local tracking info (fastest)
     if _remote_head=$(git symbolic-ref "refs/remotes/$_remote/HEAD" 2>/dev/null); then
         echo "${_remote_head#refs/remotes/$_remote/}"
         return
     fi
+    
+    # 1.1 Verify if 'refs/remotes/origin/HEAD' is missing, try to detect it once?
+    # This invokes network and is slow, so we only implicitly trust if cached.
+    # Alternatively, users should run `git remote set-head origin -a`
     
     # 2. Guess common names
     for _candidate in main master trunk development; do
