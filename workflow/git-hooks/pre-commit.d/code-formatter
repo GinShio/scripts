@@ -1,0 +1,160 @@
+#!/bin/sh
+. "$HOOKS_DIR/core/lib.sh"
+
+# Combined Code Formatter for C/C++/Zig/Rust
+# 
+# Replaces: clang-format, zig-fmt, rust-fmt
+# Provides centralized formatting logic to avoid multiple `git diff` invocations.
+
+# Flags to track availability to avoid repeated `command -v` checks or warnings
+HAS_CLANG_FORMAT=""
+HAS_ZIG=""
+HAS_RUSTFMT=""
+HAS_RUFF=""
+HAS_BLACK=""
+HAS_ISORT=""
+
+# Configuration - Checks enabled state for each language
+# Defaults to TRUE for existence of this script, but can be disabled individually
+ENABLE_CLANG=$(git config --bool ginshio.hooks.pre-commit.clang-format.enabled)
+ENABLE_ZIG=$(git config --bool ginshio.hooks.pre-commit.zig-fmt.enabled)
+ENABLE_RUST=$(git config --bool ginshio.hooks.pre-commit.rust-fmt.enabled)
+ENABLE_PYTHON=$(git config --bool ginshio.hooks.pre-commit.python-fmt.enabled)
+ENABLE_WHITESPACE=$(git config --bool ginshio.hooks.pre-commit.whitespace.enabled)
+
+# If no specific config is set, default to TRUE for the consolidated formatter script itself,
+# so we rely on whether the script "code-formatter" is disabled in parent.
+# But for individual langs, we can default to true as well if not explicitly disabled.
+# Actually, let's keep it simple: formatting is good.
+# If user wants to disable clang-format specifically, they set ginshio.hooks.pre-commit.clang-format.enabled = false
+
+: "${ENABLE_CLANG:=$([ "$ENABLE_CLANG" != "false" ] && echo true || echo false)}"
+: "${ENABLE_ZIG:=$([ "$ENABLE_ZIG" != "false" ] && echo true || echo false)}"
+: "${ENABLE_RUST:=$([ "$ENABLE_RUST" != "false" ] && echo true || echo false)}"
+: "${ENABLE_PYTHON:=$([ "$ENABLE_PYTHON" != "false" ] && echo true || echo false)}"
+: "${ENABLE_WHITESPACE:=$([ "$ENABLE_WHITESPACE" != "false" ] && echo true || echo false)}"
+
+# Clang Format Specific Config
+CF_STYLE=$(git config --get ginshio.hooks.pre-commit.clang-format.style)
+CF_ARGS=""
+if [ -e "$GIT_TOPLEVEL/.clang-format" ]; then
+    :
+elif [ -n "$CF_STYLE" ]; then
+    CF_ARGS="-style=$CF_STYLE"
+fi
+
+# Lazy checker for tools
+check_tool() {
+    tool_name="$1"
+    if ! command -v "$tool_name" >/dev/null 2>&1; then
+        echo "false"
+    else
+        echo "true"
+    fi
+}
+
+git diff --cached --name-only --diff-filter=ACM | while IFS= read -r file; do
+    if [ ! -f "$file" ]; then continue; fi
+
+    # Check git attributes to skip non-text files or specific exclusions
+    attr_info=$(git check-attr text "$file" | sed 's/.*: text: //')
+    # If attribute is "unset", it might still be text, but git doesn't know. 
+    # Use 'file' command as fallback or assume text if not binary.
+    
+    # 0. Generic Whitespace Fixer
+    if is_truthy "$ENABLE_WHITESPACE"; then
+        # Ensure it is a text file before modifying
+        is_text=0
+        if [ "$attr_info" = "set" ]; then
+            is_text=1
+        elif [ "$attr_info" = "unset" ] || [ "$attr_info" = "auto" ]; then
+            if file "$file" | grep -q "text"; then is_text=1; fi
+        fi
+
+        if [ "$is_text" -eq 1 ]; then
+            needs_add=0
+            # Remove trailing whitespace
+            if grep -q "[[:space:]]$" "$file"; then
+                run_sed_i 's/[[:space:]]*$//' "$file"
+                needs_add=1
+            fi
+            # Ensure newline at EOF
+            if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then
+                echo "" >> "$file"
+                needs_add=1
+            fi
+            if [ "$needs_add" -eq 1 ]; then
+                git add "$file"
+            fi
+        fi
+    fi
+    
+    case "$file" in
+        # C / C++
+        *.c|*.h|*.inc|*.hh|*.hpp|*.hxx|*.h++|*.cc|*.cpp|*.cxx|*.c++|*.icc|*.ipp|*.ixx|*.i++|*.tcc|*.tpp|*.txx|*.t*)
+            if is_truthy "$ENABLE_CLANG"; then
+                if [ -z "$HAS_CLANG_FORMAT" ]; then HAS_CLANG_FORMAT=$(check_tool clang-format); fi
+                if [ "$HAS_CLANG_FORMAT" = "true" ]; then
+                    if clang-format --Wno-error=unknown $CF_ARGS -i "$file"; then
+                        git add "$file"
+                    fi
+                fi
+            fi
+            ;;
+            
+        # Rust
+        *.rs)
+            if is_truthy "$ENABLE_RUST"; then
+                if [ -z "$HAS_RUSTFMT" ]; then HAS_RUSTFMT=$(check_tool rustfmt); fi
+                if [ "$HAS_RUSTFMT" = "true" ]; then
+                   if rustfmt "$file"; then
+                       git add "$file"
+                   fi
+                fi
+            fi
+            ;;
+            
+        # Zig
+        *.zig|*.zon)
+            if is_truthy "$ENABLE_ZIG"; then
+                if [ -z "$HAS_ZIG" ]; then HAS_ZIG=$(check_tool zig); fi
+                if [ "$HAS_ZIG" = "true" ]; then
+                    if zig fmt "$file"; then
+                        git add "$file"
+                    fi
+                fi
+            fi
+            ;;
+
+        # Python
+        # Priority: Ruff > (Black + isort) > autopep8 (legacy, ignored for now)
+        # Ruff represents the modern standard: fast, all-in-one.
+        *.py|*.pyi)
+             if is_truthy "$ENABLE_PYTHON"; then
+                # 1. Try Ruff (Fastest, All-in-one)
+                if [ -z "$HAS_RUFF" ]; then HAS_RUFF=$(check_tool ruff); fi
+                
+                if [ "$HAS_RUFF" = "true" ]; then
+                    # Format and fix import sorting
+                    if ruff format --force-exclude "$file" && ruff check --fix --select I --force-exclude "$file" >/dev/null 2>&1; then
+                        git add "$file"
+                    fi
+                else
+                    # 2. Fallback: Black + isort
+                    if [ -z "$HAS_BLACK" ]; then HAS_BLACK=$(check_tool black); fi
+                    if [ -z "$HAS_ISORT" ]; then HAS_ISORT=$(check_tool isort); fi
+                    
+                    if [ "$HAS_ISORT" = "true" ]; then
+                         isort --quiet "$file"
+                         git add "$file"
+                    fi
+                    
+                    if [ "$HAS_BLACK" = "true" ]; then
+                        black --quiet "$file"
+                        git add "$file"
+                    fi
+                fi
+             fi
+             ;;
+    esac
+done

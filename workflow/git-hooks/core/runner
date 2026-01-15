@@ -1,0 +1,99 @@
+#!/bin/sh
+
+# Git Hook Runner
+
+SCRIPT_NAME=$(basename "$0")
+HOOK_NAME="$SCRIPT_NAME"
+
+current_dir=$(cd "$(dirname "$0")" && pwd)
+export HOOKS_DIR="$current_dir"
+
+# Search for lib.sh
+if [ -f "$current_dir/core/lib.sh" ]; then
+    LIB_PATH="$current_dir/core/lib.sh"
+elif [ -f "$current_dir/../core/lib.sh" ]; then
+    LIB_PATH="$current_dir/../core/lib.sh"
+else
+    echo "Git Hooks Error: Cannot find core/lib.sh functionality."
+    exit 1
+fi
+
+. "$LIB_PATH"
+
+HOOK_DIR="$current_dir/$HOOK_NAME.d"
+
+# Handle STDIN buffering for hooks that consume input
+# pre-push, post-rewrite, push-to-checkout, pre-receive, post-receive, reference-transaction
+NEEDS_STDIN=0
+case "$HOOK_NAME" in
+    pre-push|post-rewrite|push-to-checkout|pre-receive|post-receive|reference-transaction)
+        NEEDS_STDIN=1
+        ;;
+esac
+
+# Function to run scripts from a directory
+execute_dir() {
+    dir="$1"
+    stdin_source="$2"
+    shift 2
+
+    if [ ! -d "$dir" ]; then return 0; fi
+
+    for script in "$dir"/*; do
+        [ -e "$script" ] || continue
+        if [ -f "$script" ] && [ -x "$script" ]; then
+            script_base=$(basename "$script")
+            if is_enabled "$HOOK_NAME" "$script_base"; then
+                if [ -n "$stdin_source" ] && [ -f "$stdin_source" ]; then
+                    "$script" "$@" < "$stdin_source"
+                else
+                    "$script" "$@"
+                fi
+                exit_code=$?
+                if [ $exit_code -ne 0 ]; then
+                    log_error "Hook script '$script_base' failed with exit code $exit_code"
+                    exit $exit_code
+                fi
+            fi
+        fi
+    done
+}
+
+execute_local() {
+    local_hooks_dir="$GIT_DIR/hooks"
+    local_hook_script="$local_hooks_dir/$HOOK_NAME"
+    stdin_source="$1"
+    shift 1
+    
+    if [ -f "$local_hook_script" ] && [ -x "$local_hook_script" ]; then
+        if is_enabled "$HOOK_NAME" "local"; then
+             if [ -n "$stdin_source" ] && [ -f "$stdin_source" ]; then
+                "$local_hook_script" "$@" < "$stdin_source"
+             else
+                "$local_hook_script" "$@"
+             fi
+            exit_code=$?
+            if [ $exit_code -ne 0 ]; then
+                log_error "Local hook '$HOOK_NAME' failed"
+                exit $exit_code
+            fi
+        fi
+    fi
+}
+
+STDIN_FILE=""
+if [ "$NEEDS_STDIN" -eq 1 ]; then
+    # We must read stdin into a temp file
+    # mktemp is POSIX-ish (standard on linux/bsd/macos)
+    STDIN_FILE=$(mktemp)
+    cat > "$STDIN_FILE"
+fi
+
+execute_dir "$HOOK_DIR" "$STDIN_FILE" "$@"
+execute_local "$STDIN_FILE" "$@"
+
+if [ -n "$STDIN_FILE" ] && [ -f "$STDIN_FILE" ]; then
+    rm "$STDIN_FILE"
+fi
+
+exit 0

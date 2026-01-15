@@ -1,0 +1,82 @@
+#!/bin/sh
+# Basic sanity checks for git commits
+# Function: merge-conflicts, broken-symlinks, internal-large-files
+
+. "$HOOKS_DIR/core/lib.sh"
+
+# Get staged files
+files=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$files" ] && exit 0
+
+exit_code=0
+
+# --- Check 1: Merge Conflicts ---
+# Scans for standard git merge markers in text files.
+found_conflicts=0
+for file in $files; do
+    if [ -f "$file" ]; then
+        # Check if file is text (ignore binary)
+        if file "$file" | grep -q "text"; then
+            if grep -E "^<<<<<<< |^=======$|^>>>>>>> " "$file" >/dev/null 2>&1; then
+                log_error "Merge conflict markers found in $file"
+                found_conflicts=1
+            fi
+        fi
+    fi
+done
+if [ $found_conflicts -eq 1 ]; then
+    exit_code=1
+fi
+
+# --- Check 2: Broken Symlinks ---
+# Ensures symbolic links point to valid targets.
+found_broken_links=0
+for file in $files; do
+    if [ -L "$file" ]; then
+        if [ ! -e "$file" ]; then
+            log_error "Broken symlink detected: $file -> $(readlink "$file")"
+            found_broken_links=1
+        fi
+    fi
+done
+if [ $found_broken_links -eq 1 ]; then
+    exit_code=1
+fi
+
+# --- Check 3: Large Files (Simple) ---
+# Prevent accidental commit of very large files.
+# Default: 25MiB. Configurable via:
+#   Git Config: ginshio.hooks.pre-commit.sanity-checks.max-file-size (bytes)
+#   Env Var:    GINSHIO_HOOKS_PRE_COMMIT_SANITY_CHECKS_MAX_FILE_SIZE (bytes)
+
+# Default: 25 * 1024 * 1024 = 26214400 bytes
+DEFAULT_MAX_SIZE=26214400
+
+# 1. Env Var
+if [ -n "$GINSHIO_HOOKS_PRE_COMMIT_SANITY_CHECKS_MAX_FILE_SIZE" ]; then
+    MAX_SIZE_BYTES="$GINSHIO_HOOKS_PRE_COMMIT_SANITY_CHECKS_MAX_FILE_SIZE"
+else
+    # 2. Git Config
+    cfg_size=$(git config --int ginshio.hooks.pre-commit.sanity-checks.max-file-size 2>/dev/null)
+    if [ -n "$cfg_size" ]; then
+        MAX_SIZE_BYTES="$cfg_size"
+    else
+        MAX_SIZE_BYTES="$DEFAULT_MAX_SIZE"
+    fi
+fi
+
+found_large_files=0
+for file in $files; do
+    if [ -f "$file" ]; then
+        fsize=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)
+        if [ -n "$fsize" ] && [ "$fsize" -gt "$MAX_SIZE_BYTES" ]; then
+            log_error "Large file detected: $file ($((fsize/1024/1024))MB > $((MAX_SIZE_BYTES/1024/1024))MB)"
+            found_large_files=1
+        fi
+    fi
+done
+if [ $found_large_files -eq 1 ]; then
+    exit_code=1
+fi
+
+exit $exit_code

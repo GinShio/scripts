@@ -1,0 +1,57 @@
+#!/bin/sh
+. "$HOOKS_DIR/core/lib.sh"
+
+# Cleanup build directory when a local branch is deleted.
+# Triggered via reference-transaction hook.
+
+# Config key: ginshio.hooks.reference-transaction.cleanup-build-dir.enabled
+: "${ENABLE:=$(git config --bool ginshio.hooks.reference-transaction.cleanup-build-dir.enabled)}"
+if ! is_truthy "${ENABLE:-false}"; then exit 0; fi
+
+STATE="$1"
+
+# Only act when the transaction is actually committed
+if [ "$STATE" != "committed" ]; then
+    exit 0
+fi
+
+. $HOME/.config/workflow/.env
+BUILDER_SCRIPT="$PROJECTS_SCRIPT_DIR/builder.py"
+# Resolve builder script path if relative or environment var? 
+# For now assume fixed path matching user description.
+
+if [ ! -f "$BUILDER_SCRIPT" ]; then
+    exit 0
+fi
+
+REPO_NAME=$(basename "$GIT_TOPLEVEL")
+
+# Read references update from stdin
+# Format: <old-sha> <new-sha> <ref-name>
+while read old_sha new_sha ref_name; do
+    # Check for branch deletion
+    # SHA $NULL_SHA indicates deletion
+    if [ "$new_sha" = "$NULL_SHA" ] && \
+       case "$ref_name" in refs/heads/*) true;; *) false;; esac; then
+
+        BRANCH_NAME="${ref_name#refs/heads/}"
+        
+        # log_info "Branch '$BRANCH_NAME' deleted. Checking for build directory..."
+
+        resolve_build_dirs "$REPO_NAME" "$BRANCH_NAME" | while read -r BUILD_DIR; do
+            # Normalize base dir by stripping known suffixes
+            # This handles cases where BUILD_DIR is already reported as "...-Debug"
+            BASE_DIR="${BUILD_DIR%-Debug}"
+            BASE_DIR="${BASE_DIR%-Release}"
+
+            # Check for standard variants (base, -Debug, -Release)
+            for suffix in "" "-Debug" "-Release"; do
+                target_dir="${BASE_DIR}${suffix}"
+                if [ -n "$target_dir" ] && [ -d "$target_dir" ]; then
+                    log_warn "Branch '$BRANCH_NAME' deleted. Removing associated build dir: $target_dir"
+                    rm -rf "$target_dir"
+                fi
+            done
+        done
+    fi
+done

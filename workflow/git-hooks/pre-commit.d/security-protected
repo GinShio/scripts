@@ -1,0 +1,33 @@
+#!/bin/sh
+# Security scan for secrets using gitleaks or git-secrets
+# If tools are present, they are enforced.
+# If tools are missing, this hook passes silently (exit 0).
+
+. "$HOOKS_DIR/core/lib.sh"
+
+# 1. Gitleaks (Preferred)
+if command -v gitleaks >/dev/null 2>&1; then
+    log_info "Running gitleaks protection..."
+    # "protect" scans the staged changes
+    if ! gitleaks protect --staged --verbose --redact; then
+        log_error "gitleaks detected potential secrets! Commit blocked."
+        log_info "To bypass (if false positive): git commit --no-verify"
+        exit 1
+    fi
+    exit 0
+fi
+
+# 2. git-secrets (Fallback)
+if command -v git-secrets >/dev/null 2>&1; then
+    log_info "Running git-secrets..."
+    # git-secrets usually installs its own hooks, but if called manually:
+    if ! git secrets --scan; then
+        log_error "git-secrets detected patterns."
+        exit 1
+    fi
+    exit 0
+fi
+
+# 3. No tool found -> Exit 0 (Pass)
+# We strictly ignore this check if no security tools are available in the environment.
+exit 0

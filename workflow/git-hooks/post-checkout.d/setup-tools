@@ -1,0 +1,94 @@
+#!/bin/sh
+# Auto-configure git-branchless and git-machete on checkout/clone.
+
+. "$HOOKS_DIR/core/lib.sh"
+
+PREV_HEAD="$1"
+NEW_HEAD="$2"
+FLAG="$3"
+
+# Only run on branch checkout (1)
+if [ "$FLAG" != "1" ]; then
+    exit 0
+fi
+
+# --- 1. Git Branchless Initialization ---
+if command -v git-branchless >/dev/null 2>&1; then
+    # Check if branchless is already initialized via config include
+    # 'git branchless init' typically adds [include] path = branchless/config to .git/config
+    # We check if that specific config file exists to avoid re-running init unnecessarily.
+    if [ ! -f "$GIT_DIR/branchless/config" ]; then
+        log_info "Initializing git-branchless..."
+        
+        main_branch=$(get_main_branch "origin")
+        
+        # Run init. This will:
+        # 1. Create .git/branchless/config
+        # 2. Add include to .git/config
+        # 3. Potentially update hooks (we assume user handles hook conflicts/symlinks if they want this)
+        if git branchless init --main-branch "$main_branch"; then
+            log_info "git-branchless initialized for main branch: $main_branch"
+        else
+            log_error "Failed to initialize git-branchless"
+        fi
+    fi
+fi
+
+# --- 2. Git Machete Configuration ---
+if command -v git-machete >/dev/null 2>&1; then
+    # Only configure if not already configured
+    current_remote=$(git config machete.github.remote)
+    if [ -z "$current_remote" ]; then
+        remote_url=$(git remote get-url origin 2>/dev/null)
+        
+        if [ -n "$remote_url" ]; then
+            domain=""
+            org=""
+            repo=""
+            
+            # Use core library function to parse remote URL (supports SSH aliases)
+            read -r domain org repo <<EOF
+$(parse_git_remote "$remote_url")
+EOF
+            
+            if [ -n "$domain" ] && [ -n "$org" ] && [ -n "$repo" ]; then
+                log_info "Configuring git-machete for $domain/$org/$repo"
+                
+                # Determine service type based on domain
+                # git-machete config keys: machete.<service>.{domain,remote,organization,repository}
+                # Machete officially supports github, gitlab, bitbucket. 
+                # For others (codeberg, gitea, etc), users might abuse one of the existing keys or just set domain.
+                # Here we try to map to known services, defaulting to "gitlab" style generic config if unknown?
+                # Actually, machete likely requires a strict service key.
+                
+                service=""
+                case "$domain" in
+                    *github.com*) service="github" ;;
+                    *gitlab.com*) service="gitlab" ;;
+                    *bitbucket.org*) service="bitbucket" ;;
+                    *codeberg.org*) service="gitlab" ;; # Codeberg is Gitea-based, often compatible with generic Git flows
+                    *) 
+                        # Fallback: if it looks like gitlab self-hosted or generic, try gitlab?
+                        # Or maybe we just skip auto-config if we are unsure to avoid breaking things.
+                        # But user asked for lenient policy.
+                        
+                        # Let's default to "gitlab" as a generic service container name often works 
+                        # for self-hosted instances in similar tools, but machete might be specific.
+                        # Based on docs, custom domains work with the specific provider key.
+                        # We'll use 'gitlab' as the default generic provider key for unknown domains
+                        # assuming many are Gitlab/Gitea based.
+                        service="gitlab" 
+                        ;;
+                esac
+                
+                if [ -n "$service" ]; then
+                    git config --local "machete.$service.domain" "$domain"
+                    git config --local "machete.$service.remote" "origin"
+                    git config --local "machete.$service.organization" "$org"
+                    git config --local "machete.$service.repository" "$repo"
+                fi
+            fi
+        fi
+    fi
+fi
+

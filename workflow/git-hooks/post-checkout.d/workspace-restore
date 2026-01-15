@@ -1,0 +1,45 @@
+#!/bin/sh
+# Workspace Activation Hook
+# Updates symlinks for build directory and compile_commands.json upon branch switch.
+
+. "$HOOKS_DIR/core/lib.sh"
+
+PREV_HEAD="$1"
+NEW_HEAD="$2"
+FLAG="$3"
+
+# Flag 1 is for changing branches. We only care about that.
+if [ "$FLAG" != "1" ]; then
+    exit 0
+fi
+
+REPO_NAME=$(basename "$GIT_TOPLEVEL")
+BRANCH_NAME=$(git symbolic-ref --short HEAD 2>/dev/null)
+
+if [ -z "$BRANCH_NAME" ]; then
+    # Detached HEAD state
+    exit 0
+fi
+
+log_info "Activating workspace for branch: $BRANCH_NAME"
+
+# Query builder script for the build directory
+# We take the first valid build dir found
+BUILD_PATH=$(resolve_build_dirs "$REPO_NAME" "$BRANCH_NAME" | head -n 1)
+
+if [ -z "$BUILD_PATH" ] || [ ! -d "$BUILD_PATH" ]; then
+    # Maybe build dir doesn't exist yet? That's fine.
+    log_warn "No existing build directory found for $BRANCH_NAME. Run build setup first."
+    exit 0
+fi
+
+# Update 'compile_commands.json' symlink
+if [ -f "$BUILD_PATH/compile_commands.json" ]; then
+    if [ -L "$GIT_TOPLEVEL/compile_commands.json" ] || [ ! -e "$GIT_TOPLEVEL/compile_commands.json" ]; then
+        rm -f "$GIT_TOPLEVEL/compile_commands.json"
+        ln -s "$BUILD_PATH/compile_commands.json" "$GIT_TOPLEVEL/compile_commands.json"
+        log_info "Symlinked compile_commands.json"
+    else
+        log_warn "$GIT_TOPLEVEL/compile_commands.json exists and is not a symlink. Skipping."
+    fi
+fi

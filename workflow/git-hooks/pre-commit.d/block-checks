@@ -1,0 +1,24 @@
+#!/bin/sh
+# Checks for blocking terms (e.g. NO_COMMIT) in staged changes.
+
+. "$HOOKS_DIR/core/lib.sh"
+
+files=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$files" ] && exit 0
+
+blocking_terms="DO_NOT_SUB""MIT|NO""COMMIT|FIXME_BLOC""KER"
+found_issues=0
+
+# Use git grep to search only staged content
+# -E: extended regex
+# -q: quiet
+# --cached: staged area
+if git grep --cached -E -q "($blocking_terms)" -- $files; then
+   log_error "Blocking terms found in staged files:"
+   git grep --cached -E -n "($blocking_terms)" -- $files | while read line; do
+       log_error "  $line"
+   done
+   exit 1
+fi
+
+exit 0

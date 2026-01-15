@@ -1,0 +1,25 @@
+#!/bin/sh
+. "$HOOKS_DIR/core/lib.sh"
+
+# Config key: ginshio.hooks.pre-push.warn-protected.enabled
+: "${ENABLE:=$(git config --bool ginshio.hooks.pre-push.warn-protected.enabled)}"
+if ! is_truthy "${ENABLE:-false}"; then exit 0; fi
+
+REMOTE_NAME="$1"
+REMOTE_URL="$2"
+
+while read local_ref local_sha remote_ref remote_sha; do
+    if [ "$local_sha" = "$NULL_SHA" ]; then
+        continue
+    fi
+    remote_branch_name=${remote_ref#refs/heads/}
+    if echo "$remote_branch_name" | grep -q -E "$PROTECTED_BRANCH"; then
+        log_warn "Pushing to protected branch ($remote_branch_name) on remote ($REMOTE_NAME)."
+        log_warn "Think before you type."
+        if ! prompt_confirm; then
+             log_warn "Abort..."
+             exit 1
+        fi
+        break 
+    fi
+done

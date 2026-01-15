@@ -1,0 +1,167 @@
+#!/bin/sh
+# Git pre-commit hook script to verify text encoding and newline characters.
+# Reimplemented in POSIX sh (replacing Perl version).
+# Supports: ascii, utf8 (with optional -with-signature), and newline flavors (-dos, -mac, -unix).
+
+. "$HOOKS_DIR/core/lib.sh"
+
+DEFAULT_ALLOWED="ascii-unix,utf8-unix"
+
+# Parse arguments: default allowed encodings passed as first arg
+ALLOWED_ENCODINGS="${1:-$DEFAULT_ALLOWED}"
+
+# Usage: check_encoding <allowed_list> <detected_encoding>
+# Returns 0 if allowed, 1 if not.
+is_encoding_allowed() {
+    allowed_list="$1"
+    detected="$2"
+    
+    # Check for direct match or compatible match (ascii is valid utf8)
+    # We iterate over comma-separated allowed list
+    echo "$allowed_list" | tr ',' '\n' | while read -r item; do
+        if [ "$item" = "$detected" ]; then
+            exit 0
+        fi
+        # Compatibility rules
+        # Ascii is a subset of Utf8. If we allow utf8-*, ascii-* of same newline type should pass.
+        if [ "${detected%%-*}" = "ascii" ] && [ "${item%%-*}" = "utf8" ]; then
+            # Check newline suffix equality
+            if [ "${detected#ascii}" = "${item#utf8}" ]; then
+                exit 0
+            fi
+        fi
+    done
+    # If the loop finishes without exit 0, it means no match found.
+    # The return status of the pipeline is that of the last command (which is the while loop).
+    # We need to explicitly return failure if we reach here.
+    return 1
+}
+
+detect_file_encoding() {
+    file_path="$1"
+    
+    # Read file content from git index to temp file
+    tmp_file=$(mktemp)
+    # Use -- to ensure file_path is not treated as option
+    if ! git show -- ":./$file_path" > "$tmp_file" 2>/dev/null; then
+        rm "$tmp_file"
+        echo "error" 
+        return
+    fi
+    
+    # Empty file? Treated as ascii-unix
+    if [ ! -s "$tmp_file" ]; then
+        echo "ascii-unix"
+        rm "$tmp_file"
+        return
+    fi
+
+    # --- Encoding Detection ---
+    is_ascii=0
+    encoding="binary"
+
+    # Check validity via iconv (POSIX/XSI)
+    if command -v iconv >/dev/null 2>&1; then
+        # Check UTF-8 validity
+        if iconv -f UTF-8 -t UTF-8 < "$tmp_file" >/dev/null 2>&1; then
+            # It is valid UTF-8. Now check if it is purely ASCII.
+            # Strip all bytes <= 127. If result is empty, it was pure ASCII.
+            # \000-\177 covers generic ASCII. 
+            if [ ! -s "$(tr -d '[\000-\177]' < "$tmp_file")" ]; then
+                encoding="ascii"
+            else
+                encoding="utf8"
+            fi
+        else
+            # Invalid UTF-8 -> Binary or other encoding
+            encoding="binary"
+        fi
+    else
+        # Fallback without iconv: simple ASCII check
+        if [ ! -s "$(tr -d '[\000-\177]' < "$tmp_file")" ]; then
+            encoding="ascii"
+        else
+            # Cannot validate UTF-8 strictly without iconv or extensive logic.
+            # Assume binary to be safe, or allow if user blindly trusts?
+            # Safer to fail closed.
+            encoding="unknown"
+        fi
+    fi
+
+    # --- BOM Detection ---
+    # UTF-8 BOM: EF BB BF
+    suffix_sig=""
+    if [ "$encoding" = "utf8" ]; then
+        # Read first 3 bytes hex
+        head_hex=$(od -N3 -t x1 -An < "$tmp_file" | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
+        if [ "$head_hex" = "efbbbf" ]; then
+            suffix_sig="-with-signature"
+        fi
+    fi
+
+    # --- Newline Detection ---
+    # We use awk to detect presence of \r at EOL (DOS) or \r elsewhere (Mac)
+    # Priority: DOS (CRLF) > Mac (CR) > Unix (LF)
+    newline_type=$(awk '
+    BEGIN { crlf=0; cr=0; lf=0; }
+    /\r$/ { crlf=1; next }  # Line ends in \r (before the \n that awk likely consumed or implied)
+    /\r/  { cr=1 }          # \r present elsewhere
+    //    { lf=1 }          # Any line record implies \n exists (mostly)
+    END {
+        if (crlf) print "dos";
+        else if (cr) print "mac";
+        else print "unix";
+    }' "$tmp_file")
+    
+    # If binary, we might skip newline check, but let's keep format consistent
+    suffix_newline="-$newline_type"
+    
+    rm "$tmp_file"
+    echo "${encoding}${suffix_sig}${suffix_newline}"
+}
+
+files=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$files" ] && exit 0
+
+found_error=0
+
+# Process files
+# git check-attr output format: "filename: encoding: value"
+# We separate options with -- to avoid ambiguity
+echo "$files" | tr '\n' '\0' | xargs -0 git check-attr encoding -- | while IFS= read -r line; do
+    # format: <file>: encoding: <value>
+    # Splitting by the LAST common separator pattern is safest
+    # value is last field
+    info="${line##*: }"
+    
+    # Unspecified attributes can be skipped
+    if [ "$info" = "unspecified" ] || [ "$info" = "unset" ]; then
+        continue
+    fi
+
+    # Extract filename: remove ": encoding: <value>" suffix
+    file_path="${line%: encoding: *}"
+    
+    target_allowed="$DEFAULT_ALLOWED"
+    if [ "$info" != "set" ]; then
+        target_allowed="$info"
+    fi
+    
+    detected=$(detect_file_encoding "$file_path")
+    
+    if ! is_encoding_allowed "$target_allowed" "$detected"; then
+        if echo "$detected" | grep -q "error"; then
+            log_error "Failed to check encoding for file: $file_path"
+        else
+            log_error "File '$file_path' has encoding '$detected' which is not allowed."
+            log_error "Allowed: $target_allowed"
+        fi
+        found_error=1
+    fi
+done
+
+if [ $found_error -eq 1 ]; then
+    exit 1
+fi
+
+exit 0
