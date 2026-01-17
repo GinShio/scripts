@@ -41,5 +41,5 @@ if [ "khronos3d" = "${DOTFILES_CURRENT_PROFILE}" ]; then
     build_projects "--install" "amdvlk"
 fi
 
-build_projects "--install-dir $HOME/.local --install" "mesa slang"
+build_projects "--install-dir $HOME/.local --install" "mesa spirv-headers spirv-tools slang"
 build_projects "" "llvm"

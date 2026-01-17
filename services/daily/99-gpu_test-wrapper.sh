@@ -105,9 +105,23 @@ for elem in $drivers_tuple; do
     # Run test and signal completion (even on failure)
     # Using a unique channel per iteration to avoid conflicts
     signal_name="gputest-done-$$-$driver-$suite"
-    tmux send-keys -t runner \
-        "python3 $PROJECTS_SCRIPT_DIR/gputest.py run $driver-$suite; tmux wait-for -S $signal_name" ENTER
 
-    # Wait for the test to complete
-    tmux wait-for "$signal_name"
+    # Use Lock pattern to avoid race condition:
+    # 1. Lock the channel (-L)
+    # 2. Run task which unlocks (-U) when done
+    # 3. Wait for lock (-L) -> blocks until task unlocks
+    tmux wait-for -L "$signal_name"
+
+    if tmux send-keys -t runner \
+        "python3 $PROJECTS_SCRIPT_DIR/gputest.py run $driver-$suite; tmux wait-for -U $signal_name" ENTER; then
+
+        # Wait for the test to complete (blocks until the pane unlocks)
+        tmux wait-for -L "$signal_name"
+        # Cleanup: Release the lock we just re-acquired
+        tmux wait-for -U "$signal_name"
+    else
+        # If sending failed, release our lock
+        tmux wait-for -U "$signal_name"
+        check_driver_ret=1 # Mark failure if needed
+    fi
 done
