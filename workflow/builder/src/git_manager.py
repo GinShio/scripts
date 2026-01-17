@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Mapping, Optional, Sequence
 
-from core.command_runner import CommandRunner, CommandResult, CommandError
+from core.command_runner import CommandError, CommandResult, CommandRunner
 
 
 @dataclass(slots=True)
@@ -361,9 +361,36 @@ class GitManager:
             if clone_script:
                 self._run_script(clone_script, None, environment=environment, dry_run=dry_run)
             else:
+                if not dry_run:
+                    repo_path.mkdir(parents=True, exist_ok=True)
+
                 self._run_command(
-                    ["git", "clone", url, str(repo_path), "--recursive"],
-                    cwd=None,
+                    ["git", "init"],
+                    cwd=repo_path,
+                    environment=environment,
+                    dry_run=dry_run,
+                )
+                self._run_command(
+                    ["git", "remote", "add", "origin", url],
+                    cwd=repo_path,
+                    environment=environment,
+                    dry_run=dry_run,
+                )
+                self._run_command(
+                    ["git", "fetch", "origin"],
+                    cwd=repo_path,
+                    environment=environment,
+                    dry_run=dry_run,
+                )
+                self._run_command(
+                    ["git", "checkout", main_branch],
+                    cwd=repo_path,
+                    environment=environment,
+                    dry_run=dry_run,
+                )
+                self._run_command(
+                    ["git", "submodule", "update", "--init", "--recursive"],
+                    cwd=repo_path,
                     environment=environment,
                     dry_run=dry_run,
                 )
