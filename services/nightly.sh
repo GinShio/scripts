@@ -4,7 +4,7 @@ set -u
 # shellcheck disable=SC1091
 . "$XDG_CONFIG_HOME/workflow/.env"
 
-SCRIPTS_DIR="$PROJECTS_SCRIPT_DIR/services/daily"
+SCRIPTS_DIR="$PROJECTS_SCRIPT_DIR/services/nightly"
 NIGHTLY_TIMESTAMP=${NIGHTLY_TIMESTAMP:-$(date +%s)}
 export NIGHTLY_TIMESTAMP
 
