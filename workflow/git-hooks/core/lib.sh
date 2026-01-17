@@ -6,11 +6,15 @@
 GIT_DIR=$(git rev-parse --git-dir)
 GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
 GIT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null)
+if [ -n "$GIT_TOPLEVEL" ]; then
+    # bare repo hasn't GIT_TOPLEVEL
+    GIT_TOPLEVEL=$GIT_DIR
+fi
 export GIT_DIR GIT_COMMON_DIR GIT_TOPLEVEL
 export CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 export NULL_SHA="0000000000000000000000000000000000000000"
 
-# Logic for protected branch. 
+# Logic for protected branch.
 # Matches master, dev, release-*, patch-*
 # Using Extended Regex (ERE) for grep -E
 export PROTECTED_BRANCH='^(master|dev|release-.*|patch-.*)$'
@@ -40,24 +44,24 @@ if [ "$log_level" -ge 4 ]; then
     set -x
 fi
 
-log_debug() { 
+log_debug() {
     if [ "$log_level" -ge 4 ]; then
         printf "%s[DEBUG]%s %s\n" "$COLOR_CYAN" "$COLOR_RESET" "$*"
     fi
 }
-log_info() { 
+log_info() {
     if [ "$log_level" -ge 3 ]; then
         printf "%s[INFO]%s %s\n" "$COLOR_GREEN" "$COLOR_RESET" "$*"
     fi
 }
-log_warn() { 
+log_warn() {
     if [ "$log_level" -ge 2 ]; then
         printf "%s[WARN]%s %s\n" "$COLOR_YELLOW" "$COLOR_RESET" "$*"
     fi
 }
-log_error() { 
+log_error() {
     if [ "$log_level" -ge 1 ]; then
-        printf "%s[ERROR]%s %s\n" "$COLOR_RED" "$COLOR_RESET" "$*"; 
+        printf "%s[ERROR]%s %s\n" "$COLOR_RED" "$COLOR_RESET" "$*";
     fi
 }
 
@@ -200,7 +204,7 @@ resolve_build_dirs() {
     # Query builder script
     # We suppress stderr to avoid spamming usage info if script is weird.
     _output=$(python3 "$_builder_script" list "$_repo" --branch "$_branch" --show-build-dir --no-submodules 2>/dev/null)
-    
+
     echo "$_output" | while read -r line; do
         # Skip empty lines
         [ -z "$line" ] && continue
@@ -216,7 +220,7 @@ resolve_build_dirs() {
 
         # Extract last column (Build Dir) using awk
         _build_dir=$(echo "$line" | awk '{print $NF}')
-        
+
         # Safety check: Build dir must be an absolute path
         case "$_build_dir" in /*) echo "$_build_dir";; *) continue ;; esac
     done
@@ -227,7 +231,7 @@ resolve_build_dirs() {
 # Usage: get_main_branch [remote_name]
 get_main_branch() {
     _remote="${1:-origin}"
-    
+
     # 0. Check User Configuration (Highest Priority)
     # Useful for monorepos or non-standard layouts.
     _cfg_branch=$(git config ginshio.workflow.main-branch 2>/dev/null)
@@ -235,17 +239,17 @@ get_main_branch() {
         echo "$_cfg_branch"
         return
     fi
-    
+
     # 1. Check local tracking info (fastest)
     if _remote_head=$(git symbolic-ref "refs/remotes/$_remote/HEAD" 2>/dev/null); then
         echo "${_remote_head#refs/remotes/$_remote/}"
         return
     fi
-    
+
     # 1.1 Verify if 'refs/remotes/origin/HEAD' is missing, try to detect it once?
     # This invokes network and is slow, so we only implicitly trust if cached.
     # Alternatively, users should run `git remote set-head origin -a`
-    
+
     # 2. Guess common names
     for _candidate in main master trunk development; do
         if git show-ref --verify --quiet "refs/heads/$_candidate"; then
@@ -268,7 +272,7 @@ get_main_branch() {
 # Output: <domain> <org> <repo> (space separated)
 parse_git_remote() {
     _url="$1"
-    
+
      # Use variable from entry script
     if [ -n "$HOOKS_DIR" ] && [ -f "$HOOKS_DIR/core/remote_parser.py" ]; then
         python3 "$HOOKS_DIR/core/remote_parser.py" "$_url"
