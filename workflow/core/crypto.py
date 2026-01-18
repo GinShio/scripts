@@ -14,12 +14,26 @@ except ImportError:
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.backends import default_backend
 
 # Constants matching OpenSSL / Transcrypt behavior
 SALT_HEADER = b"Salted__"
 IV_HEADER = b"IVed__"
 DEFAULT_ITERATIONS = 99989
+DEFAULT_KDF = "pbkdf2"
+# Argon2 Constants
+ARGON2_DEFAULT_ITERATIONS = 4
+ARGON2_DEFAULT_MEMORY = 131072  # 128 MiB
+ARGON2_DEFAULT_LANES = 2
+
+# Scrypt Constants
+SCRYPT_DEFAULT_LENGTH = 32
+SCRYPT_DEFAULT_N = 2**15  # 128 * r * N MiB
+SCRYPT_DEFAULT_R = 8
+SCRYPT_DEFAULT_P = 2
+
 DEFAULT_DIGEST = "sha256"
 DEFAULT_CIPHER = "aes-256-cbc"
 SALT_SIZE = 8
@@ -121,12 +135,56 @@ def _parse_cipher_name(name: str) -> Tuple[str, Union[type,modes.Mode,str], int]
 
     return algo_name, mode_val, key_len
 
-def derive_key(password: Union[str, bytes], salt: bytes, iterations: int, digest_name: str, key_length: int) -> bytes:
+def derive_key(
+    password: Union[str, bytes],
+    salt: bytes,
+    iterations: int,
+    digest_name: str,
+    key_length: int,
+    kdf_name: str = DEFAULT_KDF,
+    memory_cost: int = ARGON2_DEFAULT_MEMORY,
+    lanes: int = ARGON2_DEFAULT_LANES
+) -> bytes:
     """
-    Derive a key from a password and salt using PBKDF2.
+    Derive a key from a password and salt using PBKDF2 or Argon2id.
     """
     if isinstance(password, str):
         password = password.encode('utf-8')
+
+    if kdf_name == "argon2id":
+        kdf = Argon2id(
+            salt=salt,
+            length=key_length,
+            iterations=iterations,
+            lanes=lanes,
+            memory_cost=memory_cost,
+        )
+        return kdf.derive(password)
+
+    if kdf_name == "scrypt":
+        # Scrypt doesn't use 'iterations' in the same way PBKDF2 does.
+        # It uses N (cost), r (block size), p (parallelization).
+        # We need to map 'iterations' to one of these or just use defaults modified by it?
+        # Typically 'iterations' maps to N (CPU/Memory cost) in simple mappings, 
+        # but N must be power of 2. 
+        # For simplicity, if user provides standard PBKDF2 iterations (e.g. 100000), it's invalid for N.
+        # We'll use defaults if iterations is the PBKDF2 default.
+        
+        n_val = SCRYPT_DEFAULT_N
+        if iterations != DEFAULT_ITERATIONS and iterations != ARGON2_DEFAULT_ITERATIONS:
+             # Try to interpret iterations as N
+             # Ensure power of 2
+             if (iterations & (iterations - 1) == 0) and iterations > 1:
+                 n_val = iterations
+        
+        kdf = Scrypt(
+            salt=salt,
+            length=key_length,
+            n=n_val,
+            r=SCRYPT_DEFAULT_R,
+            p=SCRYPT_DEFAULT_P
+        )
+        return kdf.derive(password)
 
     kdf = PBKDF2HMAC(
         algorithm=get_digest_algorithm(digest_name),
@@ -142,7 +200,10 @@ def _compute_siv_params(
     data: bytes,
     context: Union[str, bytes],
     digest_name: str,
-    iv_len: int
+    iv_len: int,
+    cipher_name: str = "",
+    iterations: int = 0,
+    kdf_name: str = DEFAULT_KDF
 ) -> Tuple[bytes, bytes]:
     """
     Computes deterministic Salt and IV using S2V-like construction:
@@ -157,17 +218,25 @@ def _compute_siv_params(
 
     h = hashes.Hash(get_digest_algorithm(digest_name), backend=default_backend())
     # Canonicalize input to prevent concatenation attacks
-    # Format: Hash( Len(Password) || Password || SEP || Len(Context) || Context || SEP || Data )
+    # Format: Hash( Len(Algo) || Algo || SEP || Len(Pwd) || Pwd || SEP || Len(Ctx) || Ctx || SEP || Data )
     # We use Length Prefixing which mathematically prevents collisions.
     # We also include a Null Byte (\x00) as a standard binary separator (Domain Separation).
     sep = b"\x00"
+    
+    # 1. Algo Params (Length prefixed)
+    # Include algo info to prevent cross-protocol attacks if config changes.
+    # We construct Domain Separation
+    algo_params = f"{digest_name}:{cipher_name}:{iterations}:{kdf_name}".encode('utf-8')
+    h.update(len(algo_params).to_bytes(4, byteorder='big'))
+    h.update(algo_params)
+    h.update(sep)
 
-    # Length prefix password (4 bytes big endian)
+    # 2. Length prefix password (4 bytes big endian)
     h.update(len(pwd_bytes).to_bytes(4, byteorder='big'))
     h.update(pwd_bytes)
     h.update(sep)
 
-    # Length prefix context (4 bytes big endian)
+    # 3. Length prefix context (4 bytes big endian)
     h.update(len(context).to_bytes(4, byteorder='big'))
     h.update(context)
     h.update(sep)
@@ -198,7 +267,8 @@ def encrypt(
     digest: str = DEFAULT_DIGEST,
     cipher_name: str = DEFAULT_CIPHER,
     deterministic: bool = False,
-    context: Union[str, bytes] = b""
+    context: Union[str, bytes] = b"",
+    kdf: str = DEFAULT_KDF
 ) -> bytes:
     """
     Encrypt data.
@@ -208,14 +278,19 @@ def encrypt(
         password: Password string.
         salt: Optional salt. If None and not deterministic, random salt is generated.
         iv: Optional IV. If None and not deterministic, random IV is generated.
-        iterations: PBKDF2 iterations.
+        iterations: KDF iterations (Time Cost).
         digest: Hash algorithm for KDF.
         cipher_name: Cipher algorithm string.
         deterministic: If True, derives Salt and IV from data/password/context (SIV mode).
                        Ensures identical output for identical input.
-        context: Additional context data for deterministic mode (e.g. filename).
+        context: Additional context data for deterministic mode (e.g. filename) and AAD.
+        kdf: KDF algorithm ('pbkdf2', 'argon2id').
     """
     algo_name, mode_val, key_len = _parse_cipher_name(cipher_name)
+
+    # Argon2id logic
+    if kdf == "argon2id" and iterations == DEFAULT_ITERATIONS:
+        iterations = ARGON2_DEFAULT_ITERATIONS
 
     # Determine IV/Nonce size
     if algo_name == 'chacha20' and mode_val == 'poly1305':
@@ -229,7 +304,7 @@ def encrypt(
     if deterministic:
         if salt is not None or iv is not None:
             raise ValueError("Cannot provide explicit salt/iv when using deterministic mode.")
-        salt, iv = _compute_siv_params(password, data, context, digest, iv_len)
+        salt, iv = _compute_siv_params(password, data, context, digest, iv_len, cipher_name, iterations, kdf_name=kdf)
     else:
         # Standard Randomized Mode
         if salt is None:
@@ -244,17 +319,20 @@ def encrypt(
         raise ValueError(f"IV/Nonce must be {iv_len} bytes for {cipher_name}")
 
     # Derive Key
-    key = derive_key(password, salt, iterations, digest, key_len)
+    key = derive_key(password, salt, iterations, digest, key_len, kdf_name=kdf)
 
     # Encryption Logic
     ciphertext = b""
+    
+    # Prepare AAD from context
+    aad = context if isinstance(context, bytes) else context.encode('utf-8')
 
     if algo_name == 'chacha20' and mode_val == 'poly1305':
         # ChaCha20-Poly1305
         # Note: We use the one-shot API which appends tag to ciphertext usually
         cipher = ChaCha20Poly1305(key)
         # encrypt(nonce, data, associated_data) -> ciphertext + tag
-        ciphertext_with_tag = cipher.encrypt(iv, data, None)
+        ciphertext_with_tag = cipher.encrypt(iv, data, aad)
         # Standard: Ciphertext || Tag
         # python cryptography returns Ciphertext || Tag
         ciphertext = ciphertext_with_tag
@@ -262,7 +340,7 @@ def encrypt(
     elif mode_val == 'gcm':
         # AES-GCM
         cipher = AESGCM(key)
-        ciphertext_with_tag = cipher.encrypt(iv, data, None)
+        ciphertext_with_tag = cipher.encrypt(iv, data, aad)
         ciphertext = ciphertext_with_tag
 
     else:
@@ -313,7 +391,8 @@ def decrypt(
     digest: str = DEFAULT_DIGEST,
     cipher_name: str = DEFAULT_CIPHER,
     deterministic: bool = False,
-    context: Union[str, bytes] = b""
+    context: Union[str, bytes] = b"",
+    kdf: str = DEFAULT_KDF
 ) -> bytes:
     """
     Decrypt data.
@@ -324,8 +403,13 @@ def decrypt(
                        matches the expected SIV for the decrypted content.
                        Provides content integrity verification.
         context: Context used during encryption (must match).
+        kdf: KDF algorithm ('pbkdf2', 'argon2id').
     """
     algo_name, mode_val, key_len = _parse_cipher_name(cipher_name)
+
+    # Argon2id logic
+    if kdf == "argon2id" and iterations == DEFAULT_ITERATIONS:
+        iterations = ARGON2_DEFAULT_ITERATIONS
 
     try:
         packet = base64.b64decode(data_b64, validate=True)
@@ -357,24 +441,25 @@ def decrypt(
     ciphertext = packet[offset:]
 
     # Derive Key
-    key = derive_key(password, salt, iterations, digest, key_len)
+    key = derive_key(password, salt, iterations, digest, key_len, kdf_name=kdf)
 
     # Decryption Logic
     plaintext = b""
+    aad = context if isinstance(context, bytes) else context.encode('utf-8')
 
     if algo_name == 'chacha20' and mode_val == 'poly1305':
         cipher = ChaCha20Poly1305(key)
         # decrypt(nonce, data, associated_data)
         # Raises InvalidTag if tag verification fails
         try:
-            plaintext = cipher.decrypt(iv, ciphertext, None)
+            plaintext = cipher.decrypt(iv, ciphertext, aad)
         except Exception:
             raise ValueError("Decryption failed (AEAD Tag Check Failed)")
 
     elif mode_val == 'gcm':
         cipher = AESGCM(key)
         try:
-            plaintext = cipher.decrypt(iv, ciphertext, None)
+            plaintext = cipher.decrypt(iv, ciphertext, aad)
         except Exception:
             raise ValueError("Decryption failed (AEAD Tag Check Failed)")
 
@@ -417,7 +502,7 @@ def decrypt(
 
     # Post-Decryption SIV Verification
     if deterministic:
-        expected_salt, expected_iv = _compute_siv_params(password, plaintext, context, digest, iv_len)
+        expected_salt, expected_iv = _compute_siv_params(password, plaintext, context, digest, iv_len, cipher_name, iterations, kdf_name=kdf)
         if salt != expected_salt or iv != expected_iv:
             raise ValueError("Integrity Check Failed: Data may have been tampered with or parameters do not match content.")
 

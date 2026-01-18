@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Entry-point script for the transcrypt CLI."""
 from __future__ import annotations
 

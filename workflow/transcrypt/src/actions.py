@@ -117,6 +117,17 @@ def _get_iterations(context: str = "default") -> int:
             pass
     return crypto.DEFAULT_ITERATIONS
 
+def _get_kdf(context: str = "default") -> str:
+    # 1. Try Environment Variable
+    val = _get_env_val("kdf", context)
+    if val:
+        return val
+
+    # 2. Try Git Config
+    key = _get_config_key("kdf", context)
+    kdf = get_git_config(key)
+    return kdf or crypto.DEFAULT_KDF
+
 # deterministic option is removed, enforced by design
 
 def clean(context: str = "default", file_path: Optional[str] = None):
@@ -137,6 +148,7 @@ def clean(context: str = "default", file_path: Optional[str] = None):
         cipher = _get_cipher(context)
         digest = _get_digest(context)
         iterations = _get_iterations(context)
+        kdf = _get_kdf(context)
 
         # Prepare context for SIV
         siv_context = b""
@@ -153,7 +165,8 @@ def clean(context: str = "default", file_path: Optional[str] = None):
             digest=digest,
             iterations=iterations,
             deterministic=True, # Transcrypt script always uses deterministic mode
-            context=siv_context
+            context=siv_context,
+            kdf=kdf
         )
 
         # Write to stdout
@@ -216,6 +229,7 @@ def smudge(context: str = "default", file_path: Optional[str] = None):
         cipher = _get_cipher(context)
         digest = _get_digest(context)
         iterations = _get_iterations(context)
+        kdf = _get_kdf(context)
 
         # Prepare context for SIV
         siv_context = b""
@@ -230,7 +244,8 @@ def smudge(context: str = "default", file_path: Optional[str] = None):
             digest=digest,
             iterations=iterations,
             deterministic=True, # Transcrypt script always uses deterministic checks
-            context=siv_context
+            context=siv_context,
+            kdf=kdf
         )
 
         sys.stdout.buffer.write(decrypted)
