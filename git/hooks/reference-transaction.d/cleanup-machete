@@ -1,0 +1,159 @@
+#!/bin/sh
+
+. "$HOOKS_DIR/core/lib.sh"
+
+MACHETE_FILE="$GIT_COMMON_DIR/machete"
+if [ ! -f "$MACHETE_FILE" ]; then
+    exit 0
+fi
+
+# Read stdin to find deleted branches
+# Format: <old-value> <new-value> <ref-name>
+# Deletion: new-value is 00...00
+
+DELETED_BRANCHES=""
+
+while read -r old_val new_val ref_name; do
+    if [ "$new_val" = "$NULL_SHA" ]; then
+        # It's a deletion
+        case "$ref_name" in
+            refs/heads/*)
+                branch_name="${ref_name#refs/heads/}"
+                DELETED_BRANCHES="$DELETED_BRANCHES $branch_name"
+                ;;
+        esac
+    fi
+done
+
+if [ -z "$DELETED_BRANCHES" ]; then
+    exit 0
+fi
+
+# Process machete file using awk
+# We pass the deleted branches as a space-separated string variable
+# Awk logic:
+# 1. Store whole file in array 'lines'.
+# 2. Store identation levels in 'indents'.
+# 3. Store text content (trimmed) in 'texts'.
+# 4. Identify indices to delete.
+# 5. For children of deleted indices, decrease indent.
+
+# Determine temp file
+TMP_FILE="${MACHETE_FILE}.tmp"
+
+awk -v deleted_list="$DELETED_BRANCHES " '
+BEGIN {
+    # Parse deleted list into map
+    n = split(deleted_list, d_arr, " ");
+    for (i = 1; i <= n; i++) {
+        deleted[d_arr[i]] = 1;
+    }
+    line_count = 0;
+}
+
+{
+    # Store line
+    raw_lines[NR] = $0;
+    
+    # Calculate indent
+    match($0, /[^ ]/);
+    if (RSTART == 0) {
+        # Empty or spaces only
+        indent = 0;
+        trimmed = "";
+    } else {
+        indent = RSTART - 1;
+        trimmed = substr($0, RSTART);
+    }
+    
+    indents[NR] = indent;
+    
+    # Extract branch name (first word of trimmed)
+    split(trimmed, parts, " ");
+    branch_name = parts[1];
+    branches[NR] = branch_name;
+    
+    line_count = NR;
+}
+
+END {
+    # Mark lines for deletion
+    # We iterate and propagate changes.
+    # Since removing a parent changes children indent, we need to handle "re-parenting".
+    # Logic:
+    # If line i is deleted:
+    #   Find its children: subsequent lines with indent > indents[i].
+    #   Decrease their indent by 4 (or whatever the step was).
+    #   Mark line i as SKIP.
+    
+    # Wait, if we have nested deletions?
+    # Simpler:
+    # 1. Identify which lines match "deleted" list.
+    # 2. For each such line, calculate its indent depth.
+    # 3. Scan subsequent lines: if indent > deleted_indent, reduce indent. 
+    #    Stop when indent <= deleted_indent.
+    # 4. Mark the line itself as deleted.
+    
+    # We need to process deletions carefully because indices are fixed but we modify logical indentation.
+    # Let`s iterate 1..line_count.
+    
+    for (i = 1; i <= line_count; i++) {
+        if (branches[i] in deleted && status[i] != "deleted") {
+            # Found a deleted branch
+            del_indent = indents[i];
+            
+            # Look ahead for children
+            for (j = i + 1; j <= line_count; j++) {
+                if (indents[j] > del_indent) {
+                    # This is a child/descendant
+                    # Reduce indent by 4 (standard machete step)
+                    # Or should we reduce by (indents[j] - del_indent)? 
+                    # No, we want to promote them to be siblings of the deleted node.
+                    # So we subtract ONE level of indentation.
+                    # Usually 4 spaces.
+                    
+                    # Problem: mixed indentation?
+                    # Let`s assume 4 spaces.
+                    if (indents[j] >= 4) {
+                        indents[j] -= 4;
+                    } else {
+                        indents[j] = 0;
+                    }
+                } else {
+                    # End of subtree
+                    break;
+                }
+            }
+            status[i] = "deleted";
+        }
+    }
+    
+    # Output
+    for (i = 1; i <= line_count; i++) {
+        if (status[i] != "deleted") {
+            # Reconstruct indent
+            # Use printf to print spaces
+            format_str = sprintf("%%%ds", indents[i]);
+            indent_str = (indents[i] > 0) ? sprintf(format_str, "") : "";
+            
+            # We need to print the rest of the line (comments etc)
+            # The original line had indent. We need to preserve everything after indent.
+            # raw_line without leading spaces.
+            
+            orig = raw_lines[i];
+            # removing leading spaces
+            sub(/^[[:space:]]+/, "", orig);
+            
+            print indent_str orig;
+        }
+    }
+}
+' "$MACHETE_FILE" > "$TMP_FILE"
+
+# Determine if file changed
+if ! cmp -s "$MACHETE_FILE" "$TMP_FILE"; then
+    mv "$TMP_FILE" "$MACHETE_FILE"
+    echo "cleanup-machete: Updated machete definition (removed deleted branches)." >&2
+else
+    rm "$TMP_FILE"
+fi
