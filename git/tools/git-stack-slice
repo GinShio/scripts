@@ -3,6 +3,7 @@ import subprocess
 import sys
 import re
 import os
+import shlex
 
 def run_git(args, check=True):
     result = subprocess.run(['git'] + args, capture_output=True, text=True)
@@ -118,11 +119,20 @@ def main():
 """
     
     # 2. Prepare content
+    stack_prefix = run_git(['config', 'stack-slice.prefix'], check=False)
+    if not stack_prefix:
+        user_name = run_git(['config', 'user.name'], check=False)
+        slug = slugify(user_name) if user_name else ""
+        if slug:
+            stack_prefix = f"{slug}/"
+        else:
+            stack_prefix = "stack/"
+
     content_lines = [instructions.strip()]
     for commit_hash, subject in commits:
         content_lines.append(f"\n# {commit_hash[:8]} {subject}")
         # Default: commented out suggest branch name (autogen)
-        suggested_name = f"stack/{slugify(subject)}"
+        suggested_name = f"{stack_prefix}{slugify(subject)}"
         content_lines.append(f"# branch {suggested_name}")
 
     with tempfile.NamedTemporaryFile(suffix=".txt", mode='w+', delete=False) as tf:
@@ -138,7 +148,7 @@ def main():
             editor = git_editor
 
     print(f"Opening interactive editor ({editor})...")
-    subprocess.call([editor, tf_path])
+    subprocess.call(shlex.split(editor) + [tf_path])
     
     # 4. Parse Result
     created_branches = []
@@ -234,6 +244,7 @@ def main():
         print("No branches were created.")
         return
 
+    machete_path = os.path.join(get_git_dir(), 'machete')
 
     # If the file exists, we need to carefully merge.
     # 1. Read existing machete file
