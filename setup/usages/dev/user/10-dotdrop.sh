@@ -25,7 +25,7 @@ if [ -n "${!TRANSCRYPT_VAR_NAME:-}" ]; then
 
         # Force a hard reset to re-checkout files through the newly installed smudge filter
         # This ensures 'secret.yaml' and others are decrypted on disk
-        git reset --hard HEAD
+        git rm -rf secret/ && git reset --hard HEAD
     )
 fi
 
