@@ -91,7 +91,7 @@ git diff --cached --name-only --diff-filter=ACM | while IFS= read -r file; do
     
     case "$file" in
         # C / C++
-        *.c|*.h|*.inc|*.hh|*.hpp|*.hxx|*.h++|*.cc|*.cpp|*.cxx|*.c++|*.icc|*.ipp|*.ixx|*.i++|*.tcc|*.tpp|*.txx|*.t*)
+        *.c|*.h|*.inc|*.hh|*.hpp|*.hxx|*.h++|*.cc|*.cpp|*.cxx|*.c++|*.icc|*.ipp|*.ixx|*.i++|*.tcc|*.tpp|*.txx)
             if is_truthy "$ENABLE_CLANG"; then
                 if [ -z "$HAS_CLANG_FORMAT" ]; then HAS_CLANG_FORMAT=$(check_tool clang-format); fi
                 if [ "$HAS_CLANG_FORMAT" = "true" ]; then
