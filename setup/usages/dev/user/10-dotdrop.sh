@@ -41,7 +41,7 @@ if command -v dotdrop &> /dev/null; then
     fi
 
     # System config (requires SUDO_ASKPASS or cached sudo)
-    yes | sudo -AE "$(command -v dotdrop)" install -c "$DOTFILES_ROOT_PATH/system.yaml" -p "$SETUP_PROFILE"
+    yes | sudo -AE env "HOME=$HOME" "$(command -v dotdrop)" install -c "$DOTFILES_ROOT_PATH/system.yaml" -p "$SETUP_PROFILE"
 else
     echo "Error: dotdrop not found in PATH ($PATH). Did phase_apps.sh run?"
     exit 1
