@@ -1,19 +1,21 @@
 """Core build planning and execution logic."""
 from __future__ import annotations
 
+import json
+import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
-import json
-import shutil
 
-from core.command_runner import CommandRunner, CommandResult
+from core.command_runner import CommandResult, CommandRunner
+from core.template import (TemplateResolver, build_dependency_map,
+                           topological_order)
+
 from .config_loader import ConfigurationStore, ProjectDefinition
 from .environment import ContextBuilder
 from .presets import PresetRepository
 from .toolchains import ToolchainDefinition
-from core.template import TemplateResolver, build_dependency_map, topological_order
 
 
 class BuildMode(str, Enum):
@@ -415,7 +417,12 @@ class BuildEngine:
         system_ctx = context_builder.system()
 
         requires_toolchain = project.build_system is not None
+        # CMake and Meson cache their configuration, so we define this mainly for logic downstream.
+        is_stateful_config = project.build_system in ("cmake", "meson")
+        
+        # Always resolve default toolchain initially to ensure path templates (like build/{{toolchain}}) resolve correctly.
         selected_toolchain_raw = options.toolchain or project.default_toolchain
+
         toolchain_key: str | None = None
         definition: ToolchainDefinition | None = None
         cc: str | None = None
@@ -501,6 +508,31 @@ class BuildEngine:
         )
         combined_context = context_builder.combined_context(user=user_ctx, project=updated_project_ctx, system=system_ctx)
         resolver = TemplateResolver(combined_context)
+
+        should_trust_config = False
+
+        # Refine toolchain selection: If AUTO or BUILD_ONLY mode and build dir is already configured, skip toolchain environment.
+        if toolchain_key is not None and is_stateful_config and options.toolchain is None:
+            is_configured = False
+            if paths.build_dir and paths.build_dir.exists():
+                if project.build_system == "cmake":
+                    is_configured = self._cmake_is_configured(paths.build_dir)
+                elif project.build_system == "meson":
+                    is_configured = self._meson_is_configured(paths.build_dir)
+
+            should_trust_config = is_configured and (
+                options.operation == BuildMode.AUTO or options.operation == BuildMode.BUILD_ONLY
+            )
+            
+            if should_trust_config:
+                # We are in AUTO/BUILD_ONLY mode, didn't specify a toolchain, and found a valid config.
+                # Trust the config and skip toolchain env injection.
+                toolchain_key = None
+                definition = None
+                # Do not reset user_ctx here as it might break path resolution if it was used there,
+                # but since we already resolved paths, strictly speaking it's "too late" for path changes,
+                # which is good (we matched the existing path).
+                # We mainly want to stop _apply_toolchain_definitions etc.
 
         # 1. Initialize empty containers
         environment: Dict[str, str] = {}
@@ -662,7 +694,7 @@ class BuildEngine:
 
         plan_steps: List[BuildStep] = []
         if build_enabled and paths.build_dir is not None:
-            if toolchain_key is None:
+            if toolchain_key is None and not should_trust_config:
                 raise ValueError(
                     f"No toolchain specified for project '{project.name}'. Provide one via project.toolchain or --toolchain."
                 )
