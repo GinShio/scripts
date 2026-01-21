@@ -1,13 +1,14 @@
 """
 Toolbox installation logic.
 """
-import shutil
 import fnmatch
 import os
+import shutil
 from pathlib import Path
 from typing import List
 
 from core.command_runner import CommandError
+
 from .context import Context
 from .utils import substitute
 
@@ -172,7 +173,25 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
                 ctx.runner.run(["cp", "-r", str(src), str(dest)],
                                note=f"includes: {includes}, excludes: {excludes}")
             else:
-                if not includes:
+                if src.is_file():
+                    if includes:
+                        ctx.console.error(
+                            f"Cannot use 'includes' with a file source: {src}")
+                        continue
+
+                    # If dest is an existing directory, copy into it.
+                    # Otherwise, treat dest as the target filename (renaming).
+                    if dest.is_dir():
+                        target = dest / src.name
+                    else:
+                        target = dest
+
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.exists(follow_symlinks=False):
+                        target.unlink()
+                    shutil.copy2(src, target, follow_symlinks=False)
+
+                elif not includes:
                     # Default: Copy everything
                     ignore = _create_ignore_func(
                         src, excludes) if excludes else None
