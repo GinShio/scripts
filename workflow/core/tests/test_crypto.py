@@ -1,8 +1,10 @@
-import unittest
 import base64
 import os
-from workflow.core import encrypt, decrypt
-from workflow.core.crypto import SALT_HEADER, IV_HEADER
+import unittest
+
+from core import decrypt, encrypt
+from core.crypto import IV_HEADER, SALT_HEADER
+
 
 class TestCrypto(unittest.TestCase):
 

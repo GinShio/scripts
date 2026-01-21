@@ -1,18 +1,16 @@
-
-import unittest
-from unittest.mock import MagicMock, patch, mock_open
-from pathlib import Path
+import os
 import shutil
 import tempfile
-import os
-from gputest.src.runner import (
-    get_gpu_id_from_vulkan,
-    get_gpu_id_from_gl,
-    generate_testlist,
-    run_tests
-)
-from gputest.src.context import Context, Console
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, mock_open, patch
+
 from core.command_runner import CommandResult
+
+from gputest.src.context import Console, Context
+from gputest.src.runner import (generate_testlist, get_gpu_id_from_gl,
+                                get_gpu_id_from_vulkan, run_tests)
+
 
 class TestRunnerExtra(unittest.TestCase):
     def setUp(self):
@@ -118,9 +116,11 @@ Extended renderer info (GLX_MESA_query_renderer):
             self.assertFalse("" in lines)
             self.assertEqual(len(lines), 3)
 
+    @patch("gputest.src.runner.get_gpu_id_from_vulkan", return_value=None)
+    @patch("gputest.src.runner.get_gpu_id_from_gl", return_value=None)
     @patch("gputest.src.runner.get_gpu_device_id", return_value="gpu1")
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
-    def test_run_tests_piglit(self, mock_cpu, mock_gpu):
+    def test_run_tests_piglit(self, mock_cpu, mock_gpu, mock_get_gl, mock_get_vk):
         self.config["tests"]["test_piglit"] = {
             "driver": "driver1",
             "suite": "suite_piglit"
@@ -152,10 +152,12 @@ Extended renderer info (GLX_MESA_query_renderer):
             self.assertIn("summary", cmd)
             self.assertIn("console", cmd)
 
+    @patch("gputest.src.runner.get_gpu_id_from_vulkan", return_value=None)
+    @patch("gputest.src.runner.get_gpu_id_from_gl", return_value=None)
     @patch("gputest.src.runner.get_gpu_device_id", return_value="gpu1")
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
     @patch("gputest.src.runner.generate_testlist")
-    def test_run_tests_excludes(self, mock_gen, mock_cpu, mock_gpu):
+    def test_run_tests_excludes(self, mock_gen, mock_cpu, mock_gpu, mock_get_gl, mock_get_vk):
         self.config["tests"]["test_deqp"] = {
             "driver": "driver1",
             "suite": "suite_deqp"

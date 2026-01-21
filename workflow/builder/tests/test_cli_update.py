@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-from types import SimpleNamespace
 import io
 import tempfile
 import textwrap
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from builder import cli
@@ -79,7 +79,8 @@ class UpdateCommandTests(unittest.TestCase):
             cli._handle_update(args, self.workspace)
         output = buffer.getvalue()
         self.assertIn("[dry-run]", output)
-        self.assertIn("git clone", output)
+        self.assertIn("git init", output)
+        self.assertIn("git fetch", output)
         self.assertIn(str(self.workspace / "repos" / "demo"), output)
 
     def test_update_dry_run_existing_repo_pulls_main_branch(self) -> None:

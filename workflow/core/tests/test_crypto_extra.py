@@ -1,11 +1,9 @@
-import unittest
 import os
 import sys
+import unittest
 
-# Adjust path to include workflow root
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../..')))
+from core import crypto
 
-from workflow.core import crypto
 
 class TestCryptoExtra(unittest.TestCase):
     def test_sm4_encryption(self):

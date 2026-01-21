@@ -1,12 +1,13 @@
 """
 Tests for gputest runner.
 """
-import unittest
-from unittest.mock import MagicMock, patch
-from pathlib import Path
 import tempfile
-from gputest.src.runner import run_tests, get_gpu_device_id
-from gputest.src.context import Context, Console
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from gputest.src.context import Console, Context
+from gputest.src.runner import get_gpu_device_id, run_tests
 
 
 class TestRunner(unittest.TestCase):
@@ -71,7 +72,9 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.get_gpu_device_id", return_value="gpu1")
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
     @patch("gputest.src.runner.ArchiveManager")
-    def test_run_tests(self, mock_archive_manager, mock_cpu, mock_gpu):
+    @patch("gputest.src.runner.get_gpu_id_from_vulkan", return_value=None)
+    @patch("gputest.src.runner.get_gpu_id_from_gl", return_value=None)
+    def test_run_tests(self, mock_get_gl, mock_get_vk, mock_archive_manager, mock_cpu, mock_gpu):
         run_tests(self.ctx, ["test1"])
 
         self.runner.run.assert_called()
@@ -265,7 +268,9 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.get_gpu_device_id")
     @patch("gputest.src.runner.datetime")
     @patch("gputest.src.runner.Path.mkdir")
-    def test_run_tests_suite_hooks(self, mock_mkdir, mock_datetime, mock_get_gpu, mock_archive_manager):
+    @patch("gputest.src.runner.get_gpu_id_from_vulkan", return_value=None)
+    @patch("gputest.src.runner.get_gpu_id_from_gl", return_value=None)
+    def test_run_tests_suite_hooks(self, mock_get_gl, mock_get_vk, mock_mkdir, mock_datetime, mock_get_gpu, mock_archive_manager):
         mock_get_gpu.return_value = "gpu1"
         mock_datetime.datetime.now.return_value.strftime.return_value = "20230101"
 

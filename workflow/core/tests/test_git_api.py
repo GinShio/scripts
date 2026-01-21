@@ -5,8 +5,7 @@ import unittest
 from pathlib import Path
 
 import pygit2
-
-from workflow.core.git_api import GitRepository
+from core.git_api import GitRepository
 
 
 class TestGitApi(unittest.TestCase):

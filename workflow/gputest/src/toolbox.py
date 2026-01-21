@@ -90,7 +90,13 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
         # If paths are NOT defined, top level src/dest acts as the single
         # operation.
         if "paths" not in suite_def and "src" in suite_def and "dest" in suite_def:
-            operations.append({})  # Empty op, will use base src/dest
+            # Inherit top-level includes/excludes for the default operation
+            op = {}
+            if "includes" in suite_def:
+                op["includes"] = suite_def["includes"]
+            if "excludes" in suite_def:
+                op["excludes"] = suite_def["excludes"]
+            operations.append(op)
 
         post_install = suite_def.get("post_install", [])
 

@@ -1,18 +1,20 @@
 """
 Tests for gputest toolbox.
 """
-import unittest
-from unittest.mock import MagicMock, patch
-from pathlib import Path
-from gputest.src.toolbox import run_toolbox, force_copytree
-from gputest.src.context import Context, Console
-import shutil
 import os
+import shutil
 import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from gputest.src.context import Console, Context
+from gputest.src.toolbox import force_copytree, run_toolbox
 
 
 class TestToolbox(unittest.TestCase):
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
         self.console = MagicMock(spec=Console)
         self.console.dry_run = False
         self.runner = MagicMock()
@@ -34,9 +36,12 @@ class TestToolbox(unittest.TestCase):
             console=self.console,
             runner=self.runner,
             project_root=Path("/project"),
-            runner_root=Path("/runner"),
+            runner_root=Path(self.temp_dir.name),
             result_dir=Path("/result")
         )
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
 
     @patch("gputest.src.toolbox.force_copytree")
     @patch("gputest.src.toolbox.Path.exists")
@@ -49,12 +54,12 @@ class TestToolbox(unittest.TestCase):
         mock_force_copytree.assert_called()
         args, kwargs = mock_force_copytree.call_args
         self.assertEqual(str(args[0]), "/project/src")
-        self.assertEqual(str(args[1]), "/runner/dest")
+        self.assertEqual(str(args[1]), str(self.ctx.runner_root / "dest"))
 
         # Verify hook
         self.runner.run.assert_called()
         cmd = self.runner.run.call_args[0][0]
-        self.assertIn("echo /runner/dest", cmd[2])
+        self.assertIn(f"echo {self.ctx.runner_root / 'dest'}", cmd[2])
 
     @patch("gputest.src.toolbox.force_copytree")
     @patch("gputest.src.toolbox.Path.exists")
@@ -105,11 +110,14 @@ class TestToolbox(unittest.TestCase):
         mock_path_instance = MagicMock()
         mock_path_cls.return_value = mock_path_instance
         mock_path_instance.exists.return_value = True
+        mock_path_instance.is_file.return_value = False
+        mock_path_instance.is_dir.return_value = True
 
         # Setup glob results
         mock_item = MagicMock()
         mock_item.name = "include1"
         mock_item.is_dir.return_value = True
+        mock_item.is_file.return_value = False
         mock_item.relative_to.return_value = Path("include1")
 
         mock_path_instance.glob.return_value = [mock_item]
@@ -149,7 +157,7 @@ class TestToolbox(unittest.TestCase):
         mock_force_copytree.assert_called()
         args, kwargs = mock_force_copytree.call_args
         self.assertEqual(str(args[0]), "/project/src/sub1")
-        self.assertEqual(str(args[1]), "/runner/base_dest/sub_dest")
+        self.assertEqual(str(args[1]), str(self.ctx.runner_root / "base_dest/sub_dest"))
 
     @patch("gputest.src.toolbox.force_copytree")
     @patch("gputest.src.toolbox.Path.exists")
@@ -174,7 +182,7 @@ class TestToolbox(unittest.TestCase):
         cmd = self.runner.run.call_args[0][0]
         # hook1 is "echo {{dest}}"
         # We expect "/runner/base_dest", NOT "/runner/base_dest/sub_dest"
-        self.assertIn("echo /runner/base_dest", cmd[2])
+        self.assertIn(f"echo {self.ctx.runner_root / 'base_dest'}", cmd[2])
 
     def test_ignore_func(self):
         from gputest.src.toolbox import _create_ignore_func

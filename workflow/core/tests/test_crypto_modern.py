@@ -1,7 +1,10 @@
-import unittest
 import base64
 import os
-from workflow.core.crypto import encrypt, decrypt, DEFAULT_KDF, ARGON2_DEFAULT_ITERATIONS
+import unittest
+
+from core.crypto import (ARGON2_DEFAULT_ITERATIONS, DEFAULT_KDF, decrypt,
+                         encrypt)
+
 
 class TestCryptoModern(unittest.TestCase):
 
@@ -102,7 +105,7 @@ class TestCryptoModern(unittest.TestCase):
         different SIV (Salt/IV) derivation, ensuring proper domain separation.
         This prevents cross-protocol attacks or confusion.
         """
-        from workflow.core.crypto import _compute_siv_params, DEFAULT_DIGEST
+        from core.crypto import DEFAULT_DIGEST, _compute_siv_params
         
         password = "pass"
         data = b"data"
