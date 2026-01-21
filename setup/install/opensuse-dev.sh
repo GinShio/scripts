@@ -53,7 +53,8 @@ sudo -E zypper in -y \
 # Core Toolchain
 sudo -E zypper in -y -t pattern devel_C_C++
 sudo -E zypper in -y \
-    ccache cmake gcovr gdb imake kf6-extra-cmake-modules lcov meson mold ninja sccache
+    ccache cmake conan doxygen gcovr gdb imake include-what-you-use kf6-extra-cmake-modules lcov meson mold ninja \
+    sccache tree-sitter-c{,pp}
 
 # Compilers (GCC & Clang)
 sudo -E zypper in -y \
@@ -68,14 +69,14 @@ sudo -E zypper in -y \
 
 # Libraries - Other
 sudo -E zypper in -y \
-    conan doxygen include-what-you-use nanomsg-devel ncurses-devel{,-32bit} poco-devel readline-devel{,-32bit} \
-    spdlog-devel stb-devel tinyobjloader-devel tree-sitter-c{,pp} z3-devel zlib-ng-compat-devel
+    nanomsg-devel ncurses-devel{,-32bit} poco-devel readline-devel{,-32bit} spdlog-devel stb-devel tinyobjloader-devel \
+    z3-devel zlib-ng-compat-devel
 
 # Python3 environment
 # -----------------------------------------------------------------------------
 # Interpreter & Core
 sudo -E zypper in -y \
-    python3 python3-devel python3-doc python3-pipx python3-virtualenv
+    python3 python3-devel python3-doc python3-pipx python3-virtualenv tree-sitter-python
 
 # AI / ML / Math
 sudo -E zypper in -y \
@@ -89,8 +90,8 @@ sudo -E zypper in -y \
 sudo -E zypper in -y \
     python3-Jinja2 python3-Mako python3-PyYAML python3-Sphinx python3-astunparse python3-cryptography{,-vectors} \
     python3-filelock python3-fsspec python3-lit python3-lxml python3-lz4 python3-psutil python3-pybind11{,-devel} \
-    python3-pyelftools python3-pylint python3-pytest python3-requests python3-ruamel.yaml python3-typing_extensions \
-    tree-sitter-python
+    python3-pyelftools python3-pygit2 python3-pylint python3-pytest python3-requests python3-ruamel.yaml \
+    python3-typing_extensions
 
 # Programmings environment (Other)
 # -----------------------------------------------------------------------------
