@@ -76,7 +76,7 @@ is_truthy() {
 # Cache config to avoid repeated git calls
 # Variable name format: _CFG_<hook>_<script>_DISABLE
 # We use a simple prefix for global disable
-_RAW_CFG_DISABLE_ALL=$(git config --bool ginshio.hooks.disable 2>/dev/null)
+_RAW_CFG_DISABLE_ALL=$(git config --bool hooks.ginshio.disable 2>/dev/null)
 
 # Check if a hook or specific script is enabled
 is_enabled() {
@@ -94,12 +94,12 @@ is_enabled() {
     if is_truthy "$env_val"; then return 1; fi
 
     # Optimization: Only query specific config when needed
-    cfg_hook_disable=$(git config --bool "ginshio.hooks.$hook_name.disable" 2>/dev/null)
+    cfg_hook_disable=$(git config --bool "hooks.ginshio.$hook_name.disable" 2>/dev/null)
     if is_truthy "$cfg_hook_disable"; then return 1; fi
 
     # 3. Script Level Disable
     if [ -n "$script_name" ]; then
-        cfg_script_disable=$(git config --bool "ginshio.hooks.$hook_name.$script_name.disable" 2>/dev/null)
+        cfg_script_disable=$(git config --bool "hooks.ginshio.$hook_name.$script_name-disable" 2>/dev/null)
         if is_truthy "$cfg_script_disable"; then return 1; fi
     fi
 

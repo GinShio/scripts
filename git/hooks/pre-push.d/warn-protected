@@ -1,8 +1,8 @@
 #!/bin/sh
 . "$HOOKS_DIR/core/lib.sh"
 
-# Config key: ginshio.hooks.pre-push.warn-protected.enabled
-: "${ENABLE:=$(git config --bool ginshio.hooks.pre-push.warn-protected.enabled)}"
+# Config key: hooks.ginshio.pre-push.warn-protected-enabled
+: "${ENABLE:=$(git config --bool hooks.ginshio.pre-push.warn-protected-enabled)}"
 if ! is_truthy "${ENABLE:-false}"; then exit 0; fi
 
 REMOTE_NAME="$1"

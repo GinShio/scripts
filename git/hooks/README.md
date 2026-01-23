@@ -9,27 +9,27 @@ You can enable/disable hooks or configure usage through `git config` (local or g
 ### 1. Global Disable
 To disable **ALL** hooks provided by this framework:
 
-*   **Git Config**: `ginshio.hooks.disable` (boolean)
+*   **Git Config**: `hooks.ginshio.disable` (boolean)
     ```bash
-    git config --global ginshio.hooks.disable true
+    git config --global hooks.ginshio.disable true
     ```
 *   **Env Var**: `GINSHIO_HOOKS_DISABLE_ALL=true`
 
 ### 2. Hook Level Disable
 To disable a specific hook type (e.g., `pre-commit`):
 
-*   **Git Config**: `ginshio.hooks.<HOOK_NAME>.disable`
+*   **Git Config**: `hooks.ginshio.<HOOK_NAME>.disable`
     ```bash
-    git config --local ginshio.hooks.pre-commit.disable true
+    git config --local hooks.ginshio.pre-commit.disable true
     ```
 *   **Env Var**: `GINSHIO_HOOKS_<HOOK_NAME>_DISABLE` (e.g., `GINSHIO_HOOKS_PRE_COMMIT_DISABLE=true`)
 
 ### 3. Script Level Disable
 To disable a specific script within a hook directory (e.g., `code-formatter` in pre-commit):
 
-*   **Git Config**: `ginshio.hooks.<HOOK_NAME>.<SCRIPT_NAME>.disable`
+*   **Git Config**: `hooks.ginshio.<HOOK_NAME>.<SCRIPT_NAME>-disable`
     ```bash
-    git config --local ginshio.hooks.pre-commit.code-formatter.disable true
+    git config --local hooks.ginshio.pre-commit.code-formatter-disable true
     ```
 
 ### 4. Logging and Debugging
@@ -47,62 +47,62 @@ Specific scripts may have their own feature flags.
 ### Protected Branches Warning (`warn-protected`)
 Prompts for confirmation when committing/pushing to protected branches (master, dev, release-*, patch-*).
 
-*   **Pre-Commit**: `ginshio.hooks.pre-commit.warn-protected.enabled` (boolean). Default: false.
+*   **Pre-Commit**: `hooks.ginshio.pre-commit.warn-protected-enabled` (boolean). Default: false.
     ```bash
-    git config --local ginshio.hooks.pre-commit.warn-protected.enabled true
+    git config --local hooks.ginshio.pre-commit.warn-protected-enabled true
     ```
-*   **Pre-Push**: `ginshio.hooks.pre-push.warn-protected.enabled` (boolean). Default: false.
+*   **Pre-Push**: `hooks.ginshio.pre-push.warn-protected-enabled` (boolean). Default: false.
     ```bash
-    git config --local ginshio.hooks.pre-push.warn-protected.enabled true
+    git config --local hooks.ginshio.pre-push.warn-protected-enabled true
     ```
 
 ### Polyglot Code Formatter (`code-formatter`)
 Automatically formats staged files for supported languages (C/C++, Rust, Zig). This script consolidates multiple formatters for efficiency.
 
 *   **C/C++ (clang-format)**:
-    *   **Enable**: `ginshio.hooks.pre-commit.clang-format.enabled` (boolean). Default: **true**.
+    *   **Enable**: `hooks.ginshio.pre-commit.clang-format-enabled` (boolean). Default: **true**.
         ```bash
-        git config --local ginshio.hooks.pre-commit.clang-format.enabled false
+        git config --local hooks.ginshio.pre-commit.clang-format-enabled false
         ```
-    *   **Style**: `ginshio.hooks.pre-commit.clang-format.style` (string).
+    *   **Style**: `hooks.ginshio.pre-commit.clang-format-style` (string).
         ```bash
-        git config --local ginshio.hooks.pre-commit.clang-format.style llvm
+        git config --local hooks.ginshio.pre-commit.clang-format-style llvm
         ```
 
 *   **Rust (rustfmt)**:
-    *   **Enable**: `ginshio.hooks.pre-commit.rust-fmt.enabled` (boolean). Default: **true**.
+    *   **Enable**: `hooks.ginshio.pre-commit.rust-fmt-enabled` (boolean). Default: **true**.
         ```bash
-        git config --local ginshio.hooks.pre-commit.rust-fmt.enabled false
+        git config --local hooks.ginshio.pre-commit.rust-fmt-enabled false
         ```
 
 *   **Zig (zig fmt)**:
-    *   **Enable**: `ginshio.hooks.pre-commit.zig-fmt.enabled` (boolean). Default: **true**.
+    *   **Enable**: `hooks.ginshio.pre-commit.zig-fmt-enabled` (boolean). Default: **true**.
         ```bash
-        git config --local ginshio.hooks.pre-commit.zig-fmt.enabled false
+        git config --local hooks.ginshio.pre-commit.zig-fmt-enabled false
         ```
 
 *   **Python**:
-    *   **Enable**: `ginshio.hooks.pre-commit.python-fmt.enabled` (boolean). Default: **true**.
+    *   **Enable**: `hooks.ginshio.pre-commit.python-fmt-enabled` (boolean). Default: **true**.
     *   **Tools**: Auto-detects `ruff` (preferred, comprehensive) or falls back to `black` + `isort`.
         ```bash
-        git config --local ginshio.hooks.pre-commit.python-fmt.enabled false
+        git config --local hooks.ginshio.pre-commit.python-fmt-enabled false
         ```
 
 *   **Generic Whitespace**:
-    *   **Enable**: `ginshio.hooks.pre-commit.whitespace.enabled` (boolean). Default: **true**.
+    *   **Enable**: `hooks.ginshio.pre-commit.whitespace-enabled` (boolean). Default: **true**.
     *   **Features**: Trims trailing whitespace, ensures newline at EOF.
     *   **Scope**: All text files.
         ```bash
-        git config --local ginshio.hooks.pre-commit.whitespace.enabled false
+        git config --local hooks.ginshio.pre-commit.whitespace-enabled false
         ```
 
 ### Build Directory Cleanup (`cleanup-build-dir`)
 *Hook: reference-transaction*
 Automatically detects when a local branch is deleted (`git branch -d ...`) and queries the external builder script to find and remove the associated build directory.
 
-*   **Enable**: `ginshio.hooks.reference-transaction.cleanup-build-dir.enabled` (boolean). Default: false.
+*   **Enable**: `hooks.ginshio.reference-transaction.cleanup-build-dir-enabled` (boolean). Default: false.
     ```bash
-    git config --local ginshio.hooks.reference-transaction.cleanup-build-dir.enabled true
+    git config --local hooks.ginshio.reference-transaction.cleanup-build-dir-enabled true
     ```
 
 ### Security Scan (`security-scan`)
@@ -137,6 +137,6 @@ Performs basic health checks on committed files:
 
 **Configuration**:
 *   **Max File Size** (in bytes):
-    *   **Git Config**: `ginshio.hooks.pre-commit.sanity-checks.max-file-size`
+    *   **Git Config**: `hooks.ginshio.pre-commit.sanity-checks-max-file-size`
     *   **Env Var**: `GINSHIO_HOOKS_PRE_COMMIT_SANITY_CHECKS_MAX_FILE_SIZE`
     *   *Default*: 26214400 (25MiB)

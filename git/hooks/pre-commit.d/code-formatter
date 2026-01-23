@@ -16,17 +16,17 @@ HAS_ISORT=""
 
 # Configuration - Checks enabled state for each language
 # Defaults to TRUE for existence of this script, but can be disabled individually
-ENABLE_CLANG=$(git config --bool ginshio.hooks.pre-commit.clang-format.enabled)
-ENABLE_ZIG=$(git config --bool ginshio.hooks.pre-commit.zig-fmt.enabled)
-ENABLE_RUST=$(git config --bool ginshio.hooks.pre-commit.rust-fmt.enabled)
-ENABLE_PYTHON=$(git config --bool ginshio.hooks.pre-commit.python-fmt.enabled)
-ENABLE_WHITESPACE=$(git config --bool ginshio.hooks.pre-commit.whitespace.enabled)
+ENABLE_CLANG=$(git config --bool hooks.ginshio.pre-commit.clang-format-enabled)
+ENABLE_ZIG=$(git config --bool hooks.ginshio.pre-commit.zig-fmt-enabled)
+ENABLE_RUST=$(git config --bool hooks.ginshio.pre-commit.rust-fmt-enabled)
+ENABLE_PYTHON=$(git config --bool hooks.ginshio.pre-commit.python-fmt-enabled)
+ENABLE_WHITESPACE=$(git config --bool hooks.ginshio.pre-commit.whitespace-enabled)
 
 # If no specific config is set, default to TRUE for the consolidated formatter script itself,
 # so we rely on whether the script "code-formatter" is disabled in parent.
 # But for individual langs, we can default to true as well if not explicitly disabled.
 # Actually, let's keep it simple: formatting is good.
-# If user wants to disable clang-format specifically, they set ginshio.hooks.pre-commit.clang-format.enabled = false
+# If user wants to disable clang-format specifically, they set hooks.ginshio.pre-commit.clang-format-enabled = false
 
 : "${ENABLE_CLANG:=$([ "$ENABLE_CLANG" != "false" ] && echo true || echo false)}"
 : "${ENABLE_ZIG:=$([ "$ENABLE_ZIG" != "false" ] && echo true || echo false)}"
@@ -35,7 +35,7 @@ ENABLE_WHITESPACE=$(git config --bool ginshio.hooks.pre-commit.whitespace.enable
 : "${ENABLE_WHITESPACE:=$([ "$ENABLE_WHITESPACE" != "false" ] && echo true || echo false)}"
 
 # Clang Format Specific Config
-CF_STYLE=$(git config --get ginshio.hooks.pre-commit.clang-format.style)
+CF_STYLE=$(git config --get hooks.ginshio.pre-commit.clang-format-style)
 CF_ARGS=""
 if [ -e "$GIT_TOPLEVEL/.clang-format" ]; then
     :

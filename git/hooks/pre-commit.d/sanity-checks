@@ -46,7 +46,7 @@ fi
 # --- Check 3: Large Files (Simple) ---
 # Prevent accidental commit of very large files.
 # Default: 25MiB. Configurable via:
-#   Git Config: ginshio.hooks.pre-commit.sanity-checks.max-file-size (bytes)
+#   Git Config: hooks.ginshio.pre-commit.sanity-checks-max-file-size (bytes)
 #   Env Var:    GINSHIO_HOOKS_PRE_COMMIT_SANITY_CHECKS_MAX_FILE_SIZE (bytes)
 
 # Default: 25 * 1024 * 1024 = 26214400 bytes
@@ -57,7 +57,7 @@ if [ -n "$GINSHIO_HOOKS_PRE_COMMIT_SANITY_CHECKS_MAX_FILE_SIZE" ]; then
     MAX_SIZE_BYTES="$GINSHIO_HOOKS_PRE_COMMIT_SANITY_CHECKS_MAX_FILE_SIZE"
 else
     # 2. Git Config
-    cfg_size=$(git config --int ginshio.hooks.pre-commit.sanity-checks.max-file-size 2>/dev/null)
+    cfg_size=$(git config --int hooks.ginshio.pre-commit.sanity-checks-max-file-size 2>/dev/null)
     if [ -n "$cfg_size" ]; then
         MAX_SIZE_BYTES="$cfg_size"
     else

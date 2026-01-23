@@ -1,8 +1,8 @@
 #!/bin/sh
 . "$HOOKS_DIR/core/lib.sh"
 
-# Config key: ginshio.hooks.pre-commit.warn-protected.enabled
-: "${ENABLE:=$(git config --bool ginshio.hooks.pre-commit.warn-protected.enabled)}"
+# Config key: hooks.ginshio.pre-commit.warn-protected-enabled
+: "${ENABLE:=$(git config --bool hooks.ginshio.pre-commit.warn-protected-enabled)}"
 if ! is_truthy "${ENABLE:-false}"; then exit 0; fi
 
 if echo "$CURRENT_BRANCH" | grep -q -E "$PROTECTED_BRANCH"; then

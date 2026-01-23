@@ -4,8 +4,8 @@
 # Cleanup build directory when a local branch is deleted.
 # Triggered via reference-transaction hook.
 
-# Config key: ginshio.hooks.reference-transaction.cleanup-build-dir.enabled
-: "${ENABLE:=$(git config --bool ginshio.hooks.reference-transaction.cleanup-build-dir.enabled)}"
+# Config key: hooks.ginshio.reference-transaction.cleanup-build-dir-enabled
+: "${ENABLE:=$(git config --bool hooks.ginshio.reference-transaction.cleanup-build-dir-enabled)}"
 if ! is_truthy "${ENABLE:-false}"; then exit 0; fi
 
 STATE="$1"
