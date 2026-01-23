@@ -1,4 +1,5 @@
 """Toolchain configuration parsing and registry utilities."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -42,7 +43,9 @@ class ToolchainBuildOverrides:
         definitions = dict(self.definitions)
         definitions.update(other.definitions)
         launcher = other.launcher if other.launcher is not None else self.launcher
-        return ToolchainBuildOverrides(environment=environment, definitions=definitions, launcher=launcher)
+        return ToolchainBuildOverrides(
+            environment=environment, definitions=definitions, launcher=launcher
+        )
 
     def clone(self) -> "ToolchainBuildOverrides":
         return ToolchainBuildOverrides(
@@ -118,17 +121,31 @@ class ToolchainDefinition:
                 if not system_name:
                     continue
                 if isinstance(raw_data, Mapping):
-                    overrides[system_name] = ToolchainBuildOverrides.from_mapping(raw_data)
+                    overrides[system_name] = ToolchainBuildOverrides.from_mapping(
+                        raw_data
+                    )
 
         metadata_section = data.get("metadata")
-        metadata = dict(metadata_section) if isinstance(metadata_section, Mapping) else {}
+        metadata = (
+            dict(metadata_section) if isinstance(metadata_section, Mapping) else {}
+        )
 
         supports_section = data.get("supports")
         supports: frozenset[str]
-        if isinstance(supports_section, Iterable) and not isinstance(supports_section, (str, bytes)):
-            supports = frozenset(str(item).strip().lower() for item in supports_section if str(item).strip())
+        if isinstance(supports_section, Iterable) and not isinstance(
+            supports_section, (str, bytes)
+        ):
+            supports = frozenset(
+                str(item).strip().lower()
+                for item in supports_section
+                if str(item).strip()
+            )
         elif isinstance(supports_section, str):
-            supports = frozenset({supports_section.strip().lower()}) if supports_section.strip() else frozenset()
+            supports = (
+                frozenset({supports_section.strip().lower()})
+                if supports_section.strip()
+                else frozenset()
+            )
         else:
             supports = frozenset()
 
@@ -193,7 +210,9 @@ class ToolchainDefinition:
         )
 
     def clone(self) -> "ToolchainDefinition":
-        overrides = {name: override.clone() for name, override in self.build_overrides.items()}
+        overrides = {
+            name: override.clone() for name, override in self.build_overrides.items()
+        }
         return ToolchainDefinition(
             name=self.name,
             description=self.description,
@@ -361,7 +380,9 @@ def _build_builtin_definitions() -> Dict[str, ToolchainDefinition]:
 
 
 class ToolchainRegistry:
-    def __init__(self, definitions: Mapping[str, ToolchainDefinition] | None = None) -> None:
+    def __init__(
+        self, definitions: Mapping[str, ToolchainDefinition] | None = None
+    ) -> None:
         self._definitions: Dict[str, ToolchainDefinition] = {}
         if definitions:
             for name, definition in definitions.items():
@@ -409,8 +430,12 @@ class ToolchainRegistry:
         errors: list[str] = []
         allowed_systems = {"cmake", "meson", "bazel", "cargo", "make"}
         for name, definition in self._definitions.items():
-            if not (definition.resolved_cc or definition.resolved_cxx or definition.rustc):
-                errors.append(f"Toolchain '{name}' must specify at least one compiler (cc/cxx/rustc)")
+            if not (
+                definition.resolved_cc or definition.resolved_cxx or definition.rustc
+            ):
+                errors.append(
+                    f"Toolchain '{name}' must specify at least one compiler (cc/cxx/rustc)"
+                )
             for system_name in definition.build_overrides.keys():
                 if system_name not in allowed_systems:
                     errors.append(
@@ -421,4 +446,9 @@ class ToolchainRegistry:
 
 BUILTIN_TOOLCHAINS = _build_builtin_definitions()
 
-__all__ = ["ToolchainDefinition", "ToolchainBuildOverrides", "ToolchainRegistry", "BUILTIN_TOOLCHAINS"]
+__all__ = [
+    "ToolchainDefinition",
+    "ToolchainBuildOverrides",
+    "ToolchainRegistry",
+    "BUILTIN_TOOLCHAINS",
+]

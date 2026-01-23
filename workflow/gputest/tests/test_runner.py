@@ -1,6 +1,7 @@
 """
 Tests for gputest runner.
 """
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -16,34 +17,14 @@ class TestRunner(unittest.TestCase):
         self.console.dry_run = False
         self.runner = MagicMock()
         self.config = {
-            "tests": {
-                "test1": {
-                    "driver": "driver1",
-                    "suite": "suite1"
-                }
-            },
-            "drivers": {
-                "driver1": {
-                    "layout": "layout1",
-                    "root": "/usr"
-                }
-            },
+            "tests": {"test1": {"driver": "driver1", "suite": "suite1"}},
+            "drivers": {"driver1": {"layout": "layout1", "root": "/usr"}},
             "layouts": {
-                "layout1": {
-                    "env": {
-                        "VAR": "VAL",
-                        "AVAILABLE_CPUS_CNT": "{{jobs}}"
-                    }
-                }
+                "layout1": {"env": {"VAR": "VAL", "AVAILABLE_CPUS_CNT": "{{jobs}}"}}
             },
-            "suites": {
-                "suite1": {
-                    "exe": "test_exe",
-                    "args": ["--arg"]
-                }
-            },
+            "suites": {"suite1": {"exe": "test_exe", "args": ["--arg"]}},
             "backends": {},
-            "hooks": {}
+            "hooks": {},
         }
         # Use temporary directories for runner_root and result_dir to avoid
         # permission issues when tests run on systems where /runner or
@@ -56,7 +37,7 @@ class TestRunner(unittest.TestCase):
             runner=self.runner,
             project_root=Path("/project"),
             runner_root=Path(self._tmp_runner.name),
-            result_dir=Path(self._tmp_result.name)
+            result_dir=Path(self._tmp_result.name),
         )
 
     def tearDown(self):
@@ -74,7 +55,9 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.ArchiveManager")
     @patch("gputest.src.runner.get_gpu_id_from_vulkan", return_value=None)
     @patch("gputest.src.runner.get_gpu_id_from_gl", return_value=None)
-    def test_run_tests(self, mock_get_gl, mock_get_vk, mock_archive_manager, mock_cpu, mock_gpu):
+    def test_run_tests(
+        self, mock_get_gl, mock_get_vk, mock_archive_manager, mock_cpu, mock_gpu
+    ):
         run_tests(self.ctx, ["test1"])
 
         self.runner.run.assert_called()
@@ -91,9 +74,9 @@ class TestRunner(unittest.TestCase):
         self.assertIn("--arg", cmd)
 
         # Check env
-        env = test_call[1]['env']
-        self.assertEqual(env['VAR'], 'VAL')
-        self.assertEqual(env['AVAILABLE_CPUS_CNT'], '3')
+        env = test_call[1]["env"]
+        self.assertEqual(env["VAR"], "VAL")
+        self.assertEqual(env["AVAILABLE_CPUS_CNT"], "3")
 
         # Check archive
         # In this test case, runner_bin is not set to deqp-runner or piglit, so archiving logic is skipped.
@@ -105,12 +88,8 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.get_gpu_id_from_vulkan")
     @patch("gputest.src.runner.generate_testlist")
     def test_run_tests_with_archive(
-            self,
-            mock_gen_testlist,
-            mock_get_vk,
-            mock_archive_manager,
-            mock_cpu,
-            mock_gpu):
+        self, mock_gen_testlist, mock_get_vk, mock_archive_manager, mock_cpu, mock_gpu
+    ):
         mock_get_vk.return_value = "1002:73bf"
         # Update config to trigger archiving (needs runner_bin to be
         # deqp-runner or piglit)
@@ -122,7 +101,7 @@ class TestRunner(unittest.TestCase):
         # Verify archive path structure:
         # result_dir/driver/suite_gpu_date.tar.zst
         call_args = mock_archive_manager.return_value.create_archive.call_args
-        target_path = call_args.kwargs['target_path']
+        target_path = call_args.kwargs["target_path"]
         self.assertIn("driver1", str(target_path))
         self.assertIn("suite1_1002:73bf", target_path.name)
 
@@ -139,13 +118,14 @@ class TestRunner(unittest.TestCase):
     @patch("pathlib.Path.mkdir")
     @patch("gputest.src.runner.generate_testlist")
     def test_run_tests_with_hooks(
-            self,
-            mock_gen_testlist,
-            mock_mkdir,
-            mock_get_vk,
-            mock_archive_manager,
-            mock_cpu,
-            mock_gpu):
+        self,
+        mock_gen_testlist,
+        mock_mkdir,
+        mock_get_vk,
+        mock_archive_manager,
+        mock_cpu,
+        mock_gpu,
+    ):
         mock_get_vk.return_value = "1002:73bf"
         # Update config for hooks
         self.ctx.config["suites"]["suite1"]["runner"] = "deqp-runner"
@@ -168,7 +148,7 @@ class TestRunner(unittest.TestCase):
 
         # Filter for hook calls (check=False)
         # Note: vulkaninfo is also check=False
-        hook_calls = [c for c in calls if c[1].get('check') is False]
+        hook_calls = [c for c in calls if c[1].get("check") is False]
 
         # We expect at least 2 hook calls + 1 vulkaninfo call = 3
         # But vulkaninfo is mocked out via get_gpu_id_from_vulkan patch, so it won't call runner.run
@@ -190,19 +170,19 @@ class TestRunner(unittest.TestCase):
     @patch("pathlib.Path.mkdir")
     @patch("gputest.src.runner.generate_testlist")
     def test_run_tests_with_excludes(
-            self,
-            mock_gen_testlist,
-            mock_mkdir,
-            mock_get_vk,
-            mock_archive_manager,
-            mock_cpu,
-            mock_gpu):
+        self,
+        mock_gen_testlist,
+        mock_mkdir,
+        mock_get_vk,
+        mock_archive_manager,
+        mock_cpu,
+        mock_gpu,
+    ):
         mock_get_vk.return_value = "1002:73bf"
         # Update config for excludes
         self.ctx.config["suites"]["suite1"]["type"] = "deqp"
         self.ctx.config["suites"]["suite1"]["runner"] = "deqp-runner"
-        self.ctx.config["suites"]["suite1"]["excludes"] = [
-            "exclude1", "exclude2"]
+        self.ctx.config["suites"]["suite1"]["excludes"] = ["exclude1", "exclude2"]
 
         # Mock open to verify file writing
         with patch("builtins.open", unittest.mock.mock_open()) as mock_file:
@@ -238,6 +218,7 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.SubprocessCommandRunner")
     def test_get_gpu_id_from_vulkan(self, mock_runner_cls, mock_which):
         from gputest.src.runner import get_gpu_id_from_vulkan
+
         mock_which.return_value = "/usr/bin/vulkaninfo"
 
         mock_instance = mock_runner_cls.return_value
@@ -253,6 +234,7 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.SubprocessCommandRunner")
     def test_get_gpu_id_from_gl(self, mock_runner_cls, mock_which):
         from gputest.src.runner import get_gpu_id_from_gl
+
         mock_which.return_value = "/usr/bin/glxinfo"
 
         mock_instance = mock_runner_cls.return_value
@@ -270,7 +252,15 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.Path.mkdir")
     @patch("gputest.src.runner.get_gpu_id_from_vulkan", return_value=None)
     @patch("gputest.src.runner.get_gpu_id_from_gl", return_value=None)
-    def test_run_tests_suite_hooks(self, mock_get_gl, mock_get_vk, mock_mkdir, mock_datetime, mock_get_gpu, mock_archive_manager):
+    def test_run_tests_suite_hooks(
+        self,
+        mock_get_gl,
+        mock_get_vk,
+        mock_mkdir,
+        mock_datetime,
+        mock_get_gpu,
+        mock_archive_manager,
+    ):
         mock_get_gpu.return_value = "gpu1"
         mock_datetime.datetime.now.return_value.strftime.return_value = "20230101"
 
@@ -308,13 +298,14 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.shutil")
     @patch("gputest.src.runner.generate_testlist")
     def test_run_tests_with_archive_files(
-            self,
-            mock_gen_testlist,
-            mock_shutil,
-            mock_get_vk,
-            mock_archive_manager,
-            mock_cpu,
-            mock_gpu):
+        self,
+        mock_gen_testlist,
+        mock_shutil,
+        mock_get_vk,
+        mock_archive_manager,
+        mock_cpu,
+        mock_gpu,
+    ):
         mock_get_vk.return_value = "1002:73bf"
         # Update config
         self.ctx.config["suites"]["suite1"]["runner"] = "deqp-runner"
@@ -324,7 +315,7 @@ class TestRunner(unittest.TestCase):
 
         mock_archive_manager.return_value.create_archive.assert_called()
         call_args = mock_archive_manager.return_value.create_archive.call_args
-        artifact = call_args.kwargs['artifact']
+        artifact = call_args.kwargs["artifact"]
 
         # source_dir should be the staging dir
         self.assertIn(".archive_staging", str(artifact.source_dir))

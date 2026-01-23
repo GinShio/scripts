@@ -1,13 +1,14 @@
 """
 Context and Console classes for gputest.
 """
+
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
-from core.command_runner import SubprocessCommandRunner, CommandResult
 from core.archive import ArchiveConsole
+from core.command_runner import CommandResult, SubprocessCommandRunner
 
 
 class Console(ArchiveConsole):
@@ -77,9 +78,5 @@ class DryRunCommandRunner(SubprocessCommandRunner):
             print(f"      (env: {env})")
 
         return CommandResult(
-            command=command,
-            returncode=0,
-            stdout="",
-            stderr="",
-            streamed=stream
+            command=command, returncode=0, stdout="", stderr="", streamed=stream
         )

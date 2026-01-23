@@ -1,4 +1,5 @@
 """Configuration loading and validation logic for the builder CLI."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -7,6 +8,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from core.config_loader import (
     ConfigLoader as SharedConfigLoader,
+)
+from core.config_loader import (
     collect_config_files,
     load_config_file,
     merge_mappings,
@@ -32,7 +35,9 @@ class GlobalConfig:
         return cls(
             default_build_type=str(global_section.get("default_build_type", "Debug")),
             log_level=str(global_section.get("log_level", "info")),
-            log_file=str(global_section.get("log_file")) if global_section.get("log_file") else None,
+            log_file=str(global_section.get("log_file"))
+            if global_section.get("log_file")
+            else None,
             default_operation=str(global_section.get("default_operation", "auto")),
         )
 
@@ -59,7 +64,9 @@ class GitSettings:
         auto_stash = bool(data.get("auto_stash", False))
         update_script = data.get("update_script")
         clone_script = data.get("clone_script")
-        environment_section = data.get("environment") if isinstance(data, Mapping) else None
+        environment_section = (
+            data.get("environment") if isinstance(data, Mapping) else None
+        )
         environment: Dict[str, Any] = {}
         if isinstance(environment_section, Mapping):
             for key, value in environment_section.items():
@@ -149,7 +156,9 @@ class ProjectDefinition:
         if not name or not source_dir:
             raise ValueError("project.name and project.source_dir are required")
         if build_dir and not build_system:
-            raise ValueError("project.build_system is required when project.build_dir is specified")
+            raise ValueError(
+                "project.build_system is required when project.build_dir is specified"
+            )
         generator = project_section.get("generator")
         component_dir = project_section.get("component_dir")
         build_at_root = bool(project_section.get("build_at_root", True))
@@ -164,7 +173,11 @@ class ProjectDefinition:
         else:
             raise TypeError("project.source_at_root must be a boolean if specified")
         org_raw = project_section.get("org")
-        org_value = str(org_raw).strip() if isinstance(org_raw, str) and org_raw.strip() else None
+        org_value = (
+            str(org_raw).strip()
+            if isinstance(org_raw, str) and org_raw.strip()
+            else None
+        )
 
         environment_section = project_section.get("environment")
         project_environment: Dict[str, Any] = {}
@@ -199,7 +212,9 @@ class ProjectDefinition:
         dependencies_section = data.get("dependencies", [])
         dependencies: List[ProjectDependency] = []
         if dependencies_section:
-            if isinstance(dependencies_section, Sequence) and not isinstance(dependencies_section, (str, bytes)):
+            if isinstance(dependencies_section, Sequence) and not isinstance(
+                dependencies_section, (str, bytes)
+            ):
                 for entry in dependencies_section:
                     dependencies.append(ProjectDependency.from_value(entry))
             else:
@@ -211,7 +226,9 @@ class ProjectDefinition:
             build_dir=str(build_dir) if build_dir else None,
             install_dir=str(install_dir) if install_dir else None,
             build_system=str(build_system).lower() if build_system else None,
-            default_toolchain=str(default_toolchain).strip() if isinstance(default_toolchain, str) and default_toolchain.strip() else None,
+            default_toolchain=str(default_toolchain).strip()
+            if isinstance(default_toolchain, str) and default_toolchain.strip()
+            else None,
             generator=str(generator) if generator else None,
             component_dir=str(component_dir) if component_dir else None,
             build_at_root=build_at_root,
@@ -238,7 +255,9 @@ class ProjectDefinition:
         allowed_systems = {"cmake", "meson", "bazel", "cargo", "make"}
         if self.build_system is not None and self.build_system not in allowed_systems:
             allowed = ", ".join(sorted(allowed_systems))
-            errors.append(f"project.build_system '{self.build_system}' is not supported (allowed: {allowed})")
+            errors.append(
+                f"project.build_system '{self.build_system}' is not supported (allowed: {allowed})"
+            )
 
         if self.build_dir:
             build_dir_path = Path(self.build_dir)
@@ -247,7 +266,9 @@ class ProjectDefinition:
 
         required_build_dir = {"cmake", "meson", "cargo", "make"}
         if self.build_system in required_build_dir and not self.build_dir:
-            errors.append(f"project.build_dir is required for build_system '{self.build_system}'")
+            errors.append(
+                f"project.build_dir is required for build_system '{self.build_system}'"
+            )
 
         if self.component_dir:
             component_path = Path(self.component_dir)
@@ -280,12 +301,16 @@ class ConfigurationStore:
         return cls.from_directories(root, [root / "config"])
 
     @classmethod
-    def from_directories(cls, root: Path, directories: Iterable[Path]) -> "ConfigurationStore":
+    def from_directories(
+        cls, root: Path, directories: Iterable[Path]
+    ) -> "ConfigurationStore":
         resolved_dirs, missing_dirs = resolve_config_paths(root, directories)
         if not resolved_dirs:
             if missing_dirs:
                 missing_display = ", ".join(str(path) for path in missing_dirs)
-                raise FileNotFoundError(f"No configuration directories found. Missing: {missing_display}")
+                raise FileNotFoundError(
+                    f"No configuration directories found. Missing: {missing_display}"
+                )
             raise FileNotFoundError("No configuration directories were provided")
 
         global_data: Mapping[str, Any] = {}
@@ -316,12 +341,15 @@ class ConfigurationStore:
                 data = load_config_file(path)
                 processed_paths.add(path)
                 if cls._looks_like_project(data):
-                    projects_found = cls._ingest_project_file(
-                        projects,
-                        data,
-                        path,
-                        inferred_org=None,
-                    ) or projects_found
+                    projects_found = (
+                        cls._ingest_project_file(
+                            projects,
+                            data,
+                            path,
+                            inferred_org=None,
+                        )
+                        or projects_found
+                    )
                 else:
                     shared_configs[stem] = data
 
@@ -343,15 +371,20 @@ class ConfigurationStore:
                 rel_dir_parts = rel_path.parts[:-1]
                 inferred_org = cls._infer_org_from_parts(rel_dir_parts)
 
-                projects_found = cls._ingest_project_file(
-                    projects,
-                    data,
-                    candidate,
-                    inferred_org=inferred_org,
-                ) or projects_found
+                projects_found = (
+                    cls._ingest_project_file(
+                        projects,
+                        data,
+                        candidate,
+                        inferred_org=inferred_org,
+                    )
+                    or projects_found
+                )
 
         if not projects_found:
-            raise FileNotFoundError("No project configurations found in the provided directories")
+            raise FileNotFoundError(
+                "No project configurations found in the provided directories"
+            )
 
         global_config = GlobalConfig.from_mapping(global_data)
 
@@ -422,13 +455,17 @@ class ConfigurationStore:
         key = self.resolve_project_identifier(name)
         return self.projects[key]
 
-    def resolve_project_identifier(self, identifier: str, org: str | None = None) -> str:
+    def resolve_project_identifier(
+        self, identifier: str, org: str | None = None
+    ) -> str:
         """Resolve a user-supplied project reference to the internal key."""
         if "/" in identifier:
             if identifier in self.projects:
                 return identifier
             available = ", ".join(sorted(self.projects)) or "<none>"
-            raise KeyError(f"Project '{identifier}' not found. Available projects: {available}")
+            raise KeyError(
+                f"Project '{identifier}' not found. Available projects: {available}"
+            )
 
         if identifier in self.projects:
             return identifier
@@ -438,12 +475,18 @@ class ConfigurationStore:
             candidate = f"{org}/{identifier}"
             if candidate in self.projects:
                 return candidate
-            preferred_matches = [key for key in self.project_aliases.get(identifier, []) if key.startswith(f"{org}/")]
+            preferred_matches = [
+                key
+                for key in self.project_aliases.get(identifier, [])
+                if key.startswith(f"{org}/")
+            ]
 
         matches = list(self.project_aliases.get(identifier, []))
         if not matches:
             available = ", ".join(sorted(self.projects)) or "<none>"
-            raise KeyError(f"Project '{identifier}' not found. Available projects: {available}")
+            raise KeyError(
+                f"Project '{identifier}' not found. Available projects: {available}"
+            )
         if preferred_matches:
             if len(preferred_matches) == 1:
                 return preferred_matches[0]
@@ -463,7 +506,9 @@ class ConfigurationStore:
             )
         )
 
-    def resolve_dependency_chain(self, identifier: str, org: str | None = None) -> List[ResolvedDependency]:
+    def resolve_dependency_chain(
+        self, identifier: str, org: str | None = None
+    ) -> List[ResolvedDependency]:
         project_key = self.resolve_project_identifier(identifier, org=org)
 
         requested_presets: Dict[str, List[str]] = {}
@@ -491,7 +536,9 @@ class ConfigurationStore:
             project_def = self.projects.get(project_key_local)
             if project_def is None:
                 available_projects = ", ".join(sorted(self.projects)) or "<none>"
-                raise KeyError(f"Dependency '{project_key_local}' not found. Available projects: {available_projects}")
+                raise KeyError(
+                    f"Dependency '{project_key_local}' not found. Available projects: {available_projects}"
+                )
 
             for dependency in project_def.dependencies:
                 dependency_key = self.resolve_project_identifier(

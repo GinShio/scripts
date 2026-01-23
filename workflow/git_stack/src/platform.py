@@ -1,4 +1,5 @@
 """Platform abstraction for git hosting services (GitHub/GitLab)."""
+
 from __future__ import annotations
 
 import json
@@ -15,25 +16,24 @@ from .git import get_config, run_git
 
 
 class PlatformInterface(Protocol):
-    def sync_mr(self, branch: str, base_branch: str,
-                draft: bool = False) -> None: ...
+    def sync_mr(self, branch: str, base_branch: str, draft: bool = False) -> None: ...
 
     def get_item_label(self) -> str: ...
     def check_auth(self) -> bool: ...
     def get_mr_description(self, number: str) -> Optional[str]: ...
     def update_mr_description(self, number: str, body: str) -> None: ...
-    def get_mr(self, branch: str, state: str = 'open') -> Optional[Dict]: ...
+    def get_mr(self, branch: str, state: str = "open") -> Optional[Dict]: ...
 
 
 def get_remote_url() -> str:
     """Get the fetch URL of the 'origin' remote."""
-    url = run_git(['config', '--get', 'remote.origin.url'], check=False)
+    url = run_git(["config", "--get", "remote.origin.url"], check=False)
     if url:
         return url
 
-    remotes = run_git(['remote'], check=False).splitlines()
+    remotes = run_git(["remote"], check=False).splitlines()
     if remotes:
-        return run_git(['config', '--get', f'remote.{remotes[0]}.url'], check=False)
+        return run_git(["config", "--get", f"remote.{remotes[0]}.url"], check=False)
     return ""
 
 
@@ -50,10 +50,10 @@ class GitHubPlatform:
         # 4. ENV vars
 
         self.token = (
-            get_config(f'stack.{info.host}.token') or
-            get_config('stack.github.token') or
-            get_config('stack.token') or
-            os.environ.get('GITHUB_TOKEN')
+            get_config(f"stack.{info.host}.token")
+            or get_config("stack.github.token")
+            or get_config("stack.token")
+            or os.environ.get("GITHUB_TOKEN")
         )
 
     def get_item_label(self) -> str:
@@ -65,12 +65,17 @@ class GitHubPlatform:
     def _request(self, method: str, path: str, data: Optional[Dict] = None) -> Any:
         # Determine API Base URL
         # Standard GitHub
-        if self.info.host in ('github.com', 'www.github.com', 'api.github.com', 'ssh.github.com'):
+        if self.info.host in (
+            "github.com",
+            "www.github.com",
+            "api.github.com",
+            "ssh.github.com",
+        ):
             api_base = "https://api.github.com"
         else:
             # GitHub Enterprise (GHE) default
             # Check config for overrides: stack.<host>.api-url
-            api_base = get_config(f'stack.{self.info.host}.api-url')
+            api_base = get_config(f"stack.{self.info.host}.api-url")
             if not api_base:
                 # Default GHE API path: https://hostname/api/v3
                 # Attempt to guess protocol? Default to https
@@ -81,24 +86,22 @@ class GitHubPlatform:
             "Authorization": f"token {self.token}",
             "Accept": "application/vnd.github.v3+json",
             "Content-Type": "application/json",
-            "User-Agent": "git-stack-tool"
+            "User-Agent": "git-stack-tool",
         }
 
         body = json.dumps(data).encode("utf-8") if data else None
 
-        req = urllib.request.Request(
-            url, data=body, headers=headers, method=method)
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req) as response:
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as e:
             raise e
 
-    def get_mr(self, branch: str, state: str = 'open') -> Optional[Dict]:
+    def get_mr(self, branch: str, state: str = "open") -> Optional[Dict]:
         head_query = f"{self.owner}:{branch}"
         try:
-            params = urllib.parse.urlencode(
-                {'head': head_query, 'state': state})
+            params = urllib.parse.urlencode({"head": head_query, "state": state})
             data = self._request("GET", f"pulls?{params}")
             if data and isinstance(data, list) and len(data) > 0:
                 return data[0]
@@ -113,7 +116,7 @@ class GitHubPlatform:
             "head": branch,
             "base": base,
             "body": "Stack PR managed by git-stack.",
-            "draft": draft
+            "draft": draft,
         }
         try:
             res = self._request("POST", "pulls", data)
@@ -135,27 +138,28 @@ class GitHubPlatform:
             return
 
         # 1. Check for open PR
-        pr = self.get_mr(branch, state='open')
+        pr = self.get_mr(branch, state="open")
         if pr:
-            current_base = pr['base']['ref']
+            current_base = pr["base"]["ref"]
             if current_base != base_branch:
-                self.update_mr_base(pr['number'], base_branch)
+                self.update_mr_base(pr["number"], base_branch)
             return
 
         # 2. Check for ANY PR (merged/closed) to avoid duplication
         # GitHub API 'all' includes open, closed, merged
-        pr_any = self.get_mr(branch, state='all')
+        pr_any = self.get_mr(branch, state="all")
         if pr_any:
             allow_create = False
-            state = pr_any.get('state', 'closed')
+            state = pr_any.get("state", "closed")
 
             # Check date if merged/closed
             # format: 2011-01-26T19:01:12Z
-            closed_at_str = pr_any.get('closed_at')
+            closed_at_str = pr_any.get("closed_at")
             if closed_at_str:
                 try:
                     closed_at = datetime.strptime(
-                        closed_at_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                        closed_at_str, "%Y-%m-%dT%H:%M:%SZ"
+                    ).replace(tzinfo=timezone.utc)
                     days_diff = (datetime.now(timezone.utc) - closed_at).days
                     if days_diff > 180:
                         allow_create = True
@@ -164,7 +168,8 @@ class GitHubPlatform:
 
             if not allow_create:
                 print(
-                    f"  [Info] Branch '{branch}' already has a {state} PR #{pr_any['number']}. Skipping creation.")
+                    f"  [Info] Branch '{branch}' already has a {state} PR #{pr_any['number']}. Skipping creation."
+                )
                 return
 
         # 3. Create new if none exist
@@ -173,7 +178,7 @@ class GitHubPlatform:
     def get_mr_description(self, number: str) -> Optional[str]:
         try:
             data = self._request("GET", f"pulls/{number}")
-            return data.get('body', '')
+            return data.get("body", "")
         except Exception:
             return None
 
@@ -189,12 +194,12 @@ class GitLabPlatform:
         self.host = info.host
         self.project_path = info.project_path
         # project_id needs to be URL encoded
-        self.project_id = urllib.parse.quote(self.project_path, safe='')
+        self.project_id = urllib.parse.quote(self.project_path, safe="")
 
         self.token = (
-            get_config('stack.gitlab.token') or
-            get_config('stack.token') or
-            os.environ.get('GITLAB_TOKEN')
+            get_config("stack.gitlab.token")
+            or get_config("stack.token")
+            or os.environ.get("GITLAB_TOKEN")
         )
 
     def get_item_label(self) -> str:
@@ -207,25 +212,20 @@ class GitLabPlatform:
         # If host is just domain name, prepend https://
         prefix = "https://" if "://" not in self.host else ""
         url = f"{prefix}{self.host}/api/v4/projects/{self.project_id}/{path}"
-        headers = {
-            "PRIVATE-TOKEN": self.token,
-            "Content-Type": "application/json"
-        }
+        headers = {"PRIVATE-TOKEN": self.token, "Content-Type": "application/json"}
 
         body = json.dumps(data).encode("utf-8") if data else None
 
-        req = urllib.request.Request(
-            url, data=body, headers=headers, method=method)
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req) as response:
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as e:
             raise e
 
-    def get_mr(self, branch: str, state: str = 'opened') -> Optional[Dict]:
+    def get_mr(self, branch: str, state: str = "opened") -> Optional[Dict]:
         try:
-            params = urllib.parse.urlencode(
-                {'source_branch': branch, 'state': state})
+            params = urllib.parse.urlencode({"source_branch": branch, "state": state})
             data = self._request("GET", f"merge_requests?{params}")
             if data and isinstance(data, list) and len(data) > 0:
                 return data[0]
@@ -244,7 +244,7 @@ class GitLabPlatform:
             "target_branch": base,
             "title": title,
             "description": "Stack MR managed by git-stack.",
-            "remove_source_branch": True
+            "remove_source_branch": True,
         }
         try:
             res = self._request("POST", "merge_requests", data)
@@ -258,7 +258,8 @@ class GitLabPlatform:
         print(f"Updating MR !{mr_iid} base to {new_base}...")
         try:
             self._request(
-                "PUT", f"merge_requests/{mr_iid}", {"target_branch": new_base})
+                "PUT", f"merge_requests/{mr_iid}", {"target_branch": new_base}
+            )
         except Exception as e:
             print(f"Failed to update MR base: {e}")
 
@@ -267,34 +268,36 @@ class GitLabPlatform:
             return
 
         # 1. Check open
-        mr = self.get_mr(branch, state='opened')
+        mr = self.get_mr(branch, state="opened")
         if mr:
-            current_target = mr['target_branch']
+            current_target = mr["target_branch"]
             if current_target != base_branch:
-                self.update_mr_base(mr['iid'], base_branch)
+                self.update_mr_base(mr["iid"], base_branch)
             return
 
         # 2. Check all/merged/closed
         # GitLab API state can be: opened, closed, locked, merged
         # We check merged and closed to be safe
-        mr_any = self.get_mr(branch, state='merged') or self.get_mr(
-            branch, state='closed')
+        mr_any = self.get_mr(branch, state="merged") or self.get_mr(
+            branch, state="closed"
+        )
         if mr_any:
             allow_create = False
-            state = mr_any.get('state', 'closed')
+            state = mr_any.get("state", "closed")
 
             # Check date if merged/closed
             # format: 2011-01-26T19:01:12.123Z or similar ISO
-            closed_at_str = mr_any.get('merged_at') or mr_any.get('closed_at')
+            closed_at_str = mr_any.get("merged_at") or mr_any.get("closed_at")
             if closed_at_str:
                 try:
                     # GitLab ISO strings can be tricky, often have .000Z
                     # Simple parse attempt
-                    if '.' in closed_at_str:
+                    if "." in closed_at_str:
                         # Strip partial seconds for simplicity
-                        closed_at_str = closed_at_str.split('.')[0]
+                        closed_at_str = closed_at_str.split(".")[0]
                     closed_at = datetime.strptime(
-                        closed_at_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+                        closed_at_str, "%Y-%m-%dT%H:%M:%S"
+                    ).replace(tzinfo=timezone.utc)
                     days_diff = (datetime.now(timezone.utc) - closed_at).days
                     if days_diff > 180:
                         allow_create = True
@@ -304,7 +307,8 @@ class GitLabPlatform:
 
             if not allow_create:
                 print(
-                    f"  [Info] Branch '{branch}' already has a {state} MR !{mr_any['iid']}. Skipping creation.")
+                    f"  [Info] Branch '{branch}' already has a {state} MR !{mr_any['iid']}. Skipping creation."
+                )
                 return
 
         # 3. Create
@@ -313,14 +317,13 @@ class GitLabPlatform:
     def get_mr_description(self, number: str) -> Optional[str]:
         try:
             data = self._request("GET", f"merge_requests/{number}")
-            return data.get('description', '')
+            return data.get("description", "")
         except Exception:
             return None
 
     def update_mr_description(self, number: str, body: str) -> None:
         try:
-            self._request(
-                "PUT", f"merge_requests/{number}", {"description": body})
+            self._request("PUT", f"merge_requests/{number}", {"description": body})
         except Exception as e:
             print(f"Failed to update MR description: {e}")
 
@@ -338,11 +341,11 @@ class GiteaPlatform(GitHubPlatform):
         self.owner = info.owner
 
         self.token = (
-            get_config('stack.gitea.token') or
-            get_config('stack.codeberg.token') or
-            get_config('stack.token') or
-            os.environ.get('GITEA_TOKEN') or
-            os.environ.get('CODEBERG_TOKEN')
+            get_config("stack.gitea.token")
+            or get_config("stack.codeberg.token")
+            or get_config("stack.token")
+            or os.environ.get("GITEA_TOKEN")
+            or os.environ.get("CODEBERG_TOKEN")
         )
 
     def _request(self, method: str, path: str, data: Optional[Dict] = None) -> Any:
@@ -355,13 +358,12 @@ class GiteaPlatform(GitHubPlatform):
             "Authorization": f"token {self.token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "git-stack-tool"
+            "User-Agent": "git-stack-tool",
         }
 
         body = json.dumps(data).encode("utf-8") if data else None
 
-        req = urllib.request.Request(
-            url, data=body, headers=headers, method=method)
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req) as response:
                 return json.loads(response.read().decode())
@@ -376,15 +378,15 @@ class BitbucketPlatform:
         self.workspace = info.owner
         self.repo_slug = info.repo
         self.token = (
-            get_config('stack.bitbucket.token') or
-            get_config('stack.token') or
-            os.environ.get('BITBUCKET_TOKEN')
+            get_config("stack.bitbucket.token")
+            or get_config("stack.token")
+            or os.environ.get("BITBUCKET_TOKEN")
         )
         # Bitbucket usually requires username if using App Password
         self.username = (
-            get_config('stack.bitbucket.user') or
-            get_config('user.name') or
-            os.environ.get('BITBUCKET_USER')
+            get_config("stack.bitbucket.user")
+            or get_config("user.name")
+            or os.environ.get("BITBUCKET_USER")
         )
 
     def get_item_label(self) -> str:
@@ -399,19 +401,19 @@ class BitbucketPlatform:
 
         # Basic Auth for App Password
         import base64
+
         auth_str = f"{self.username}:{self.token}"
         b64_auth = base64.b64encode(auth_str.encode()).decode()
 
         headers = {
             "Authorization": f"Basic {b64_auth}",
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
         }
 
         body = json.dumps(data).encode("utf-8") if data else None
 
-        req = urllib.request.Request(
-            url, data=body, headers=headers, method=method)
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req) as response:
                 return json.loads(response.read().decode())
@@ -419,28 +421,28 @@ class BitbucketPlatform:
             # Bitbucket specific error handling could go here
             raise e
 
-    def get_mr(self, branch: str, state: str = 'OPEN') -> Optional[Dict]:
+    def get_mr(self, branch: str, state: str = "OPEN") -> Optional[Dict]:
         # Bitbucket filtering: q=source.branch.name="branch" AND state="OPEN"
         # state values: OPEN, MERGED, DECLINED
         bb_state = state.upper()
-        if bb_state == 'ALL':
+        if bb_state == "ALL":
             # No easy ALL in one query if filters are strict?
             # Actually we can just omit state or use OR?
             # Bitbucket API q parameter is powerful.
             query = f'source.branch.name="{branch}"'
-        elif bb_state == 'OPENED':
-            bb_state = 'OPEN'
+        elif bb_state == "OPENED":
+            bb_state = "OPEN"
             query = f'source.branch.name="{branch}" AND state="{bb_state}"'
         else:
-            if bb_state == 'CLOSED':
-                bb_state = 'DECLINED'  # Sort of mapping
+            if bb_state == "CLOSED":
+                bb_state = "DECLINED"  # Sort of mapping
             query = f'source.branch.name="{branch}" AND state="{bb_state}"'
 
-        params = urllib.parse.urlencode({'q': query})
+        params = urllib.parse.urlencode({"q": query})
         try:
             data = self._request("GET", f"pullrequests?{params}")
-            if data and 'values' in data and len(data['values']) > 0:
-                return data['values'][0]
+            if data and "values" in data and len(data["values"]) > 0:
+                return data["values"][0]
         except Exception:
             pass
         return None
@@ -456,7 +458,7 @@ class BitbucketPlatform:
         data = {
             "title": title,
             "source": {"branch": {"name": branch}},
-            "destination": {"branch": {"name": base}}
+            "destination": {"branch": {"name": base}},
         }
         try:
             res = self._request("POST", "pullrequests", data)
@@ -470,25 +472,30 @@ class BitbucketPlatform:
         if not self.check_auth():
             return
 
-        pr = self.get_mr(branch, state='OPEN')
+        pr = self.get_mr(branch, state="OPEN")
         if pr:
             # Update base not always simple in BB?
             # PUT /pullrequests/{id}
-            current_base = pr['destination']['branch']['name']
+            current_base = pr["destination"]["branch"]["name"]
             if current_base != base_branch:
                 print(f"Updating PR #{pr['id']} base to {base_branch}...")
                 try:
-                    self._request("PUT", f"pullrequests/{pr['id']}", {
-                        "destination": {"branch": {"name": base_branch}},
-                        "title": pr['title']  # Required field sometimes?
-                    })
+                    self._request(
+                        "PUT",
+                        f"pullrequests/{pr['id']}",
+                        {
+                            "destination": {"branch": {"name": base_branch}},
+                            "title": pr["title"],  # Required field sometimes?
+                        },
+                    )
                 except Exception as e:
                     print(f"dFailed to update PR base: {e}")
             return
 
         # Check merged/declined
-        pr_any = self.get_mr(branch, state='MERGED') or self.get_mr(
-            branch, state='DECLINED')
+        pr_any = self.get_mr(branch, state="MERGED") or self.get_mr(
+            branch, state="DECLINED"
+        )
         if pr_any:
             msg = f"  [Info] Branch '{branch}' already has a {pr_any['state']} PR #{pr_any['id']}. Skipping creation."
             print(msg)
@@ -499,7 +506,7 @@ class BitbucketPlatform:
     def get_mr_description(self, number: str) -> Optional[str]:
         try:
             data = self._request("GET", f"pullrequests/{number}")
-            return data.get('description', '')
+            return data.get("description", "")
         except Exception:
             return None
 
@@ -507,11 +514,10 @@ class BitbucketPlatform:
         try:
             # Need to provide title to update?
             data = self._request("GET", f"pullrequests/{number}")
-            title = data['title']
-            self._request("PUT", f"pullrequests/{number}", {
-                "title": title,
-                "description": body
-            })
+            title = data["title"]
+            self._request(
+                "PUT", f"pullrequests/{number}", {"title": title, "description": body}
+            )
         except Exception as e:
             print(f"Failed to update MR description: {e}")
 
@@ -520,9 +526,14 @@ class AzurePlatform:
     """Azure DevOps support (API v7.0)."""
 
     def __init__(self, info: RemoteInfo) -> None:
-        self.org = info.host.split(
-            # Heuristic
-            '.')[0] if 'dev.azure.com' in info.host else info.owner.split('/')[0]
+        self.org = (
+            info.host.split(
+                # Heuristic
+                "."
+            )[0]
+            if "dev.azure.com" in info.host
+            else info.owner.split("/")[0]
+        )
         # Correctly parsing Azure URLs is hard.
         # dev.azure.com/ORG/PROJECT/_git/REPO
         # visualstudio.com/DefaultCollection/_git/REPO
@@ -539,13 +550,15 @@ class AzurePlatform:
         # We need more robust Azure parsing in platform or assume clean inputs.
         # Assuming owner contains "org/project" or we parse it out.
 
-        self.project = info.owner  # usually "org/project" or just "project" if using old style?
+        self.project = (
+            info.owner
+        )  # usually "org/project" or just "project" if using old style?
         self.repo = info.repo
 
         self.token = (
-            get_config('stack.azure.token') or
-            get_config('stack.token') or
-            os.environ.get('AZURE_DEVOPS_TOKEN')
+            get_config("stack.azure.token")
+            or get_config("stack.token")
+            or os.environ.get("AZURE_DEVOPS_TOKEN")
         )
 
     def get_item_label(self) -> str:
@@ -563,9 +576,9 @@ class AzurePlatform:
         # info.owner = "org/project" (cleaned in git_remotes? "org/project/_git"?)
 
         # Let's try to detect if '_git' is in owner and strip it
-        clean_owner = self.project.replace('/_git', '')
-        if '/' in clean_owner:
-            org, project = clean_owner.split('/', 1)
+        clean_owner = self.project.replace("/_git", "")
+        if "/" in clean_owner:
+            org, project = clean_owner.split("/", 1)
             base_url = f"https://dev.azure.com/{org}/{project}"
         else:
             # Fallback or maybe older visualstudio.com
@@ -582,35 +595,36 @@ class AzurePlatform:
 
         headers = {
             "Authorization": f"Basic {b64_auth}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
         }
 
         body = json.dumps(data).encode("utf-8") if data else None
 
-        req = urllib.request.Request(
-            url, data=body, headers=headers, method=method)
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req) as response:
                 return json.loads(response.read().decode())
         except urllib.error.HTTPError as e:
             raise e
 
-    def get_mr(self, branch: str, state: str = 'active') -> Optional[Dict]:
+    def get_mr(self, branch: str, state: str = "active") -> Optional[Dict]:
         # state: active, completed, abandoned, all?
-        az_state = 'active'
-        if state in ('merged', 'closed'):
-            az_state = 'completed'  # or abandoned
+        az_state = "active"
+        if state in ("merged", "closed"):
+            az_state = "completed"  # or abandoned
 
         # searchCriteria.sourceRefName=refs/heads/{branch}
         # searchCriteria.status={state}
-        query = urllib.parse.urlencode({
-            'searchCriteria.sourceRefName': f'refs/heads/{branch}',
-            'searchCriteria.status': az_state
-        })
+        query = urllib.parse.urlencode(
+            {
+                "searchCriteria.sourceRefName": f"refs/heads/{branch}",
+                "searchCriteria.status": az_state,
+            }
+        )
         try:
             data = self._request("GET", f"pullrequests?{query}")
-            if data and 'value' in data and len(data['value']) > 0:
-                return data['value'][0]
+            if data and "value" in data and len(data["value"]) > 0:
+                return data["value"][0]
         except Exception:
             pass
         return None
@@ -622,12 +636,12 @@ class AzurePlatform:
             "targetRefName": f"refs/heads/{base}",
             "title": branch,
             "description": "Stack PR managed by git-stack.",
-            "isDraft": draft
+            "isDraft": draft,
         }
         try:
             res = self._request("POST", "pullrequests", data)
             # webUrl
-            url = res.get('webUrl') or res.get('url')  # webUrl is browser link
+            url = res.get("webUrl") or res.get("url")  # webUrl is browser link
             print(f"Created PR #{res['pullRequestId']}: {url}")
             return res
         except Exception as e:
@@ -638,22 +652,25 @@ class AzurePlatform:
         if not self.check_auth():
             return
 
-        pr = self.get_mr(branch, state='active')
+        pr = self.get_mr(branch, state="active")
         if pr:
             # Check target
-            current_target = pr['targetRefName']  # refs/heads/main
+            current_target = pr["targetRefName"]  # refs/heads/main
             target_ref = f"refs/heads/{base_branch}"
             if current_target != target_ref:
-                self._request("PATCH", f"pullrequests/{pr['pullRequestId']}", {
-                    "targetRefName": target_ref
-                })
+                self._request(
+                    "PATCH",
+                    f"pullrequests/{pr['pullRequestId']}",
+                    {"targetRefName": target_ref},
+                )
             return
 
         # Closed/Merged
-        pr_any = self.get_mr(branch, state='completed')
+        pr_any = self.get_mr(branch, state="completed")
         if pr_any:
             print(
-                f"  [Info] Branch '{branch}' has completed PR #{pr_any['pullRequestId']}. Skipping.")
+                f"  [Info] Branch '{branch}' has completed PR #{pr_any['pullRequestId']}. Skipping."
+            )
             return
 
         self.create_mr(branch, base_branch, draft=draft)
@@ -662,14 +679,13 @@ class AzurePlatform:
     def get_mr_description(self, number: str) -> Optional[str]:
         try:
             data = self._request("GET", f"pullrequests/{number}")
-            return data.get('description', '')
+            return data.get("description", "")
         except Exception:
             return None
 
     def update_mr_description(self, number: str, body: str) -> None:
         try:
-            self._request(
-                "PATCH", f"pullrequests/{number}", {"description": body})
+            self._request("PATCH", f"pullrequests/{number}", {"description": body})
         except Exception as e:
             print(f"Failed to update description: {e}")
 

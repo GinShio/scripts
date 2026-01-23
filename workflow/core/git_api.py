@@ -1,4 +1,5 @@
 """High-level Git API wrapper using pygit2."""
+
 from __future__ import annotations
 
 import os
@@ -12,6 +13,7 @@ import pygit2
 @dataclass
 class SubmoduleInfo:
     """Information about a submodule."""
+
     path: str
     url: str
     current_commit: str
@@ -135,13 +137,13 @@ class GitRepository:
             # GIT_STATUS_OPT_EXCLUDE_SUBMODULES = (1 << 5) ? No directly in pygit2 main namespace sometimes?
             # pygit2 usually maps options to kwargs or Enums
             pass
-        
+
         # Simple check: if status is not empty, it's dirty.
         # However, we only care about modification, addition, deletion, etc.
         # We generally want to ignore untracked files if 'git status --porcelain' behavior is mimic'd roughly,
         # but usually untracked files are considered dirty in some contexts.
         # existing git_manager uses: --untracked-files=no
-        
+
         # pygit2.GIT_STATUS_SHOW_INDEX_AND_WORKDIR is default
         status = self.repo.status(untracked_files="no")
         return len(status) > 0
@@ -170,7 +172,7 @@ class GitRepository:
         # Resolve target to an object (commit/branch)
         # If it's a branch name
         repo = self.repo
-        
+
         # Check if local branch exists
         branch = repo.lookup_branch(target)
         if branch:
@@ -191,9 +193,13 @@ class GitRepository:
             except (KeyError, pygit2.GitError):
                 raise ValueError(f"Target '{target}' not found in repository.")
 
-    def create_branch(self, branch_name: str, point_at: str, dry_run: bool = False) -> None:
+    def create_branch(
+        self, branch_name: str, point_at: str, dry_run: bool = False
+    ) -> None:
         if dry_run:
-            print(f"[Dry-run] would create branch '{branch_name}' at '{point_at}' in {self.path}")
+            print(
+                f"[Dry-run] would create branch '{branch_name}' at '{point_at}' in {self.path}"
+            )
             return
         # Implementation to come if needed
         pass
@@ -210,7 +216,7 @@ class GitRepository:
             remote = self.repo.remotes[remote_name]
         except KeyError:
             raise ValueError(f"Remote '{remote_name}' not found.")
-        
+
         remote.fetch()
 
     def merge_fast_forward(self, target_commit: str, dry_run: bool = False) -> None:
@@ -219,7 +225,9 @@ class GitRepository:
         Raises error if not possible.
         """
         if dry_run:
-            print(f"[Dry-run] would fast-forward merge HEAD to '{target_commit}' in {self.path}")
+            print(
+                f"[Dry-run] would fast-forward merge HEAD to '{target_commit}' in {self.path}"
+            )
             return
 
         repo = self.repo
@@ -248,7 +256,9 @@ class GitRepository:
             # Nothing to do
             return
         else:
-             raise RuntimeError(f"Cannot fast-forward merge to {target_commit}. Analysis result: {analysis}")
+            raise RuntimeError(
+                f"Cannot fast-forward merge to {target_commit}. Analysis result: {analysis}"
+            )
 
     # --- Actions: Stash ---
 
@@ -259,7 +269,9 @@ class GitRepository:
         if dry_run:
             dirty = self.is_dirty()
             if dirty:
-                print(f"[Dry-run] would stash changes with message '{message}' in {self.path}")
+                print(
+                    f"[Dry-run] would stash changes with message '{message}' in {self.path}"
+                )
             return dirty
 
         try:
@@ -290,22 +302,32 @@ class GitRepository:
         for name in self.repo.listall_submodules():
             try:
                 sub = self.repo.lookup_submodule(name)
-                current_commit = str(sub.head_id) if sub.head_id else "0000000000000000000000000000000000000000"
-                
-                submodules.append(SubmoduleInfo(
-                    path=sub.path,
-                    url=sub.url or "",
-                    current_commit=current_commit,
-                    branch=sub.branch
-                ))
+                current_commit = (
+                    str(sub.head_id)
+                    if sub.head_id
+                    else "0000000000000000000000000000000000000000"
+                )
+
+                submodules.append(
+                    SubmoduleInfo(
+                        path=sub.path,
+                        url=sub.url or "",
+                        current_commit=current_commit,
+                        branch=sub.branch,
+                    )
+                )
             except Exception:
                 continue
         return submodules
 
-    def update_submodules(self, recursive: bool = True, init: bool = False, dry_run: bool = False) -> None:
+    def update_submodules(
+        self, recursive: bool = True, init: bool = False, dry_run: bool = False
+    ) -> None:
         """Updates submodules."""
         if dry_run:
-            print(f"[Dry-run] would update submodules (recursive={recursive}, init={init}) in {self.path}")
+            print(
+                f"[Dry-run] would update submodules (recursive={recursive}, init={init}) in {self.path}"
+            )
             return
 
         # pygit2's submodule update support is limited compared to CLI.
@@ -326,10 +348,12 @@ class GitRepository:
     # --- Factory/Init ---
 
     @staticmethod
-    def init_repository(path: Path | str, origin_url: Optional[str] = None, dry_run: bool = False) -> GitRepository:
+    def init_repository(
+        path: Path | str, origin_url: Optional[str] = None, dry_run: bool = False
+    ) -> GitRepository:
         """Initializes a new repo and optional remote."""
         path_obj = Path(path)
-        
+
         if dry_run:
             print(f"[Dry-run] would init git repository at {path_obj}")
             if origin_url:
@@ -338,11 +362,11 @@ class GitRepository:
 
         path_obj.mkdir(parents=True, exist_ok=True)
         pygit2.init_repository(str(path_obj))
-        
+
         repo_wrapper = GitRepository(path_obj)
         repo_wrapper.open()
-        
+
         if origin_url:
             repo_wrapper.repo.remotes.create("origin", origin_url)
-            
+
         return repo_wrapper

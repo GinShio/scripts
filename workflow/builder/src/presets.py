@@ -1,10 +1,16 @@
 """Preset resolution with inheritance, conditions, and templating."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
-from core.template import TemplateResolver, TemplateError, build_dependency_map, topological_order
+from core.template import (
+    TemplateError,
+    TemplateResolver,
+    build_dependency_map,
+    topological_order,
+)
 
 
 @dataclass(slots=True)
@@ -162,8 +168,12 @@ class PresetRepository:
         raw_extends = raw_preset.get("extends")
         if isinstance(raw_extends, str):
             extends = (raw_extends.strip(),)
-        elif isinstance(raw_extends, Iterable) and not isinstance(raw_extends, (bytes, str)):
-            extends = tuple(str(item).strip() for item in raw_extends if str(item).strip())
+        elif isinstance(raw_extends, Iterable) and not isinstance(
+            raw_extends, (bytes, str)
+        ):
+            extends = tuple(
+                str(item).strip() for item in raw_extends if str(item).strip()
+            )
 
         environment: Dict[str, Any] = {}
         environment_dependencies: Dict[str, List[str]] = {}
@@ -188,7 +198,9 @@ class PresetRepository:
             )
 
         def _normalize_args(raw_value: Any) -> tuple[Any, ...]:
-            if isinstance(raw_value, Iterable) and not isinstance(raw_value, (str, bytes)):
+            if isinstance(raw_value, Iterable) and not isinstance(
+                raw_value, (str, bytes)
+            ):
                 return tuple(raw_value)
             if raw_value is None:
                 return ()
@@ -244,11 +256,14 @@ class PresetRepository:
         if not raw_environment:
             return {}
 
-        normalized_environment: Dict[str, Any] = {str(key): value for key, value in raw_environment.items()}
+        normalized_environment: Dict[str, Any] = {
+            str(key): value for key, value in raw_environment.items()
+        }
 
         resolved: Dict[str, str] = {}
         base_env: Dict[str, Any] = {
-            str(key): value for key, value in template_resolver.context.get("env", {}).items()
+            str(key): value
+            for key, value in template_resolver.context.get("env", {}).items()
         }
         base_env.update({str(key): value for key, value in base_environment.items()})
 
@@ -313,7 +328,9 @@ class PresetRepository:
         cache: MutableMapping[str, ResolvedPreset],
     ) -> ResolvedPreset | None:
         if key in seen:
-            raise TemplateError(f"Circular preset dependency detected: {' -> '.join(seen + (key,))}")
+            raise TemplateError(
+                f"Circular preset dependency detected: {' -> '.join(seen + (key,))}"
+            )
         if key in cache:
             return cache[key].clone()
 
@@ -360,7 +377,11 @@ class PresetRepository:
         if definitions:
             normalized_definitions: Dict[str, Any] = dict(definitions)
             filtered_dependencies: Dict[str, List[str]] = {
-                key: [dep for dep in preset_data.definition_dependencies.get(key, []) if dep not in resolved.definitions]
+                key: [
+                    dep
+                    for dep in preset_data.definition_dependencies.get(key, [])
+                    if dep not in resolved.definitions
+                ]
                 for key in normalized_definitions.keys()
             }
             order = topological_order(filtered_dependencies)
@@ -372,7 +393,9 @@ class PresetRepository:
                     environment=resolved.environment,
                     definitions=current_definitions,
                 )
-                def_values[str(key)] = augmented_resolver.resolve(normalized_definitions[key])
+                def_values[str(key)] = augmented_resolver.resolve(
+                    normalized_definitions[key]
+                )
             resolved.definitions.update(def_values)
 
         def _collect_args(raw_values: Sequence[Any]) -> List[str]:

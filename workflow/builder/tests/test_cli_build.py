@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-from types import SimpleNamespace
 import io
+import os
 import tempfile
 import textwrap
 import unittest
 from contextlib import redirect_stdout
-import os
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from builder import cli
@@ -279,8 +279,12 @@ class BuildCommandDryRunTests(unittest.TestCase):
             cli._handle_build(args, self.workspace)
 
         output = buffer.getvalue()
-        dry_run_lines = [line for line in output.splitlines() if line.startswith("[dry-run]")]
-        configure_lines = [line for line in dry_run_lines if "Configure project" in line]
+        dry_run_lines = [
+            line for line in output.splitlines() if line.startswith("[dry-run]")
+        ]
+        configure_lines = [
+            line for line in dry_run_lines if "Configure project" in line
+        ]
         self.assertGreaterEqual(len(configure_lines), 2)
         self.assertIn("lib", configure_lines[0])
         self.assertIn("demo", configure_lines[1])
@@ -363,9 +367,13 @@ class BuildCommandDryRunTests(unittest.TestCase):
             cli._handle_build(args, self.workspace)
 
         output = buffer.getvalue()
-        dry_run_lines = [line for line in output.splitlines() if line.startswith("[dry-run]")]
+        dry_run_lines = [
+            line for line in output.splitlines() if line.startswith("[dry-run]")
+        ]
         self.assertTrue(any("git switch" in line for line in dry_run_lines))
-        self.assertTrue(any("git submodule update --recursive" in line for line in dry_run_lines))
+        self.assertTrue(
+            any("git submodule update --recursive" in line for line in dry_run_lines)
+        )
 
     def test_build_passes_component_repo_to_git_manager(self) -> None:
         projects_dir = self.workspace / "config" / "projects"
@@ -505,7 +513,9 @@ class BuildCommandDryRunTests(unittest.TestCase):
             cli._handle_build(args, self.workspace)
 
         output = buffer.getvalue()
-        dry_run_lines = [line for line in output.splitlines() if line.startswith("[dry-run]")]
+        dry_run_lines = [
+            line for line in output.splitlines() if line.startswith("[dry-run]")
+        ]
         self.assertTrue(any("-DDEMO_NAME=cli-value" in line for line in dry_run_lines))
         self.assertTrue(any("-DEXTRA_FLAG=ON" in line for line in dry_run_lines))
 
@@ -740,7 +750,3 @@ class ExtraSwitchParsingTests(unittest.TestCase):
     def test_flatten_arg_groups(self) -> None:
         flattened = cli._flatten_arg_groups([["-DA"], ["-DB", "-DC"]])
         self.assertEqual(flattened, ["-DA", "-DB", "-DC"])
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()

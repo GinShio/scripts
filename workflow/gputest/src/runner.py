@@ -1,29 +1,31 @@
 """
 Test runner logic.
 """
+
 import datetime
 import glob
 import os
 import re
 import shutil
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
 
-from core.command_runner import SubprocessCommandRunner, CommandError
-from core.archive import ArchiveManager, ArchiveArtifact
+from core.archive import ArchiveArtifact, ArchiveManager
+from core.command_runner import CommandError, SubprocessCommandRunner
+
 from .context import Context
-from .utils import substitute, resolve_env
+from .utils import resolve_env, substitute
 
 
-def get_gpu_id_from_vulkan(
-        env: Optional[Dict[str, str]] = None) -> Optional[str]:
+def get_gpu_id_from_vulkan(env: Optional[Dict[str, str]] = None) -> Optional[str]:
     """Get GPU ID from vulkaninfo."""
     try:
         if not shutil.which("vulkaninfo"):
             return None
 
         res = SubprocessCommandRunner().run(
-            ["vulkaninfo", "--summary"], env=env, check=False)
+            ["vulkaninfo", "--summary"], env=env, check=False
+        )
         if res.returncode != 0:
             return None
 
@@ -32,10 +34,8 @@ def get_gpu_id_from_vulkan(
         #    vendorID           = 0x1002
         #    deviceID           = 0x73bf
 
-        vendor_match = re.search(
-            r"vendorID\s*=\s*(0x[0-9a-fA-F]+)", res.stdout)
-        device_match = re.search(
-            r"deviceID\s*=\s*(0x[0-9a-fA-F]+)", res.stdout)
+        vendor_match = re.search(r"vendorID\s*=\s*(0x[0-9a-fA-F]+)", res.stdout)
+        device_match = re.search(r"deviceID\s*=\s*(0x[0-9a-fA-F]+)", res.stdout)
 
         if vendor_match and device_match:
             vendor = vendor_match.group(1).replace("0x", "")
@@ -53,8 +53,7 @@ def get_gpu_id_from_gl(env: Optional[Dict[str, str]] = None) -> Optional[str]:
         if not shutil.which("glxinfo"):
             return None
 
-        res = SubprocessCommandRunner().run(
-            ["glxinfo", "-B"], env=env, check=False)
+        res = SubprocessCommandRunner().run(["glxinfo", "-B"], env=env, check=False)
         if res.returncode != 0:
             return None
 
@@ -91,12 +90,14 @@ def get_gpu_device_id(env: Optional[Dict[str, str]] = None) -> str:
         lspci = shutil.which("lspci")
         if lspci:
             res = SubprocessCommandRunner().run(
-                ["sh", "-c", "lspci -n | grep -E '0300|0302' | head -1"], check=False)
+                ["sh", "-c", "lspci -n | grep -E '0300|0302' | head -1"], check=False
+            )
             if res.returncode == 0 and res.stdout.strip():
                 parts = res.stdout.strip().split()
                 for part in parts:
-                    if ":" in part and len(
-                            part.split(":")) == 2 and len(part) == 9:  # vendor:device
+                    if (
+                        ":" in part and len(part.split(":")) == 2 and len(part) == 9
+                    ):  # vendor:device
                         return part
     except Exception:
         pass
@@ -144,13 +145,12 @@ def run_tests(ctx: Context, test_names: List[str]):
         "runner_root": str(ctx.runner_root),
         "home": str(Path.home()),
         "date": datetime.datetime.now().strftime("%Y%m%d"),
-        "gpu_id": "unknown_gpu"  # Placeholder, will be resolved per test
+        "gpu_id": "unknown_gpu",  # Placeholder, will be resolved per test
     }
 
     for test_name in test_names:
         if test_name not in tests_cfg:
-            ctx.console.error(
-                f"Test '{test_name}' not defined in configuration.")
+            ctx.console.error(f"Test '{test_name}' not defined in configuration.")
             continue
 
         ctx.console.info(f"Preparing test: {test_name}")
@@ -161,8 +161,7 @@ def run_tests(ctx: Context, test_names: List[str]):
         suite_name = test_def.get("suite")
 
         if not driver_name or not suite_name:
-            ctx.console.error(
-                f"Test '{test_name}' missing driver or suite definition.")
+            ctx.console.error(f"Test '{test_name}' missing driver or suite definition.")
             continue
 
         # Resolve components
@@ -175,7 +174,8 @@ def run_tests(ctx: Context, test_names: List[str]):
         layout = layouts_cfg.get(layout_name)
         if not layout:
             ctx.console.error(
-                f"Layout '{layout_name}' not found for driver '{driver_name}'.")
+                f"Layout '{layout_name}' not found for driver '{driver_name}'."
+            )
             continue
 
         suite = suites_cfg.get(suite_name)
@@ -195,14 +195,16 @@ def run_tests(ctx: Context, test_names: List[str]):
         env_vars["root"] = layout_root
 
         # Inject names for template resolution
-        env_vars.update({
-            "test_name": test_name,
-            "suite_name": suite_name,
-            "suite_type": suite.get("type", ""),
-            "driver_name": driver_name,
-            "backend_name": backend_name or "",
-            "layout_name": layout_name,
-        })
+        env_vars.update(
+            {
+                "test_name": test_name,
+                "suite_name": suite_name,
+                "suite_type": suite.get("type", ""),
+                "driver_name": driver_name,
+                "backend_name": backend_name or "",
+                "layout_name": layout_name,
+            }
+        )
 
         # Pass cpu_count to variables for template resolution
         cpu_count = os.cpu_count() or 1
@@ -227,7 +229,12 @@ def run_tests(ctx: Context, test_names: List[str]):
         runner_bin = suite.get("runner", "")
         exe_bin = suite.get("executable") or suite.get("exe") or ""
 
-        is_gl = "gl" in suite_name or "gles" in suite_name or "piglit" in runner_bin or "gl" in exe_bin
+        is_gl = (
+            "gl" in suite_name
+            or "gles" in suite_name
+            or "piglit" in runner_bin
+            or "gl" in exe_bin
+        )
 
         test_gpu_id = None
         if is_gl:
@@ -263,8 +270,12 @@ def run_tests(ctx: Context, test_names: List[str]):
         # --- Variable Preparation Phase ---
 
         # 1. Output Directory
-        output_dir = ctx.runner_root / "testing" / test_name / \
-            datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        output_dir = (
+            ctx.runner_root
+            / "testing"
+            / test_name
+            / datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        )
 
         # 2. Runner Binary
         runner_bin = suite.get("runner", "")
@@ -291,9 +302,9 @@ def run_tests(ctx: Context, test_names: List[str]):
             install_dir = ctx.runner_root / "piglit"
 
         if exe_bin and not Path(exe_bin).is_absolute():
-             potential_exe = install_dir / exe_bin
-             if potential_exe.exists():
-                 exe_bin = str(potential_exe)
+            potential_exe = install_dir / exe_bin
+            if potential_exe.exists():
+                exe_bin = str(potential_exe)
 
         # 4. Caselists & Testlist (dEQP specific mostly, but generic concept)
         caselists = suite.get("caselists", [])
@@ -340,19 +351,21 @@ def run_tests(ctx: Context, test_names: List[str]):
 
         # Update variables for template
         cmd_vars = test_vars.copy()
-        cmd_vars.update({
-            "output_dir": str(output_dir),
-            "testlist_path": testlist_path,
-            "exclude_list_path": exclude_list_path,
-            "exclude_list_arg": exclude_list_arg,
-            "runner_bin": runner_bin,
-            "exe_bin": exe_bin,
-            "runner_args": runner_args,
-            "deqp_args": deqp_args,
-            "args": args,
-            "install_dir": str(install_dir),
-            "piglit_folder": str(install_dir) # Alias for piglit-runner
-        })
+        cmd_vars.update(
+            {
+                "output_dir": str(output_dir),
+                "testlist_path": testlist_path,
+                "exclude_list_path": exclude_list_path,
+                "exclude_list_arg": exclude_list_arg,
+                "runner_bin": runner_bin,
+                "exe_bin": exe_bin,
+                "runner_args": runner_args,
+                "deqp_args": deqp_args,
+                "args": args,
+                "install_dir": str(install_dir),
+                "piglit_folder": str(install_dir),  # Alias for piglit-runner
+            }
+        )
 
         # --- Command Generation Phase ---
 
@@ -422,6 +435,7 @@ def run_tests(ctx: Context, test_names: List[str]):
         # Parse command string to list for subprocess
         # We use shlex to split correctly handling quotes
         import shlex
+
         cmd = shlex.split(cmd_str)
 
         # Execute
@@ -436,15 +450,16 @@ def run_tests(ctx: Context, test_names: List[str]):
 
             # Prepare hook variables
             hook_vars = env_vars.copy()
-            hook_vars.update({
-                "name": suite_name,
-                "output_dir": str(output_dir),
-                "test_name": test_name
-            })
+            hook_vars.update(
+                {
+                    "name": suite_name,
+                    "output_dir": str(output_dir),
+                    "test_name": test_name,
+                }
+            )
 
             # Run pre-run hooks
-            pre_hooks = suite.get(
-                "pre_run_hooks", []) + test_def.get("pre_run", [])
+            pre_hooks = suite.get("pre_run_hooks", []) + test_def.get("pre_run", [])
             # So I should probably default to running 'get_git_info' if
             # it exists, or add a global 'default_pre_hooks'.
 
@@ -453,40 +468,36 @@ def run_tests(ctx: Context, test_names: List[str]):
                 for hook_name in hooks_list:
                     hook_cmd_tpl = hooks_cfg.get(hook_name)
                     if not hook_cmd_tpl:
-                        ctx.console.error(
-                            f"Hook '{hook_name}' not found in [hooks]")
+                        ctx.console.error(f"Hook '{hook_name}' not found in [hooks]")
                         continue
 
-                    ctx.console.info(
-                        f"Running {phase_name} hook: {hook_name}")
+                    ctx.console.info(f"Running {phase_name} hook: {hook_name}")
                     try:
                         ctx.runner.run(
-                            ["sh", "-c", substitute(hook_cmd_tpl, hook_vars)], cwd=output_dir, check=False)
+                            ["sh", "-c", substitute(hook_cmd_tpl, hook_vars)],
+                            cwd=output_dir,
+                            check=False,
+                        )
                     except Exception as e:
                         ctx.console.error(
-                            f"{phase_name} hook '{hook_name}' failed: {e}")
+                            f"{phase_name} hook '{hook_name}' failed: {e}"
+                        )
 
             # Run explicit pre-run hooks
             run_hooks(pre_hooks, "pre-run")
 
             # Run the test
-            ctx.runner.run(
-                cmd,
-                cwd=cwd,
-                env=merged_env,
-                check=True,
-                stream=True)
+            ctx.runner.run(cmd, cwd=cwd, env=merged_env, check=True, stream=True)
 
             # Run post-run hooks
-            post_hooks = suite.get(
-                "post_run_hooks", []) + test_def.get("post_run", [])
+            post_hooks = suite.get("post_run_hooks", []) + test_def.get("post_run", [])
             run_hooks(post_hooks, "post-run")
 
             # Archive results
             # Naming: vendor/suite_device_date.arch
-            archive_filename = f"{suite_name}_{
-                test_vars['gpu_id']}_{
-                test_vars['date']}.tar.zst"
+            archive_filename = (
+                f"{suite_name}_{test_vars['gpu_id']}_{test_vars['date']}.tar.zst"
+            )
             archive_parent = ctx.result_dir / driver_name
 
             if not ctx.console.dry_run:
@@ -497,8 +508,7 @@ def run_tests(ctx: Context, test_names: List[str]):
             ctx.console.info(f"Archiving results to {archive_path}")
 
             # Baseline naming: vendor_suite_date
-            baseline_name = f"{driver_name}_{suite_name}_{
-                test_vars['date']}"
+            baseline_name = f"{driver_name}_{suite_name}_{test_vars['date']}"
 
             # Determine what to archive
             archive_files = suite.get("archive_files")
@@ -511,8 +521,7 @@ def run_tests(ctx: Context, test_names: List[str]):
                     shutil.rmtree(staging_dir)
                 staging_dir.mkdir()
 
-                ctx.console.info(
-                    f"Collecting artifacts matching: {archive_files}")
+                ctx.console.info(f"Collecting artifacts matching: {archive_files}")
 
                 for pattern in archive_files:
                     # Use glob to find matches
@@ -541,24 +550,27 @@ def run_tests(ctx: Context, test_names: List[str]):
             # Use ArchiveManager for archiving
             archive_manager = ArchiveManager(ctx.console)
             artifact = ArchiveArtifact(
-                source_dir=source_dir_for_archive,
-                label=test_name
+                source_dir=source_dir_for_archive, label=test_name
             )
 
             try:
                 if source_dir_for_archive.exists():
                     archive_manager.create_archive(
-                        artifact=artifact,
-                        target_path=archive_path,
-                        overwrite=True
+                        artifact=artifact, target_path=archive_path, overwrite=True
                     )
                 elif ctx.console.dry_run:
-                    ctx.console.info(f"[dry-run] Would archive {test_name} to {archive_path}")
+                    ctx.console.info(
+                        f"[dry-run] Would archive {test_name} to {archive_path}"
+                    )
             except Exception as e:
                 ctx.console.error(f"Failed to archive results: {e}")
             finally:
                 # Cleanup staging directory
-                if archive_files and source_dir_for_archive.exists() and source_dir_for_archive.name == ".archive_staging":
+                if (
+                    archive_files
+                    and source_dir_for_archive.exists()
+                    and source_dir_for_archive.name == ".archive_staging"
+                ):
                     shutil.rmtree(source_dir_for_archive, ignore_errors=True)
 
         except CommandError as e:

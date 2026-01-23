@@ -1,7 +1,6 @@
 """Shared core utilities for build orchestration and templating."""
 
 from .archive import ArchiveArtifact, ArchiveConsole, ArchiveManager
-from .template import TemplateError, TemplateResolver, build_dependency_map, extract_placeholders, topological_order
 from .command_runner import (
     CommandError,
     CommandResult,
@@ -10,8 +9,8 @@ from .command_runner import (
     SubprocessCommandRunner,
 )
 from .config_loader import (
-    ConfigLoader,
     FILE_LOADERS,
+    ConfigLoader,
     collect_config_files,
     load_config_file,
     merge_mappings,
@@ -20,6 +19,13 @@ from .config_loader import (
     resolve_config_paths,
 )
 from .crypto import decrypt, encrypt
+from .template import (
+    TemplateError,
+    TemplateResolver,
+    build_dependency_map,
+    extract_placeholders,
+    topological_order,
+)
 
 __all__ = [
     "TemplateError",

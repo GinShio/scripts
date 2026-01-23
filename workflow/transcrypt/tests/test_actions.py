@@ -1,40 +1,40 @@
-import unittest
-from unittest.mock import MagicMock, patch
-from pathlib import Path
-import sys
-import os
 import io
+import os
+import sys
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 # Add the workflow directory to sys.path
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../..'))
-sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../.."))
+sys.path.append(os.path.join(os.path.dirname(__file__), "../../"))
 
-from workflow.transcrypt.src import actions
 from workflow.core import crypto
+from workflow.transcrypt.src import actions
+
 
 class TestActions(unittest.TestCase):
-
     def setUp(self):
         # Reset any patched modules if needed
         pass
 
-    @patch('workflow.transcrypt.src.actions.get_git_config')
+    @patch("workflow.transcrypt.src.actions.get_git_config")
     def test_get_password_success(self, mock_get_config):
         mock_get_config.return_value = "secret"
         pwd = actions._get_password("ctx")
         self.assertEqual(pwd, "secret")
         mock_get_config.assert_called_with("transcrypt.ctx.password")
 
-    @patch('workflow.transcrypt.src.actions.get_git_config')
+    @patch("workflow.transcrypt.src.actions.get_git_config")
     def test_get_password_fail(self, mock_get_config):
         mock_get_config.return_value = None
         with self.assertRaises(ValueError):
             actions._get_password("ctx")
 
-    @patch('workflow.transcrypt.src.actions.sys.stdin')
-    @patch('workflow.transcrypt.src.actions.sys.stdout')
-    @patch('workflow.transcrypt.src.actions._get_password')
-    @patch('workflow.transcrypt.src.actions.crypto.encrypt')
+    @patch("workflow.transcrypt.src.actions.sys.stdin")
+    @patch("workflow.transcrypt.src.actions.sys.stdout")
+    @patch("workflow.transcrypt.src.actions._get_password")
+    @patch("workflow.transcrypt.src.actions.crypto.encrypt")
     def test_clean_encrypts(self, mock_encrypt, mock_get_pwd, mock_stdout, mock_stdin):
         # Setup input
         mock_stdin.buffer.read.return_value = b"plain text"
@@ -55,24 +55,26 @@ class TestActions(unittest.TestCase):
         self.assertEqual(args[0][1], "password")
         # Check kwargs
         kwargs = args[1]
-        self.assertEqual(kwargs.get('deterministic'), True)
-        self.assertEqual(kwargs.get('context'), b"my/file.txt")
+        self.assertEqual(kwargs.get("deterministic"), True)
+        self.assertEqual(kwargs.get("context"), b"my/file.txt")
 
         mock_stdout.buffer.write.assert_called_with(b"encrypted")
 
-    @patch('workflow.transcrypt.src.actions.sys.stdin')
-    @patch('workflow.transcrypt.src.actions.sys.stdout')
+    @patch("workflow.transcrypt.src.actions.sys.stdin")
+    @patch("workflow.transcrypt.src.actions.sys.stdout")
     def test_clean_empty(self, mock_stdout, mock_stdin):
         mock_stdin.buffer.read.return_value = b""
         actions.clean("default")
         mock_stdout.buffer.write.assert_not_called()
 
-    @patch('workflow.transcrypt.src.actions.sys.stdin')
-    @patch('workflow.transcrypt.src.actions.sys.stdout')
-    @patch('workflow.transcrypt.src.actions._get_password')
-    @patch('workflow.transcrypt.src.actions.crypto.decrypt')
-    @patch('workflow.transcrypt.src.actions.base64')
-    def test_smudge_decrypts(self, mock_b64, mock_decrypt, mock_get_pwd, mock_stdout, mock_stdin):
+    @patch("workflow.transcrypt.src.actions.sys.stdin")
+    @patch("workflow.transcrypt.src.actions.sys.stdout")
+    @patch("workflow.transcrypt.src.actions._get_password")
+    @patch("workflow.transcrypt.src.actions.crypto.decrypt")
+    @patch("workflow.transcrypt.src.actions.base64")
+    def test_smudge_decrypts(
+        self, mock_b64, mock_decrypt, mock_get_pwd, mock_stdout, mock_stdin
+    ):
         # Setup input
         encrypted_data = b"encrypted stuff"
         mock_stdin.buffer.read.return_value = encrypted_data
@@ -87,13 +89,13 @@ class TestActions(unittest.TestCase):
 
         mock_decrypt.assert_called_once()
         kwargs = mock_decrypt.call_args[1]
-        self.assertEqual(kwargs.get('deterministic'), True)
-        self.assertEqual(kwargs.get('context'), b"my/file.txt")
+        self.assertEqual(kwargs.get("deterministic"), True)
+        self.assertEqual(kwargs.get("context"), b"my/file.txt")
         mock_stdout.buffer.write.assert_called_with(b"plain text")
 
-    @patch('workflow.transcrypt.src.actions.sys.stdin')
-    @patch('workflow.transcrypt.src.actions.sys.stdout')
-    @patch('workflow.transcrypt.src.actions.base64')
+    @patch("workflow.transcrypt.src.actions.sys.stdin")
+    @patch("workflow.transcrypt.src.actions.sys.stdout")
+    @patch("workflow.transcrypt.src.actions.base64")
     def test_smudge_not_encrypted_passthrough(self, mock_b64, mock_stdout, mock_stdin):
         # If it doesn't look like b64 or doesn't have header
         # Case 1: Not valid base64
@@ -104,22 +106,24 @@ class TestActions(unittest.TestCase):
 
         mock_stdout.buffer.write.assert_called_with(b"just plain text")
 
-    @patch('workflow.transcrypt.src.actions.sys.stdin')
-    @patch('workflow.transcrypt.src.actions.sys.stdout')
-    @patch('workflow.transcrypt.src.actions.base64')
-    def test_smudge_encrypted_but_no_header_passthrough(self, mock_b64, mock_stdout, mock_stdin):
+    @patch("workflow.transcrypt.src.actions.sys.stdin")
+    @patch("workflow.transcrypt.src.actions.sys.stdout")
+    @patch("workflow.transcrypt.src.actions.base64")
+    def test_smudge_encrypted_but_no_header_passthrough(
+        self, mock_b64, mock_stdout, mock_stdin
+    ):
         # Case 2: Valid b64 but no header
-        mock_stdin.buffer.read.return_value = b"SGVsbG8=" # Hello
+        mock_stdin.buffer.read.return_value = b"SGVsbG8="  # Hello
         mock_b64.b64decode.return_value = b"Hello"
 
         actions.smudge("default")
 
         mock_stdout.buffer.write.assert_called_with(b"SGVsbG8=")
 
-    @patch('workflow.transcrypt.src.actions.set_git_config')
-    @patch('workflow.transcrypt.src.actions.sys.executable', '/usr/bin/python3')
-    @patch('workflow.transcrypt.src.actions.get_relative_path')
-    @patch('sys.argv', ['/path/to/script.py'])
+    @patch("workflow.transcrypt.src.actions.set_git_config")
+    @patch("workflow.transcrypt.src.actions.sys.executable", "/usr/bin/python3")
+    @patch("workflow.transcrypt.src.actions.get_relative_path")
+    @patch("sys.argv", ["/path/to/script.py"])
     def test_install(self, mock_rel_path, mock_set_config):
         mock_rel_path.return_value = Path("script.py")
 
@@ -137,7 +141,7 @@ class TestActions(unittest.TestCase):
         self.assertIn("/usr/bin/python3 script.py", args_clean[1])
         self.assertIn("-c default clean %f", args_clean[1])
 
-    @patch('workflow.transcrypt.src.actions.unset_git_config')
+    @patch("workflow.transcrypt.src.actions.unset_git_config")
     def test_uninstall(self, mock_unset_config):
         actions.uninstall("default")
         self.assertEqual(mock_unset_config.call_count, 4)
@@ -146,12 +150,14 @@ class TestActions(unittest.TestCase):
         mock_unset_config.assert_any_call("filter.transcrypt.required")
         mock_unset_config.assert_any_call("diff.transcrypt.textconv")
 
-    @patch('workflow.transcrypt.src.actions.sys.stdout')
-    @patch('workflow.transcrypt.src.actions._get_password')
-    @patch('workflow.transcrypt.src.actions.crypto.decrypt')
-    @patch('workflow.transcrypt.src.actions.base64')
-    @patch('builtins.open')
-    def test_textconv(self, mock_open, mock_b64, mock_decrypt, mock_get_pwd, mock_stdout):
+    @patch("workflow.transcrypt.src.actions.sys.stdout")
+    @patch("workflow.transcrypt.src.actions._get_password")
+    @patch("workflow.transcrypt.src.actions.crypto.decrypt")
+    @patch("workflow.transcrypt.src.actions.base64")
+    @patch("builtins.open")
+    def test_textconv(
+        self, mock_open, mock_b64, mock_decrypt, mock_get_pwd, mock_stdout
+    ):
         # Mock file open
         mock_file = MagicMock()
         mock_file.__enter__.return_value = mock_file
@@ -169,8 +175,8 @@ class TestActions(unittest.TestCase):
         mock_decrypt.assert_called_once()
         mock_stdout.buffer.write.assert_called_with(b"plain text")
 
-    @patch('workflow.transcrypt.src.actions.get_git_config')
-    @patch('workflow.transcrypt.src.actions.sys.stdout')  # capture print
+    @patch("workflow.transcrypt.src.actions.get_git_config")
+    @patch("workflow.transcrypt.src.actions.sys.stdout")  # capture print
     def test_status(self, mock_stdout, mock_get_config):
         # Mock returns: pwd, cipher, digest, iterations, clean_filter (installed)
         mock_get_config.side_effect = ["secret", "aes", "sha", "100", "some cmd"]
@@ -180,5 +186,6 @@ class TestActions(unittest.TestCase):
         # Just ensure no exception and config was queried
         self.assertEqual(mock_get_config.call_count, 5)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

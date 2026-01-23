@@ -1,6 +1,7 @@
 """
 Tests for gputest toolbox.
 """
+
 import os
 import shutil
 import tempfile
@@ -24,12 +25,10 @@ class TestToolbox(unittest.TestCase):
                     "src": "{{project_root}}/src",
                     "dest": "dest",
                     "excludes": ["*.txt"],
-                    "post_install": ["hook1"]
+                    "post_install": ["hook1"],
                 }
             },
-            "hooks": {
-                "hook1": "echo {{dest}}"
-            }
+            "hooks": {"hook1": "echo {{dest}}"},
         }
         self.ctx = Context(
             config=self.config,
@@ -37,7 +36,7 @@ class TestToolbox(unittest.TestCase):
             runner=self.runner,
             project_root=Path("/project"),
             runner_root=Path(self.temp_dir.name),
-            result_dir=Path("/result")
+            result_dir=Path("/result"),
         )
 
     def tearDown(self):
@@ -63,15 +62,11 @@ class TestToolbox(unittest.TestCase):
 
     @patch("gputest.src.toolbox.force_copytree")
     @patch("gputest.src.toolbox.Path.exists")
-    def test_run_toolbox_multiple_suites(
-            self, mock_exists, mock_force_copytree):
+    def test_run_toolbox_multiple_suites(self, mock_exists, mock_force_copytree):
         mock_exists.return_value = True
 
         # Add another suite
-        self.config["toolbox"]["suite2"] = {
-            "src": "src2",
-            "dest": "dest2"
-        }
+        self.config["toolbox"]["suite2"] = {"src": "src2", "dest": "dest2"}
 
         run_toolbox(self.ctx)  # Run all
 
@@ -84,10 +79,7 @@ class TestToolbox(unittest.TestCase):
         mock_exists.return_value = True
 
         # Add another suite
-        self.config["toolbox"]["suite2"] = {
-            "src": "src2",
-            "dest": "dest2"
-        }
+        self.config["toolbox"]["suite2"] = {"src": "src2", "dest": "dest2"}
 
         run_toolbox(self.ctx, ["test"])  # Run only 'test'
 
@@ -146,9 +138,7 @@ class TestToolbox(unittest.TestCase):
         self.config["toolbox"]["test_paths"] = {
             "src": "{{project_root}}/src",
             "dest": "{{runner_root}}/base_dest",
-            "paths": [
-                {"src": "sub1", "dest": "sub_dest"}
-            ]
+            "paths": [{"src": "sub1", "dest": "sub_dest"}],
         }
 
         run_toolbox(self.ctx, ["test_paths"])
@@ -161,8 +151,7 @@ class TestToolbox(unittest.TestCase):
 
     @patch("gputest.src.toolbox.force_copytree")
     @patch("gputest.src.toolbox.Path.exists")
-    def test_run_toolbox_paths_hook_context(
-            self, mock_exists, mock_force_copytree):
+    def test_run_toolbox_paths_hook_context(self, mock_exists, mock_force_copytree):
         mock_exists.return_value = True
 
         # Configure suite with paths and hook
@@ -170,9 +159,7 @@ class TestToolbox(unittest.TestCase):
             "src": "{{project_root}}/src",
             "dest": "{{runner_root}}/base_dest",
             "post_install": ["hook1"],
-            "paths": [
-                {"src": "sub1", "dest": "sub_dest"}
-            ]
+            "paths": [{"src": "sub1", "dest": "sub_dest"}],
         }
 
         run_toolbox(self.ctx, ["test_paths"])

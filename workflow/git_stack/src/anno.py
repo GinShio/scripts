@@ -1,4 +1,5 @@
 """Annotation command logic."""
+
 from __future__ import annotations
 
 import sys
@@ -7,9 +8,16 @@ from typing import Any, Dict, List, Optional
 from core.template import TemplateResolver
 
 from .git import resolve_base_branch
-from .machete import (STACK_FOOTER, STACK_HEADER, MacheteNode,
-                      generate_nested_list, get_linear_stack, parse_machete,
-                      strip_existing_stack_block, write_machete)
+from .machete import (
+    STACK_FOOTER,
+    STACK_HEADER,
+    MacheteNode,
+    generate_nested_list,
+    get_linear_stack,
+    parse_machete,
+    strip_existing_stack_block,
+    write_machete,
+)
 from .platform import PlatformInterface, get_platform
 
 
@@ -54,8 +62,7 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
             sys.exit(1)
 
         targets = get_linear_stack(limit_to_branch, nodes)
-        print(
-            f"Limiting annotation to linear stack: {[n.name for n in targets]}")
+        print(f"Limiting annotation to linear stack: {[n.name for n in targets]}")
 
     # 2. Collect PR info and update local annotations
     # We iterate all nodes that are not roots (roots usually don't have PRs in this context)
@@ -77,13 +84,12 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
             if data:
                 pr_cache[node.name] = data
                 # Update machete annotation
-                num = str(data.get('number') or data.get('iid'))
+                num = str(data.get("number") or data.get("iid"))
 
                 # Use resolve_template for annotation format
                 # e.g. "PR #123"
                 context = {"type": label_type, "number": num}
-                new_anno = resolve_template_str(
-                    "{{type}} #{{number}}", context)
+                new_anno = resolve_template_str("{{type}} #{{number}}", context)
 
                 if node.annotation != new_anno:
                     node.annotation = new_anno
@@ -105,7 +111,7 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
             continue
 
         pr_data = pr_cache[node.name]
-        pr_num = str(pr_data.get('number') or pr_data.get('iid'))
+        pr_num = str(pr_data.get("number") or pr_data.get("iid"))
 
         # Build stack context
         stack_nodes = get_linear_stack(node.name, nodes)
@@ -116,7 +122,7 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
             p_num = "?"
             if sn.name in pr_cache:
                 p_data = pr_cache[sn.name]
-                p_num = str(p_data.get('number') or p_data.get('iid'))
+                p_num = str(p_data.get("number") or p_data.get("iid"))
             elif sn.parent is None:
                 # Root
                 p_num = "-"
@@ -124,7 +130,7 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
                 # No PR found
                 p_num = "?"
 
-            stack_items.append({'node': sn, 'pr_num': p_num})
+            stack_items.append({"node": sn, "pr_num": p_num})
 
         # Generate Table
         table = generate_nested_list(stack_items, node.name, label_type)
@@ -139,19 +145,19 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
 
         # Append new block
         # Ensure spacing
-        if clean_desc and not clean_desc.endswith('\n'):
+        if clean_desc and not clean_desc.endswith("\n"):
             clean_desc += "\n"
-        if clean_desc and not clean_desc.endswith('\n\n'):
+        if clean_desc and not clean_desc.endswith("\n\n"):
             clean_desc += "\n"
 
         new_desc = clean_desc + table
 
         if new_desc.strip() != curr_desc.strip():
             # Use template for log message
-            log_ctx = {"type": label_type,
-                       "number": pr_num, "branch": node.name}
+            log_ctx = {"type": label_type, "number": pr_num, "branch": node.name}
             msg = resolve_template_str(
-                "  Updating {{type}} #{{number}} ({{branch}})...", log_ctx)
+                "  Updating {{type}} #{{number}} ({{branch}})...", log_ctx
+            )
             print(msg)
             platform.update_mr_description(pr_num, new_desc)
 

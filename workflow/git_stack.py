@@ -1,4 +1,5 @@
 """Entry-point script for the git-stack CLI."""
+
 from __future__ import annotations
 
 import os
@@ -22,7 +23,7 @@ except ImportError:
     _WORKFLOW_DIR = Path(__file__).resolve().parent
     if str(_WORKFLOW_DIR) not in sys.path:
         sys.path.insert(0, str(_WORKFLOW_DIR))
-    
+
     try:
         from git_stack.cli import main
     except ImportError:

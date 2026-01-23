@@ -1,4 +1,5 @@
 """Machete file parser and utilities."""
+
 from __future__ import annotations
 
 import os
@@ -8,7 +9,7 @@ from .git import get_git_dir
 
 
 def get_machete_file_path() -> str:
-    return os.path.join(get_git_dir(), 'machete')
+    return os.path.join(get_git_dir(), "machete")
 
 
 class MacheteNode:
@@ -32,7 +33,7 @@ def parse_machete() -> Dict[str, MacheteNode]:
     if not os.path.exists(path):
         return {}
 
-    with open(path, 'r') as f:
+    with open(path, "r") as f:
         lines = [line.rstrip() for line in f.readlines()]
 
     nodes: Dict[str, MacheteNode] = {}
@@ -62,7 +63,8 @@ def parse_machete() -> Dict[str, MacheteNode]:
 
         # Look backwards in valid indents
         possible_indents = sorted(
-            [i for i in last_node_at_indent.keys() if i < raw_indent], reverse=True)
+            [i for i in last_node_at_indent.keys() if i < raw_indent], reverse=True
+        )
         if possible_indents:
             parent = last_node_at_indent[possible_indents[0]]
 
@@ -73,8 +75,7 @@ def parse_machete() -> Dict[str, MacheteNode]:
         last_node_at_indent[raw_indent] = node
 
         # Clear deeper indents as they are no longer candidates for parents of future lines
-        keys_to_remove = [
-            k for k in last_node_at_indent.keys() if k > raw_indent]
+        keys_to_remove = [k for k in last_node_at_indent.keys() if k > raw_indent]
         for k in keys_to_remove:
             del last_node_at_indent[k]
 
@@ -116,11 +117,13 @@ def write_machete(nodes: Union[Iterable[MacheteNode], Dict[str, MacheteNode]]) -
         _traverse(root)
 
     path = get_machete_file_path()
-    with open(path, 'w') as f:
+    with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")
 
 
-def get_linear_stack(current_branch: str, nodes: Dict[str, MacheteNode]) -> List[MacheteNode]:
+def get_linear_stack(
+    current_branch: str, nodes: Dict[str, MacheteNode]
+) -> List[MacheteNode]:
     """
     Get the linear stack for the current branch.
     This includes:
@@ -164,9 +167,7 @@ STACK_FOOTER = "<!-- end git-stack-sync generated -->"
 
 
 def generate_nested_list(
-    stack: List[Dict[str, Any]],
-    current_focused_branch: str,
-    item_label: str = "PR"
+    stack: List[Dict[str, Any]], current_focused_branch: str, item_label: str = "PR"
 ) -> str:
     """
     Generate ASCII nested list for the stack.
@@ -180,8 +181,8 @@ def generate_nested_list(
     total_items = len(stack)
 
     for i, item in enumerate(stack):
-        node = item['node']
-        pr_num = item['pr_num']
+        node = item["node"]
+        pr_num = item["pr_num"]
 
         indent = "  " * i
 
@@ -206,12 +207,13 @@ def generate_nested_list(
 def strip_existing_stack_block(body: str) -> str:
     """Remove existing git-stack block."""
     import re
+
     if STACK_HEADER in body:
         body = re.sub(
-            rf'{re.escape(STACK_HEADER)}.*?{re.escape(STACK_FOOTER)}',
-            '',
+            rf"{re.escape(STACK_HEADER)}.*?{re.escape(STACK_FOOTER)}",
+            "",
             body,
-            flags=re.DOTALL
+            flags=re.DOTALL,
         )
     return body.strip()
 
@@ -219,7 +221,8 @@ def strip_existing_stack_block(body: str) -> str:
 def extract_pr_number(annotation: str) -> Optional[str]:
     """Assuming format 'PR #123 (author) ...', extract '123'."""
     import re
-    match = re.search(r'PR #(\d+)', annotation)
+
+    match = re.search(r"PR #(\d+)", annotation)
     if match:
         return match.group(1)
     return None

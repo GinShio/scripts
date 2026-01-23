@@ -1,4 +1,5 @@
 """Core build planning and execution logic."""
+
 from __future__ import annotations
 
 import json
@@ -9,8 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 from core.command_runner import CommandResult, CommandRunner
-from core.template import (TemplateResolver, build_dependency_map,
-                           topological_order)
+from core.template import TemplateResolver, build_dependency_map, topological_order
 
 from .config_loader import ConfigurationStore, ProjectDefinition
 from .environment import ContextBuilder
@@ -84,7 +84,6 @@ class _ResolvedPaths:
     install_dir: Path | None
     component_dir: Path | None
     target_source_dir: Path
-
 
 
 class BuildEngine:
@@ -198,6 +197,7 @@ class BuildEngine:
             apply_value("CXX_LD", linker)
 
         if launcher:
+
             def prepend(value: str | None) -> str | None:
                 if not value:
                     return value
@@ -261,7 +261,9 @@ class BuildEngine:
             )
 
     @staticmethod
-    def _resolve_generator(options: BuildOptions, project: ProjectDefinition) -> str | None:
+    def _resolve_generator(
+        options: BuildOptions, project: ProjectDefinition
+    ) -> str | None:
         if options.generator is not None:
             return options.generator
         generator = project.generator
@@ -282,8 +284,12 @@ class BuildEngine:
     ) -> _ResolvedPaths:
         source_dir = Path(resolver.resolve(source_dir_str)).expanduser()
         build_dir = Path(resolver.resolve(build_dir_str)) if build_dir_str else None
-        install_dir = Path(resolver.resolve(install_dir_str)) if install_dir_str else None
-        component_dir = Path(resolver.resolve(component_dir_str)) if component_dir_str else None
+        install_dir = (
+            Path(resolver.resolve(install_dir_str)) if install_dir_str else None
+        )
+        component_dir = (
+            Path(resolver.resolve(component_dir_str)) if component_dir_str else None
+        )
 
         target_source_dir = source_dir
         if component_dir and not project.source_at_root:
@@ -419,7 +425,7 @@ class BuildEngine:
         requires_toolchain = project.build_system is not None
         # CMake and Meson cache their configuration, so we define this mainly for logic downstream.
         is_stateful_config = project.build_system in ("cmake", "meson")
-        
+
         # Always resolve default toolchain initially to ensure path templates (like build/{{toolchain}}) resolve correctly.
         selected_toolchain_raw = options.toolchain or project.default_toolchain
 
@@ -438,8 +444,12 @@ class BuildEngine:
             toolchain_key = selected_toolchain.lower()
             definition = self._store.toolchains.get(toolchain_key)
             if definition is None:
-                available = ", ".join(sorted(self._store.toolchains.available())) or "<none>"
-                raise ValueError(f"Unknown toolchain '{selected_toolchain}'. Available toolchains: {available}")
+                available = (
+                    ", ".join(sorted(self._store.toolchains.available())) or "<none>"
+                )
+                raise ValueError(
+                    f"Unknown toolchain '{selected_toolchain}'. Available toolchains: {available}"
+                )
 
             preview_env: Dict[str, str] = {}
             preview_defs: Dict[str, Any] = {}
@@ -451,7 +461,11 @@ class BuildEngine:
             )
             cc = preview_env.get("CC") or definition.resolved_cc
             cxx = preview_env.get("CXX") or definition.resolved_cxx
-            linker = self._determine_linker(toolchain=toolchain_key, os_name=system_ctx.os_name, definition=definition)
+            linker = self._determine_linker(
+                toolchain=toolchain_key,
+                os_name=system_ctx.os_name,
+                definition=definition,
+            )
             launcher = definition.resolve_launcher(project.build_system)
         elif requires_toolchain:
             raise ValueError(
@@ -485,7 +499,9 @@ class BuildEngine:
             org=project.org,
         )
 
-        combined_context = context_builder.combined_context(user=user_ctx, project=project_ctx, system=system_ctx)
+        combined_context = context_builder.combined_context(
+            user=user_ctx, project=project_ctx, system=system_ctx
+        )
         resolver = TemplateResolver(combined_context)
 
         paths = self._resolve_paths(
@@ -506,13 +522,19 @@ class BuildEngine:
             component_dir=paths.component_dir,
             org=project.org,
         )
-        combined_context = context_builder.combined_context(user=user_ctx, project=updated_project_ctx, system=system_ctx)
+        combined_context = context_builder.combined_context(
+            user=user_ctx, project=updated_project_ctx, system=system_ctx
+        )
         resolver = TemplateResolver(combined_context)
 
         should_trust_config = False
 
         # Refine toolchain selection: If AUTO or BUILD_ONLY mode and build dir is already configured, skip toolchain environment.
-        if toolchain_key is not None and is_stateful_config and options.toolchain is None:
+        if (
+            toolchain_key is not None
+            and is_stateful_config
+            and options.toolchain is None
+        ):
             is_configured = False
             if paths.build_dir and paths.build_dir.exists():
                 if project.build_system == "cmake":
@@ -521,9 +543,10 @@ class BuildEngine:
                     is_configured = self._meson_is_configured(paths.build_dir)
 
             should_trust_config = is_configured and (
-                options.operation == BuildMode.AUTO or options.operation == BuildMode.BUILD_ONLY
+                options.operation == BuildMode.AUTO
+                or options.operation == BuildMode.BUILD_ONLY
             )
-            
+
             if should_trust_config:
                 # We are in AUTO/BUILD_ONLY mode, didn't specify a toolchain, and found a valid config.
                 # Trust the config and skip toolchain env injection.
@@ -594,7 +617,10 @@ class BuildEngine:
         resolver = TemplateResolver(combined_context)
 
         # 5. Resolve project environment so it can build on the toolchain context
-        base_env_context = {str(key): str(value) for key, value in resolver.context.get("env", {}).items()}
+        base_env_context = {
+            str(key): str(value)
+            for key, value in resolver.context.get("env", {}).items()
+        }
         project_environment = self._resolve_environment_mapping(
             mapping=project.environment,
             resolver=resolver,
@@ -618,7 +644,9 @@ class BuildEngine:
         # 6. Resolve presets (defaults first, then CLI-provided)
         preset_repo = PresetRepository(
             project_presets=project.presets,
-            shared_presets=[cfg.get("presets", {}) for cfg in self._store.shared_configs.values()],
+            shared_presets=[
+                cfg.get("presets", {}) for cfg in self._store.shared_configs.values()
+            ],
             project_name=project.name,
             project_org=project.org,
         )
@@ -628,7 +656,9 @@ class BuildEngine:
             generator=generator,
             preset_repo=preset_repo,
         )
-        resolved_presets = preset_repo.resolve(presets_to_resolve, template_resolver=resolver)
+        resolved_presets = preset_repo.resolve(
+            presets_to_resolve, template_resolver=resolver
+        )
 
         environment.update(resolved_presets.environment)
         definitions.update(resolved_presets.definitions)
@@ -678,9 +708,15 @@ class BuildEngine:
         )
         resolver = TemplateResolver(combined_context)
 
-        project_config_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_config_args]
-        project_build_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_build_args]
-        project_install_args_resolved = [str(resolver.resolve(arg)) for arg in project.extra_install_args]
+        project_config_args_resolved = [
+            str(resolver.resolve(arg)) for arg in project.extra_config_args
+        ]
+        project_build_args_resolved = [
+            str(resolver.resolve(arg)) for arg in project.extra_build_args
+        ]
+        project_install_args_resolved = [
+            str(resolver.resolve(arg)) for arg in project.extra_install_args
+        ]
 
         extra_config_args = list(resolved_presets.extra_config_args)
         extra_build_args = list(resolved_presets.extra_build_args)
@@ -733,7 +769,10 @@ class BuildEngine:
         git_environment = self._resolve_environment_mapping(
             mapping=project.git.environment,
             resolver=resolver,
-            base_env={str(key): str(value) for key, value in resolver.context.get("env", {}).items()},
+            base_env={
+                str(key): str(value)
+                for key, value in resolver.context.get("env", {}).items()
+            },
             namespace="git",
             namespace_base={},
             prefixes=("env.", "project.environment.", "git.environment."),
@@ -805,7 +844,9 @@ class BuildEngine:
         for step in plan.steps:
             cwd = step.cwd
             cwd.mkdir(parents=True, exist_ok=True)
-            result = self._command_runner.run(step.command, cwd=cwd, env=step.env, stream=True)
+            result = self._command_runner.run(
+                step.command, cwd=cwd, env=step.env, stream=True
+            )
             results.append(result)
         return results
 
@@ -902,7 +943,9 @@ class BuildEngine:
 
         default_presets = [
             preset
-            for preset in self._default_presets(build_type=build_type, generator=generator)
+            for preset in self._default_presets(
+                build_type=build_type, generator=generator
+            )
             if preset_repo.contains(preset)
         ]
 
@@ -948,7 +991,9 @@ class BuildEngine:
             definitions.setdefault("CMAKE_INSTALL_PREFIX", str(install_dir))
 
         if mode is BuildMode.BUILD_ONLY and (not build_dir_exists or not configured):
-            raise ValueError("Build directory is not configured; run configuration first or use auto mode")
+            raise ValueError(
+                "Build directory is not configured; run configuration first or use auto mode"
+            )
 
         if mode is BuildMode.RECONFIG and build_dir_exists:
             if not options.dry_run:
@@ -957,8 +1002,7 @@ class BuildEngine:
             configured = False
 
         should_configure = (
-            mode in {BuildMode.CONFIG_ONLY, BuildMode.RECONFIG}
-            or not configured
+            mode in {BuildMode.CONFIG_ONLY, BuildMode.RECONFIG} or not configured
         )
         should_build = mode in {BuildMode.AUTO, BuildMode.BUILD_ONLY}
 
@@ -1044,13 +1088,14 @@ class BuildEngine:
             prefix_args = ["--prefix", str(install_dir)]
 
         should_configure = (
-            mode in {BuildMode.CONFIG_ONLY, BuildMode.RECONFIG}
-            or not configured
+            mode in {BuildMode.CONFIG_ONLY, BuildMode.RECONFIG} or not configured
         )
         should_build = mode in {BuildMode.AUTO, BuildMode.BUILD_ONLY}
 
         if mode is BuildMode.BUILD_ONLY and (not build_dir_exists or not configured):
-            raise ValueError("Build directory is not configured; run configuration first or use auto mode")
+            raise ValueError(
+                "Build directory is not configured; run configuration first or use auto mode"
+            )
 
         if mode is BuildMode.RECONFIG and build_dir_exists:
             if not options.dry_run:
@@ -1130,7 +1175,9 @@ class BuildEngine:
         steps: List[BuildStep] = []
         target = options.target or definitions.get("TARGET")
         if not target:
-            raise ValueError("Bazel builds require a target (use --target or preset definitions.TARGET)")
+            raise ValueError(
+                "Bazel builds require a target (use --target or preset definitions.TARGET)"
+            )
         cmd = ["bazel", "build", str(target)]
         build_opts = definitions.get("BUILD_OPTS")
         if isinstance(build_opts, str):
@@ -1232,7 +1279,9 @@ class BuildEngine:
         if build_system == "cargo":
             raise ValueError("Install mode is not supported for cargo projects")
 
-        raise ValueError(f"Install mode is not supported for build system '{build_system}'")
+        raise ValueError(
+            f"Install mode is not supported for build system '{build_system}'"
+        )
 
     def _ensure_toolchain_compatibility(
         self,
@@ -1245,7 +1294,10 @@ class BuildEngine:
             return
         if definition is None:
             raise ValueError(f"Toolchain '{toolchain}' is not defined")
-        if definition.supported_build_systems and build_system not in definition.supported_build_systems:
+        if (
+            definition.supported_build_systems
+            and build_system not in definition.supported_build_systems
+        ):
             allowed_systems = ", ".join(sorted(definition.supported_build_systems))
             raise ValueError(
                 f"Toolchain '{toolchain}' is not compatible with build system '{build_system}'. "
@@ -1284,7 +1336,9 @@ class BuildEngine:
         else:
             container[key] = flag
 
-    def _append_definition_flag(self, definitions: Dict[str, Any], key: str, flag: str) -> None:
+    def _append_definition_flag(
+        self, definitions: Dict[str, Any], key: str, flag: str
+    ) -> None:
         existing = definitions.get(key)
         if existing:
             str_value = str(existing)

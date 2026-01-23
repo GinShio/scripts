@@ -2,9 +2,12 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from git_stack.src import anno
-from git_stack.src.machete import (MacheteNode, StackItem,
-                                   generate_nested_list,
-                                   strip_existing_stack_block)
+from git_stack.src.machete import (
+    MacheteNode,
+    StackItem,
+    generate_nested_list,
+    strip_existing_stack_block,
+)
 
 
 class TestAnnoFormatting(unittest.TestCase):
@@ -56,9 +59,9 @@ Outro.
         node_c.parent = node_b
 
         stack = [
-            {'node': node_a, 'pr_num': '100'},
-            {'node': node_b, 'pr_num': '101'},
-            {'node': node_c, 'pr_num': '102'}
+            {"node": node_a, "pr_num": "100"},
+            {"node": node_b, "pr_num": "101"},
+            {"node": node_c, "pr_num": "102"},
         ]
 
         target_branch = "feature-b"
@@ -72,16 +75,16 @@ Outro.
     def test_mr_label_support(self):
         """Test GitLab MR labeling style."""
         node_a = MacheteNode("feature-a", 2, "PR #100")
-        stack = [{'node': node_a, 'pr_num': '100'}]
+        stack = [{"node": node_a, "pr_num": "100"}]
 
         output = generate_nested_list(stack, "feature-a", item_label="MR")
         self.assertIn("**[1/1] MR #100** 👈 **(THIS MR)**", output)
 
 
 class TestAnnotateCommand(unittest.TestCase):
-    @patch('git_stack.src.anno.get_platform')
-    @patch('git_stack.src.anno.parse_machete')
-    @patch('git_stack.src.anno.write_machete')
+    @patch("git_stack.src.anno.get_platform")
+    @patch("git_stack.src.anno.parse_machete")
+    @patch("git_stack.src.anno.write_machete")
     def test_annotate_stack_flow(self, mock_write, mock_parse, mock_get_platform):
         # Setup
         mock_plat = MagicMock()
@@ -94,19 +97,20 @@ class TestAnnotateCommand(unittest.TestCase):
         feat.parent = root
         root.children.append(feat)
 
-        mock_parse.return_value = {'main': root, 'feat': feat}
+        mock_parse.return_value = {"main": root, "feat": feat}
 
         # Mock PR responses
         # feat returns a PR, main returns None
-        mock_plat.get_mr.side_effect = lambda name: {
-            'number': 123} if name == 'feat' else None
+        mock_plat.get_mr.side_effect = (
+            lambda name: {"number": 123} if name == "feat" else None
+        )
         mock_plat.get_mr_description.return_value = "Old Desc"
 
         anno.annotate_stack()
 
         # Verify
         # 1. get_mr called for feat
-        mock_plat.get_mr.assert_called_with('feat')
+        mock_plat.get_mr.assert_called_with("feat")
 
         # 2. write_machete called (feat annotation updated)
         mock_write.assert_called()
@@ -115,6 +119,6 @@ class TestAnnotateCommand(unittest.TestCase):
         # 3. update_mr_description called
         mock_plat.update_mr_description.assert_called()
         args = mock_plat.update_mr_description.call_args[0]
-        self.assertEqual(args[0], '123')
+        self.assertEqual(args[0], "123")
         self.assertIn("🥞 Stack", args[1])
         self.assertIn("Old Desc", args[1])

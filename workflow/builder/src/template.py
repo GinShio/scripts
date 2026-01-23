@@ -1,4 +1,5 @@
 """Deprecated module preserved only to provide a clearer error message."""
+
 from __future__ import annotations
 
 raise ImportError(

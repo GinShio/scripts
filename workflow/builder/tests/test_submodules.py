@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
 
-from builder.git_manager import GitManager
 from core.command_runner import CommandResult
+
+from builder.git_manager import GitManager
 
 
 class TestSubmodulesList(unittest.TestCase):
@@ -25,9 +26,13 @@ class TestSubmodulesList(unittest.TestCase):
 
         def run_side_effect(command, **kwargs):
             if command[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
-                return CommandResult(command=command, returncode=0, stdout="true\n", stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout="true\n", stderr=""
+                )
             if command[:3] == ["git", "config", "--bool"]:
-                return CommandResult(command=command, returncode=0, stdout="false\n", stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout="false\n", stderr=""
+                )
             raise AssertionError(f"Unexpected command: {command}")
 
         runner.run.side_effect = run_side_effect
@@ -38,11 +43,17 @@ class TestSubmodulesList(unittest.TestCase):
 
         def run_side_effect(command, **kwargs):
             if command[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
-                return CommandResult(command=command, returncode=0, stdout="true\n", stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout="true\n", stderr=""
+                )
             if command[:3] == ["git", "config", "--bool"]:
-                return CommandResult(command=command, returncode=0, stdout="false\n", stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout="false\n", stderr=""
+                )
             if command[:3] == ["git", "submodule", "status"]:
-                return CommandResult(command=command, returncode=0, stdout="", stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout="", stderr=""
+                )
             raise AssertionError(f"Unexpected command: {command}")
 
         runner.run.side_effect = run_side_effect
@@ -63,22 +74,32 @@ class TestSubmodulesList(unittest.TestCase):
 
         def run_side_effect(command, **kwargs):
             if command[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
-                return CommandResult(command=command, returncode=0, stdout="true\n", stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout="true\n", stderr=""
+                )
             if command[:3] == ["git", "config", "--bool"]:
-                return CommandResult(command=command, returncode=0, stdout="false\n", stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout="false\n", stderr=""
+                )
             if command[:3] == ["git", "submodule", "status"]:
-                return CommandResult(command=command, returncode=0, stdout=status_output, stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout=status_output, stderr=""
+                )
             if command[:3] == ["git", "config", "--file"]:
                 key = command[-1]
                 mapping = {
                     'submodule."external/lib1".url': "https://example.com/lib1.git\n",
                     'submodule."external/lib2".url': "\n",
-                    'submodule.external/lib2.url': "https://example.com/lib2.git\n",
+                    "submodule.external/lib2.url": "https://example.com/lib2.git\n",
                 }
                 value = mapping.get(key, "")
                 if value:
-                    return CommandResult(command=command, returncode=0, stdout=value, stderr="")
-                return CommandResult(command=command, returncode=1, stdout="", stderr="")
+                    return CommandResult(
+                        command=command, returncode=0, stdout=value, stderr=""
+                    )
+                return CommandResult(
+                    command=command, returncode=1, stdout="", stderr=""
+                )
             if command[:3] == ["git", "config", "--get"]:
                 key = command[-1]
                 mapping = {
@@ -86,8 +107,12 @@ class TestSubmodulesList(unittest.TestCase):
                 }
                 value = mapping.get(key, "")
                 if value:
-                    return CommandResult(command=command, returncode=0, stdout=value, stderr="")
-                return CommandResult(command=command, returncode=1, stdout="", stderr="")
+                    return CommandResult(
+                        command=command, returncode=0, stdout=value, stderr=""
+                    )
+                return CommandResult(
+                    command=command, returncode=1, stdout="", stderr=""
+                )
             raise AssertionError(f"Unexpected command: {command}")
 
         runner.run.side_effect = run_side_effect
@@ -119,21 +144,38 @@ class TestSubmodulesList(unittest.TestCase):
 
         def run_side_effect(command, **kwargs):
             if command[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
-                return CommandResult(command=command, returncode=0, stdout="true\n", stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout="true\n", stderr=""
+                )
             if command[:3] == ["git", "config", "--bool"]:
-                return CommandResult(command=command, returncode=0, stdout="false\n", stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout="false\n", stderr=""
+                )
             if command[:3] == ["git", "submodule", "status"]:
-                return CommandResult(command=command, returncode=0, stdout=status_output, stderr="")
+                return CommandResult(
+                    command=command, returncode=0, stdout=status_output, stderr=""
+                )
             if command[:3] == ["git", "config", "--file"]:
                 key = command[-1]
                 if key == 'submodule."external/lib".url':
-                    return CommandResult(command=command, returncode=0, stdout="\n", stderr="")
-                return CommandResult(command=command, returncode=1, stdout="", stderr="")
+                    return CommandResult(
+                        command=command, returncode=0, stdout="\n", stderr=""
+                    )
+                return CommandResult(
+                    command=command, returncode=1, stdout="", stderr=""
+                )
             if command[:3] == ["git", "config", "--get"]:
                 key = command[-1]
-                if key == 'submodule.external/lib.url':
-                    return CommandResult(command=command, returncode=0, stdout="https://example.com/lib.git\n", stderr="")
-                return CommandResult(command=command, returncode=1, stdout="", stderr="")
+                if key == "submodule.external/lib.url":
+                    return CommandResult(
+                        command=command,
+                        returncode=0,
+                        stdout="https://example.com/lib.git\n",
+                        stderr="",
+                    )
+                return CommandResult(
+                    command=command, returncode=1, stdout="", stderr=""
+                )
             raise AssertionError(f"Unexpected command: {command}")
 
         runner.run.side_effect = run_side_effect
@@ -157,7 +199,3 @@ class TestSubmodulesList(unittest.TestCase):
 
         result = git_manager.list_submodules(missing_path)
         self.assertEqual(result, [])
-
-
-if __name__ == "__main__":
-    unittest.main()

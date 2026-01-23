@@ -1,9 +1,9 @@
-
-import unittest
-from unittest.mock import patch
-from io import StringIO
 import sys
-from gputest.src.context import DryRunCommandRunner, CommandResult
+import unittest
+from io import StringIO
+from unittest.mock import patch
+
+from gputest.src.context import CommandResult, DryRunCommandRunner
 
 
 class TestDryRunCommandRunner(unittest.TestCase):

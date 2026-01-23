@@ -1,4 +1,5 @@
 """Interactive stack slicing module."""
+
 from __future__ import annotations
 
 import os
@@ -15,14 +16,13 @@ from .machete import MacheteNode, parse_machete, write_machete
 
 def get_stack_commits(base_branch: str) -> List[Tuple[str, str]]:
     """Get commits from base to HEAD in reverse order (oldest first)."""
-    out = run_git(
-        ['log', '--reverse', '--pretty=format:%H %s', f'{base_branch}..HEAD'])
+    out = run_git(["log", "--reverse", "--pretty=format:%H %s", f"{base_branch}..HEAD"])
     if not out:
         return []
-    lines = out.split('\n')
+    lines = out.split("\n")
     commits = []
     for line in lines:
-        parts = line.split(' ', 1)
+        parts = line.split(" ", 1)
         if len(parts) == 2:
             commits.append((parts[0], parts[1]))
         elif len(parts) == 1:
@@ -30,7 +30,9 @@ def get_stack_commits(base_branch: str) -> List[Tuple[str, str]]:
     return commits
 
 
-def launch_interactive_editor(base_branch: str, commits: List[Tuple[str, str]]) -> Dict[str, str]:
+def launch_interactive_editor(
+    base_branch: str, commits: List[Tuple[str, str]]
+) -> Dict[str, str]:
     """
     Launch editor. Returns mapping of commit_hash -> branch_name.
     """
@@ -59,18 +61,20 @@ def launch_interactive_editor(base_branch: str, commits: List[Tuple[str, str]]) 
         initial_content += "\n"
 
     # Editor resolution
-    editor = os.environ.get('GIT_EDITOR') or os.environ.get('EDITOR')
+    editor = os.environ.get("GIT_EDITOR") or os.environ.get("EDITOR")
     if not editor:
-        editor = get_config('core.editor', 'vim')
+        editor = get_config("core.editor", "vim")
 
-    with tempfile.NamedTemporaryFile(suffix=".stack-slice", mode='w+', delete=False) as tf:
+    with tempfile.NamedTemporaryFile(
+        suffix=".stack-slice", mode="w+", delete=False
+    ) as tf:
         tf.write(initial_content)
         temp_path = tf.name
 
     try:
         # Use simple shell execution for editor string (handles args like 'code --wait')
         subprocess.check_call(f"{editor} {temp_path}", shell=True)
-        with open(temp_path, 'r') as f:
+        with open(temp_path, "r") as f:
             lines = f.readlines()
     finally:
         os.remove(temp_path)
@@ -89,17 +93,18 @@ def launch_interactive_editor(base_branch: str, commits: List[Tuple[str, str]]) 
         # Git short hash is usually >= 7 chars.
         # Strict regex for our format: # [0-9a-f]{7,} .*
 
-        match_commit = re.match(r'^#\s+([0-9a-f]{7,40})\b', line)
+        match_commit = re.match(r"^#\s+([0-9a-f]{7,40})\b", line)
         if match_commit:
             # Verify it's one of our stack commits to avoid parsing random comments
             found_hash = match_commit.group(1)
             full_commit = next(
-                (c for c, _ in commits if c.startswith(found_hash)), None)
+                (c for c, _ in commits if c.startswith(found_hash)), None
+            )
             if full_commit:
                 current_commit = full_commit
             continue
 
-        if line.startswith('#'):
+        if line.startswith("#"):
             continue
 
         parts = line.split()
@@ -107,13 +112,14 @@ def launch_interactive_editor(base_branch: str, commits: List[Tuple[str, str]]) 
             continue
 
         cmd = parts[0]
-        if cmd in ('branch', 'b') and len(parts) > 1:
+        if cmd in ("branch", "b") and len(parts) > 1:
             if current_commit:
                 branch_name = parts[1]
                 commit_branch_map[current_commit] = branch_name
             else:
                 print(
-                    f"Warning: 'branch' command found before any commit context: {line}")
+                    f"Warning: 'branch' command found before any commit context: {line}"
+                )
 
     return commit_branch_map
 
@@ -129,7 +135,7 @@ def apply_slice(base_branch: str, commit_branch_map: Dict[str, str]) -> None:
     # 1. Create/Move Git Branches
     for commit, branch_name in commit_branch_map.items():
         print(f"Pointing {branch_name} to {commit[:7]}...")
-        run_git(['branch', '-f', branch_name, commit])
+        run_git(["branch", "-f", branch_name, commit])
 
     # 2. Update Machete (Smart Merge)
     # Goal: Replace the subtree starting at 'base_branch' (or append it).
@@ -180,7 +186,7 @@ def apply_slice(base_branch: str, commit_branch_map: Dict[str, str]) -> None:
     if orphans:
         print(f"Cleaning up orphaned branches: {', '.join(orphans)}")
         for orphan in orphans:
-            run_git(['branch', '-D', orphan], check=False)
+            run_git(["branch", "-D", orphan], check=False)
             # Remove from existing_nodes so we don't write it back
             if orphan in existing_nodes:
                 del existing_nodes[orphan]

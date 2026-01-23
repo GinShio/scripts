@@ -1,13 +1,13 @@
 """Template and expression resolution utilities."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Mapping, Sequence, List, Callable, Optional
 import ast
 import heapq
 import operator
 import re
-
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 _PLACEHOLDER_PATTERN = re.compile(r"\{\{([^{}]+)\}\}")
 _EXPRESSION_PATTERN = re.compile(r"^\s*\[\[(?P<expr>.*)\]\]\s*$", re.DOTALL)
@@ -53,6 +53,7 @@ _ALLOWED_COMPARISONS: dict[type[ast.AST], Any] = {
     ast.IsNot: operator.is_not,
 }
 
+
 @dataclass(frozen=True)
 class _AllowedCallSpec:
     func: Callable[..., Any]
@@ -84,13 +85,19 @@ class _ExpressionSyntaxChecker(ast.NodeVisitor):
         method = "visit_" + node.__class__.__name__
         visitor = getattr(self, method, None)
         if visitor is None:
-            raise TemplateError(f"Expression node '{node.__class__.__name__}' is not allowed")
+            raise TemplateError(
+                f"Expression node '{node.__class__.__name__}' is not allowed"
+            )
         return visitor(node)
 
-    def visit_Expression(self, node: ast.Expression) -> Any:  # pragma: no cover - simple delegator
+    def visit_Expression(
+        self, node: ast.Expression
+    ) -> Any:  # pragma: no cover - simple delegator
         return self.visit(node.body)
 
-    def visit_Constant(self, node: ast.Constant) -> Any:  # pragma: no cover - constants always ok
+    def visit_Constant(
+        self, node: ast.Constant
+    ) -> Any:  # pragma: no cover - constants always ok
         return node.value
 
     def visit_Name(self, node: ast.Name) -> Any:
@@ -126,7 +133,9 @@ class _ExpressionSyntaxChecker(ast.NodeVisitor):
         for op, comparator in zip(node.ops, node.comparators):
             op_type = type(op)
             if op_type not in _ALLOWED_COMPARISONS:
-                raise TemplateError(f"Comparison operator '{op_type.__name__}' is not allowed")
+                raise TemplateError(
+                    f"Comparison operator '{op_type.__name__}' is not allowed"
+                )
             self.visit(comparator)
         return None
 
@@ -136,17 +145,23 @@ class _ExpressionSyntaxChecker(ast.NodeVisitor):
         self.visit(node.orelse)
         return None
 
-    def visit_List(self, node: ast.List) -> Any:  # pragma: no cover - uncommon but supported
+    def visit_List(
+        self, node: ast.List
+    ) -> Any:  # pragma: no cover - uncommon but supported
         for element in node.elts:
             self.visit(element)
         return None
 
-    def visit_Tuple(self, node: ast.Tuple) -> Any:  # pragma: no cover - uncommon but supported
+    def visit_Tuple(
+        self, node: ast.Tuple
+    ) -> Any:  # pragma: no cover - uncommon but supported
         for element in node.elts:
             self.visit(element)
         return None
 
-    def visit_Dict(self, node: ast.Dict) -> Any:  # pragma: no cover - uncommon but supported
+    def visit_Dict(
+        self, node: ast.Dict
+    ) -> Any:  # pragma: no cover - uncommon but supported
         for key in node.keys:
             if key is not None:
                 self.visit(key)
@@ -161,7 +176,9 @@ class _ExpressionSyntaxChecker(ast.NodeVisitor):
         if func_name not in _ALLOWED_CALLS:
             raise TemplateError(f"Function '{func_name}' is not allowed in expressions")
         if node.keywords:
-            raise TemplateError(f"Keyword arguments are not allowed for function '{func_name}'")
+            raise TemplateError(
+                f"Keyword arguments are not allowed for function '{func_name}'"
+            )
         for arg in node.args:
             self.visit(arg)
         return None
@@ -246,10 +263,15 @@ class TemplateResolver:
         if isinstance(value, list):
             return [self._resolve_value(item, stack=list(stack)) for item in value]
         if isinstance(value, tuple):
-            resolved_list = [self._resolve_value(item, stack=list(stack)) for item in value]
+            resolved_list = [
+                self._resolve_value(item, stack=list(stack)) for item in value
+            ]
             return tuple(resolved_list)
         if isinstance(value, dict):
-            return {key: self._resolve_value(val, stack=list(stack)) for key, val in value.items()}
+            return {
+                key: self._resolve_value(val, stack=list(stack))
+                for key, val in value.items()
+            }
         return value
 
     def _resolve_string(self, value: str, *, stack: list[str]) -> Any:
@@ -296,7 +318,7 @@ class TemplateResolver:
 
     def _lookup_raw(self, path: str) -> Any:
         current: Any = self.context
-        for part in path.split('.'):
+        for part in path.split("."):
             if isinstance(current, Mapping) and part in current:
                 current = current[part]
                 continue
@@ -304,11 +326,15 @@ class TemplateResolver:
                 try:
                     index = int(part)
                 except ValueError as exc:  # pragma: no cover - defensive guard
-                    raise TemplateError(f"List index must be an integer for path '{path}'") from exc
+                    raise TemplateError(
+                        f"List index must be an integer for path '{path}'"
+                    ) from exc
                 try:
                     current = current[index]
                 except IndexError as exc:  # pragma: no cover - defensive guard
-                    raise TemplateError(f"Index {index} out of range for path '{path}'") from exc
+                    raise TemplateError(
+                        f"Index {index} out of range for path '{path}'"
+                    ) from exc
                 continue
             raise TemplateError(f"Cannot resolve path '{path}' in template context")
         return current
@@ -364,11 +390,15 @@ def build_dependency_map(
             for prefix in prefixes:
                 if not placeholder.startswith(prefix):
                     continue
-                dep_token = placeholder[len(prefix):].strip()
+                dep_token = placeholder[len(prefix) :].strip()
                 if not dep_token:
                     continue
-                dep_name = dep_token.split('.', 1)[0]
-                if dep_name in keys_in_scope and dep_name not in pre_resolved_set and dep_name != key:
+                dep_name = dep_token.split(".", 1)[0]
+                if (
+                    dep_name in keys_in_scope
+                    and dep_name not in pre_resolved_set
+                    and dep_name != key
+                ):
                     deps.add(dep_name)
         dependency_map[key] = sorted(deps)
     return dependency_map
@@ -466,13 +496,17 @@ class _ExpressionEvaluator(ast.NodeVisitor):
         if isinstance(node, ast.UnaryOp):
             op_type = type(node.op)
             if op_type not in _ALLOWED_UNARY_OPS:
-                raise TemplateError(f"Unary operator '{op_type.__name__}' is not allowed")
+                raise TemplateError(
+                    f"Unary operator '{op_type.__name__}' is not allowed"
+                )
             operand = self.visit(node.operand)
             return _ALLOWED_UNARY_OPS[op_type](operand)
         if isinstance(node, ast.BoolOp):
             op_type = type(node.op)
             if op_type not in _ALLOWED_BOOL_OPS:
-                raise TemplateError(f"Boolean operator '{op_type.__name__}' is not allowed")
+                raise TemplateError(
+                    f"Boolean operator '{op_type.__name__}' is not allowed"
+                )
             values = [bool(self.visit(value)) for value in node.values]
             if op_type is ast.And:
                 return all(values)
@@ -483,7 +517,9 @@ class _ExpressionEvaluator(ast.NodeVisitor):
             for op, comparator in zip(node.ops, node.comparators):
                 op_type = type(op)
                 if op_type not in _ALLOWED_COMPARISONS:
-                    raise TemplateError(f"Comparison operator '{op_type.__name__}' is not allowed")
+                    raise TemplateError(
+                        f"Comparison operator '{op_type.__name__}' is not allowed"
+                    )
                 right = self.visit(comparator)
                 if not _ALLOWED_COMPARISONS[op_type](left, right):
                     return False
@@ -502,12 +538,18 @@ class _ExpressionEvaluator(ast.NodeVisitor):
             return dict(zip(keys, values))
         if isinstance(node, ast.Call):
             if not isinstance(node.func, ast.Name):
-                raise TemplateError("Only simple function names are allowed in expressions")
+                raise TemplateError(
+                    "Only simple function names are allowed in expressions"
+                )
             func_name = node.func.id
             if func_name not in _ALLOWED_CALLS:
-                raise TemplateError(f"Function '{func_name}' is not allowed in expressions")
+                raise TemplateError(
+                    f"Function '{func_name}' is not allowed in expressions"
+                )
             if node.keywords:
-                raise TemplateError(f"Keyword arguments are not allowed for function '{func_name}'")
+                raise TemplateError(
+                    f"Keyword arguments are not allowed for function '{func_name}'"
+                )
             spec = _ALLOWED_CALLS[func_name]
             args = [self.visit(arg) for arg in node.args]
             if len(args) < spec.min_args:
@@ -521,7 +563,9 @@ class _ExpressionEvaluator(ast.NodeVisitor):
             try:
                 return spec.func(*args)
             except (TypeError, ValueError) as exc:
-                raise TemplateError(f"Function '{func_name}' could not convert value: {exc}") from exc
+                raise TemplateError(
+                    f"Function '{func_name}' could not convert value: {exc}"
+                ) from exc
         raise TemplateError(f"Expression node '{type(node).__name__}' is not allowed")
 
 

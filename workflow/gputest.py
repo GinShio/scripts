@@ -4,6 +4,7 @@ gputest - GPU Test Automation Tool
 
 Refactored implementation of the GPU testing scripts.
 """
+
 import argparse
 import datetime
 import glob
@@ -25,19 +26,20 @@ if str(project_root) not in sys.path:
 try:
     from core.command_runner import SubprocessCommandRunner
     from core.config_loader import load_config_file
-    from gputest.src.context import Context, Console, DryRunCommandRunner
-    from gputest.src.toolbox import run_toolbox
-    from gputest.src.runner import run_tests
-    from gputest.src.restore import run_restore
     from gputest.src.cleanup import run_cleanup
+    from gputest.src.context import Console, Context, DryRunCommandRunner
     from gputest.src.list_cmd import run_list
+    from gputest.src.restore import run_restore
+    from gputest.src.runner import run_tests
+    from gputest.src.toolbox import run_toolbox
     from gputest.src.utils import deep_merge
 except ImportError:
     # Fallback for when running standalone or during development if paths
     # aren't set
     print(
         "Warning: Could not import core modules. Ensure PYTHONPATH is set correctly.",
-        file=sys.stderr)
+        file=sys.stderr,
+    )
     sys.exit(1)
 
 # -----------------------------------------------------------------------------
@@ -52,49 +54,47 @@ def main():
         "-c",
         type=Path,
         default=None,
-        help="Path to configuration file or directory")
+        help="Path to configuration file or directory",
+    )
     parser.add_argument(
         "--dry-run",
         "-n",
         action="store_true",
-        help="Show what would be done without doing it")
+        help="Show what would be done without doing it",
+    )
     parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
-        help="Enable verbose output (legacy, maps to debug)")
+        help="Enable verbose output (legacy, maps to debug)",
+    )
     parser.add_argument(
         "--log",
         "-l",
         choices=["none", "error", "info", "debug"],
         default="none",
-        help="Set log level (default: none)")
+        help="Set log level (default: none)",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Install (Toolbox)
-    p_install = subparsers.add_parser(
-        "install", help="Install test suites (Toolbox)")
+    p_install = subparsers.add_parser("install", help="Install test suites (Toolbox)")
     p_install.add_argument(
-        "targets",
-        nargs="*",
-        help="Specific suites to install (default: all)")
+        "targets", nargs="*", help="Specific suites to install (default: all)"
+    )
 
     # Run (Test Runner)
     p_run = subparsers.add_parser("run", help="Run tests")
     p_run.add_argument(
-        "tests",
-        nargs="+",
-        help="Names of tests to run (from [tests] in config)")
+        "tests", nargs="+", help="Names of tests to run (from [tests] in config)"
+    )
 
     # Restore
-    p_restore = subparsers.add_parser(
-        "restore", help="Restore baseline results")
+    p_restore = subparsers.add_parser("restore", help="Restore baseline results")
     p_restore.add_argument(
-        "--days",
-        type=int,
-        default=10,
-        help="Number of days to look back")
+        "--days", type=int, default=10, help="Number of days to look back"
+    )
 
     # Cleanup
     p_cleanup = subparsers.add_parser("cleanup", help="Cleanup old results")
@@ -104,11 +104,9 @@ def main():
     p_list.add_argument(
         "target",
         choices=["drivers", "driver", "suites", "suite"],
-        help="Target to list (drivers or suites)")
-    p_list.add_argument(
-        "name",
-        nargs="?",
-        help="Specific driver or suite name")
+        help="Target to list (drivers or suites)",
+    )
+    p_list.add_argument("name", nargs="?", help="Specific driver or suite name")
 
     args = parser.parse_args()
 
@@ -126,8 +124,7 @@ def main():
         env_config_dir = os.environ.get("GPUTEST_CONFIG_DIR")
         if env_config_dir:
             config_path = Path(env_config_dir)
-            console.info(
-                f"Using configuration from GPUTEST_CONFIG_DIR: {config_path}")
+            console.info(f"Using configuration from GPUTEST_CONFIG_DIR: {config_path}")
         else:
             # Default to the config directory so multiple small TOML files
             # can be loaded and merged (easier maintenance).
@@ -143,8 +140,7 @@ def main():
             # Load all .toml files in directory
             config_files = sorted(config_path.glob("*.toml"))
             if not config_files:
-                console.error(
-                    f"No .toml configuration files found in: {config_path}")
+                console.error(f"No .toml configuration files found in: {config_path}")
                 sys.exit(1)
 
             for cf in config_files:
@@ -162,20 +158,14 @@ def main():
     global_cfg = config.get("global", {})
     console.debug(global_cfg)
     project_root = Path(
-        os.path.expanduser(
-            global_cfg.get(
-                "project_root",
-                "~/Projects"))).resolve()
+        os.path.expanduser(global_cfg.get("project_root", "~/Projects"))
+    ).resolve()
     runner_root = Path(
-        os.path.expanduser(
-            global_cfg.get(
-                "runner_root",
-                "/run/user/1000/runner"))).resolve()
+        os.path.expanduser(global_cfg.get("runner_root", "/run/user/1000/runner"))
+    ).resolve()
     result_dir = Path(
-        os.path.expanduser(
-            global_cfg.get(
-                "result_dir",
-                "~/Public/result"))).resolve()
+        os.path.expanduser(global_cfg.get("result_dir", "~/Public/result"))
+    ).resolve()
 
     if args.dry_run:
         runner = DryRunCommandRunner()
@@ -188,7 +178,7 @@ def main():
         runner=runner,
         project_root=project_root,
         runner_root=runner_root,
-        result_dir=result_dir
+        result_dir=result_dir,
     )
 
     # Ensure directories exist (unless dry run)

@@ -8,8 +8,12 @@ from unittest.mock import MagicMock, mock_open, patch
 from core.command_runner import CommandResult
 
 from gputest.src.context import Console, Context
-from gputest.src.runner import (generate_testlist, get_gpu_id_from_gl,
-                                get_gpu_id_from_vulkan, run_tests)
+from gputest.src.runner import (
+    generate_testlist,
+    get_gpu_id_from_gl,
+    get_gpu_id_from_vulkan,
+    run_tests,
+)
 
 
 class TestRunnerExtra(unittest.TestCase):
@@ -23,7 +27,7 @@ class TestRunnerExtra(unittest.TestCase):
             "layouts": {},
             "suites": {},
             "backends": {},
-            "hooks": {}
+            "hooks": {},
         }
         self.ctx = Context(
             config=self.config,
@@ -31,7 +35,7 @@ class TestRunnerExtra(unittest.TestCase):
             runner=self.runner,
             project_root=Path("/project"),
             runner_root=Path("/runner"),
-            result_dir=Path("/result")
+            result_dir=Path("/result"),
         )
 
     @patch("gputest.src.runner.shutil.which")
@@ -123,25 +127,22 @@ Extended renderer info (GLX_MESA_query_renderer):
     def test_run_tests_piglit(self, mock_cpu, mock_gpu, mock_get_gl, mock_get_vk):
         self.config["tests"]["test_piglit"] = {
             "driver": "driver1",
-            "suite": "suite_piglit"
+            "suite": "suite_piglit",
         }
-        self.config["drivers"]["driver1"] = {
-            "layout": "layout1"
-        }
-        self.config["layouts"]["layout1"] = {
-            "env": {}
-        }
+        self.config["drivers"]["driver1"] = {"layout": "layout1"}
+        self.config["layouts"]["layout1"] = {"env": {}}
         self.config["suites"]["suite_piglit"] = {
-            "type": "piglit", # Explicitly set type to trigger piglit template
+            "type": "piglit",  # Explicitly set type to trigger piglit template
             "runner": "piglit-runner",
             "exe": "piglit",
-            "deqp_args": ["summary", "console"] # Use deqp_args for args after --
+            "deqp_args": ["summary", "console"],  # Use deqp_args for args after --
         }
 
-        with patch("pathlib.Path.exists", return_value=True), \
-             patch("pathlib.Path.mkdir"), \
-             patch("os.access", return_value=True):
-
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.mkdir"),
+            patch("os.access", return_value=True),
+        ):
             run_tests(self.ctx, ["test_piglit"])
 
             self.runner.run.assert_called()
@@ -157,29 +158,25 @@ Extended renderer info (GLX_MESA_query_renderer):
     @patch("gputest.src.runner.get_gpu_device_id", return_value="gpu1")
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
     @patch("gputest.src.runner.generate_testlist")
-    def test_run_tests_excludes(self, mock_gen, mock_cpu, mock_gpu, mock_get_gl, mock_get_vk):
-        self.config["tests"]["test_deqp"] = {
-            "driver": "driver1",
-            "suite": "suite_deqp"
-        }
-        self.config["drivers"]["driver1"] = {
-            "layout": "layout1"
-        }
-        self.config["layouts"]["layout1"] = {
-            "env": {}
-        }
+    def test_run_tests_excludes(
+        self, mock_gen, mock_cpu, mock_gpu, mock_get_gl, mock_get_vk
+    ):
+        self.config["tests"]["test_deqp"] = {"driver": "driver1", "suite": "suite_deqp"}
+        self.config["drivers"]["driver1"] = {"layout": "layout1"}
+        self.config["layouts"]["layout1"] = {"env": {}}
         self.config["suites"]["suite_deqp"] = {
             "type": "deqp",
             "runner": "deqp-runner",
             "exe": "deqp-vk",
-            "excludes": ["exclude1", "exclude2"]
+            "excludes": ["exclude1", "exclude2"],
         }
 
-        with patch("pathlib.Path.exists", return_value=True), \
-             patch("pathlib.Path.mkdir"), \
-             patch("os.access", return_value=True), \
-             patch("builtins.open", mock_open()) as mock_file:
-
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.mkdir"),
+            patch("os.access", return_value=True),
+            patch("builtins.open", mock_open()) as mock_file,
+        ):
             run_tests(self.ctx, ["test_deqp"])
 
             # Verify exclude file writing
@@ -200,28 +197,22 @@ Extended renderer info (GLX_MESA_query_renderer):
             "driver": "driver1",
             "suite": "suite_hooks",
             "pre_run": ["hook1"],
-            "post_run": ["hook2"]
+            "post_run": ["hook2"],
         }
-        self.config["drivers"]["driver1"] = {
-            "layout": "layout1"
-        }
-        self.config["layouts"]["layout1"] = {
-            "env": {}
-        }
+        self.config["drivers"]["driver1"] = {"layout": "layout1"}
+        self.config["layouts"]["layout1"] = {"env": {}}
         self.config["suites"]["suite_hooks"] = {
-            "runner": "deqp-runner", # Triggers hook logic
-            "exe": "exe"
+            "runner": "deqp-runner",  # Triggers hook logic
+            "exe": "exe",
         }
-        self.config["hooks"] = {
-            "hook1": "echo pre",
-            "hook2": "echo post"
-        }
+        self.config["hooks"] = {"hook1": "echo pre", "hook2": "echo post"}
 
-        with patch("pathlib.Path.exists", return_value=True), \
-             patch("pathlib.Path.mkdir"), \
-             patch("os.access", return_value=True), \
-             patch("gputest.src.runner.ArchiveManager"):
-
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.mkdir"),
+            patch("os.access", return_value=True),
+            patch("gputest.src.runner.ArchiveManager"),
+        ):
             run_tests(self.ctx, ["test_hooks"])
 
             # Check calls
@@ -242,34 +233,34 @@ Extended renderer info (GLX_MESA_query_renderer):
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
     @patch("gputest.src.runner.ArchiveManager")
     @patch("gputest.src.runner.datetime")
-    def test_run_tests_archive_files(self, mock_datetime, mock_archive_mgr, mock_cpu, mock_gpu):
-        mock_datetime.datetime.now.return_value.strftime.return_value = "20260101-120000"
+    def test_run_tests_archive_files(
+        self, mock_datetime, mock_archive_mgr, mock_cpu, mock_gpu
+    ):
+        mock_datetime.datetime.now.return_value.strftime.return_value = (
+            "20260101-120000"
+        )
 
-        self.config["tests"]["test_arch"] = {
-            "driver": "driver1",
-            "suite": "suite_arch"
-        }
-        self.config["drivers"]["driver1"] = {
-            "layout": "layout1"
-        }
-        self.config["layouts"]["layout1"] = {
-            "env": {}
-        }
+        self.config["tests"]["test_arch"] = {"driver": "driver1", "suite": "suite_arch"}
+        self.config["drivers"]["driver1"] = {"layout": "layout1"}
+        self.config["layouts"]["layout1"] = {"env": {}}
         self.config["suites"]["suite_arch"] = {
             "runner": "deqp-runner",
             "exe": "exe",
-            "archive_files": ["*.log"]
+            "archive_files": ["*.log"],
         }
 
-        with patch("pathlib.Path.exists", return_value=True), \
-             patch("pathlib.Path.mkdir"), \
-             patch("os.access", return_value=True), \
-             patch("shutil.copy2") as mock_copy, \
-             patch("shutil.rmtree"):
-
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.mkdir"),
+            patch("os.access", return_value=True),
+            patch("shutil.copy2") as mock_copy,
+            patch("shutil.rmtree"),
+        ):
             # Mock glob to return a file
             mock_path = MagicMock()
-            mock_path.glob.return_value = [Path("/runner/testing/test_arch/date/test.log")]
+            mock_path.glob.return_value = [
+                Path("/runner/testing/test_arch/date/test.log")
+            ]
 
             # We need to mock the output_dir path object which is created inside run_tests
             # This is hard because it's created dynamically.
@@ -283,7 +274,9 @@ Extended renderer info (GLX_MESA_query_renderer):
             mock_match.relative_to.return_value = Path("test.log")
             mock_match.name = "test.log"
             # We need to ensure str(mock_match) returns something valid if used in logging
-            mock_match.__str__.return_value = "/runner/testing/test_arch/20260101-120000/test.log"
+            mock_match.__str__.return_value = (
+                "/runner/testing/test_arch/20260101-120000/test.log"
+            )
 
             with patch("pathlib.Path.glob", return_value=[mock_match]) as mock_glob:
                 run_tests(self.ctx, ["test_arch"])
@@ -294,7 +287,7 @@ Extended renderer info (GLX_MESA_query_renderer):
                 # Verify ArchiveArtifact creation
                 mock_archive_mgr.return_value.create_archive.assert_called()
                 call_args = mock_archive_mgr.return_value.create_archive.call_args
-                artifact = call_args.kwargs['artifact']
+                artifact = call_args.kwargs["artifact"]
                 # Source dir should be the staging dir
                 self.assertEqual(artifact.source_dir.name, ".archive_staging")
 
@@ -304,26 +297,23 @@ Extended renderer info (GLX_MESA_query_renderer):
     def test_run_tests_deqp_caselists(self, mock_gen, mock_cpu, mock_gpu):
         self.config["tests"]["test_deqp_cl"] = {
             "driver": "driver1",
-            "suite": "suite_deqp_cl"
+            "suite": "suite_deqp_cl",
         }
-        self.config["drivers"]["driver1"] = {
-            "layout": "layout1"
-        }
-        self.config["layouts"]["layout1"] = {
-            "env": {}
-        }
+        self.config["drivers"]["driver1"] = {"layout": "layout1"}
+        self.config["layouts"]["layout1"] = {"env": {}}
         self.config["suites"]["suite_deqp_cl"] = {
             "type": "deqp",
             "runner": "deqp-runner",
             "exe": "deqp-vk",
-            "caselists": ["cl1.txt", "cl_*.txt"]
+            "caselists": ["cl1.txt", "cl_*.txt"],
         }
 
-        with patch("pathlib.Path.exists", return_value=True), \
-             patch("pathlib.Path.mkdir"), \
-             patch("os.access", return_value=True), \
-             patch("glob.glob") as mock_glob:
-
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.mkdir"),
+            patch("os.access", return_value=True),
+            patch("glob.glob") as mock_glob,
+        ):
             # Mock glob for cl_*.txt
             # The code calls glob.glob(str(cl_path))
             # cl_path will be /runner/deqp/cl_*.txt

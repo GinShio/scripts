@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import textwrap
 import unittest
+from pathlib import Path
 
 from builder import TemplateError, validation
 from builder.cli import ConfigurationStore
@@ -103,7 +103,9 @@ class ValidationModuleTests(unittest.TestCase):
             )
         )
         store = ConfigurationStore.from_directory(self.workspace)
-        with self.assertRaisesRegex(ValueError, r"must use the form \[\[ expression \]\]"):
+        with self.assertRaisesRegex(
+            ValueError, r"must use the form \[\[ expression \]\]"
+        ):
             validation.validate_project(store, "alpha", workspace=self.workspace)
 
     def test_validate_project_condition_expression_syntax(self) -> None:
@@ -234,7 +236,3 @@ class ValidationModuleTests(unittest.TestCase):
                 "alpha",
                 workspace=self.workspace,
             )
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()

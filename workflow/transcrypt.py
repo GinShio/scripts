@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Entry-point script for the transcrypt CLI."""
+
 from __future__ import annotations
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:

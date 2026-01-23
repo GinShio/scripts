@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-from pathlib import Path
-from types import SimpleNamespace
 import io
 import os
 import re
+import shutil
 import tempfile
 import textwrap
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
-import shutil
-import textwrap
 
 from builder import cli
 from builder.git_manager import GitWorkState
@@ -102,7 +101,9 @@ class ListCommandTests(unittest.TestCase):
                 self.prepare_calls.append((repo_path, target_branch))
                 return GitWorkState(branch="main", stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 self.restore_calls.append(repo_path)
 
             def is_repository(self, repo_path: Path, *, environment=None) -> bool:
@@ -179,7 +180,9 @@ class ListCommandTests(unittest.TestCase):
             ):
                 return GitWorkState(branch="dev", stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 pass
 
             def is_repository(self, repo_path: Path, *, environment=None) -> bool:
@@ -244,7 +247,9 @@ class ListCommandTests(unittest.TestCase):
             ):
                 return GitWorkState(branch="dev", stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 pass
 
             def is_repository(self, repo_path: Path, *, environment=None) -> bool:
@@ -297,7 +302,9 @@ class ListCommandTests(unittest.TestCase):
             ):
                 return GitWorkState(branch="dev", stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 pass
 
             def is_repository(self, repo_path: Path, *, environment=None) -> bool:
@@ -352,7 +359,9 @@ class ListCommandTests(unittest.TestCase):
             ):
                 return GitWorkState(branch="dev", stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 pass
 
             def is_repository(self, repo_path: Path, *, environment=None) -> bool:
@@ -434,7 +443,9 @@ class ListCommandTests(unittest.TestCase):
                 self.prepare_calls.append((repo_path, target_branch))
                 return GitWorkState(branch="main", stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 pass
 
             def is_repository(self, repo_path: Path, *, environment=None) -> bool:
@@ -503,7 +514,9 @@ class ListCommandTests(unittest.TestCase):
             ):
                 return GitWorkState(branch="main", stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 pass
 
             def is_repository(self, repo_path: Path, *, environment=None) -> bool:
@@ -557,7 +570,9 @@ class ListCommandTests(unittest.TestCase):
                 """
             )
         )
-        (self.workspace / "repos" / "second" / ".git").mkdir(parents=True, exist_ok=True)
+        (self.workspace / "repos" / "second" / ".git").mkdir(
+            parents=True, exist_ok=True
+        )
 
         class FakeGitManager:
             last_instance = None
@@ -601,7 +616,9 @@ class ListCommandTests(unittest.TestCase):
                 self.prepare_calls.append(repo_path)
                 return GitWorkState(branch=target_branch, stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 pass
 
         args = SimpleNamespace(
@@ -633,7 +650,9 @@ class ListCommandTests(unittest.TestCase):
         fake_manager = FakeGitManager.last_instance
         self.assertIsNotNone(fake_manager)
         assert fake_manager is not None
-        self.assertEqual([path.name for path in fake_manager.prepare_calls], ["demo", "second"])
+        self.assertEqual(
+            [path.name for path in fake_manager.prepare_calls], ["demo", "second"]
+        )
 
     def test_list_with_presets_and_dependencies(self) -> None:
         project_path = self.workspace / "config" / "projects" / "complex.toml"
@@ -696,7 +715,9 @@ class ListCommandTests(unittest.TestCase):
             ):
                 return GitWorkState(branch="feature", stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 pass
 
             def is_repository(self, repo_path: Path, *, environment=None) -> bool:
@@ -731,7 +752,9 @@ class ListCommandTests(unittest.TestCase):
         self.assertNotIn("abcdefabcdefa", output)
 
     def test_list_accepts_nested_repository_paths(self) -> None:
-        component_project_path = self.workspace / "config" / "projects" / "component.toml"
+        component_project_path = (
+            self.workspace / "config" / "projects" / "component.toml"
+        )
         component_project_path.write_text(
             textwrap.dedent(
                 """
@@ -781,7 +804,9 @@ class ListCommandTests(unittest.TestCase):
             ):
                 return GitWorkState(branch="main", stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 pass
 
         args = SimpleNamespace(
@@ -977,7 +1002,9 @@ class ListCommandTests(unittest.TestCase):
                     component_stash_applied=False,
                 )
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 return None
 
             def get_repository_state(self, repo_path: Path, *, environment=None):
@@ -1065,7 +1092,9 @@ class ListCommandTests(unittest.TestCase):
                 self.last_target_branch = target_branch
                 return GitWorkState(branch=target_branch, stash_applied=False)
 
-            def restore_checkout(self, repo_path: Path, state: GitWorkState, *, environment=None) -> None:
+            def restore_checkout(
+                self, repo_path: Path, state: GitWorkState, *, environment=None
+            ) -> None:
                 return None
 
             def get_repository_state(self, repo_path: Path, *, environment=None):
@@ -1099,7 +1128,3 @@ class ListCommandTests(unittest.TestCase):
         call = manager.prepare_calls[0]
         self.assertEqual(call["target_branch"], "release/2.0")
         self.assertIsNone(call["component_branch"])
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()

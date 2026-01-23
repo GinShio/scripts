@@ -1,11 +1,12 @@
 """Context builders for template and expression evaluation."""
+
 from __future__ import annotations
 
+import os
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping
-import os
-import platform
 
 
 @dataclass(slots=True)
@@ -93,7 +94,9 @@ class SystemContext:
 class ContextBuilder:
     """Builds the variable context for templating and expressions."""
 
-    def __init__(self, builder_path: Path, env: Mapping[str, str] | None = None) -> None:
+    def __init__(
+        self, builder_path: Path, env: Mapping[str, str] | None = None
+    ) -> None:
         self._builder_path = builder_path
         self._env = dict(env) if env is not None else dict(os.environ)
 
@@ -129,15 +132,21 @@ class ContextBuilder:
         os_name = platform.system().lower()
         architecture = platform.machine()
         memory_total_gb: int | None = None
-        if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:  # type: ignore[attr-defined]
+        if (
+            hasattr(os, "sysconf")
+            and "SC_PAGE_SIZE" in os.sysconf_names
+            and "SC_PHYS_PAGES" in os.sysconf_names
+        ):  # type: ignore[attr-defined]
             try:
                 page_size = os.sysconf("SC_PAGE_SIZE")  # type: ignore[arg-type]
                 pages = os.sysconf("SC_PHYS_PAGES")  # type: ignore[arg-type]
                 memory_bytes = page_size * pages
-                memory_total_gb = max(1, int(memory_bytes / (1024 ** 3)))
+                memory_total_gb = max(1, int(memory_bytes / (1024**3)))
             except (ValueError, OSError):
                 memory_total_gb = None
-        return SystemContext(os_name=os_name, architecture=architecture, memory_total_gb=memory_total_gb)
+        return SystemContext(
+            os_name=os_name, architecture=architecture, memory_total_gb=memory_total_gb
+        )
 
     def project(
         self,

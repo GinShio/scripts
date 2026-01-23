@@ -1,10 +1,10 @@
 """Configuration and template validation helpers."""
+
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-
-import re
 
 from core.template import (
     TemplateError,
@@ -16,7 +16,6 @@ from core.template import (
 
 from .config_loader import ConfigurationStore, ProjectDefinition
 from .environment import ContextBuilder
-
 
 _EXPRESSION_PATTERN = re.compile(r"^\s*\[\[(?P<expr>.*)\]\]\s*$", re.S)
 _PLACEHOLDER_PATTERN = re.compile(r"\{\{[^{}]+\}\}")
@@ -40,7 +39,9 @@ def validate_store_structure(store: ConfigurationStore) -> list[str]:
     return errors
 
 
-def _ensure_no_cycles(mapping: Mapping[str, Any], *, prefixes: Sequence[str], label: str) -> None:
+def _ensure_no_cycles(
+    mapping: Mapping[str, Any], *, prefixes: Sequence[str], label: str
+) -> None:
     if not mapping:
         return
 
@@ -109,7 +110,9 @@ def validate_project_templates(
         org=project.org,
     )
 
-    combined_context = context_builder.combined_context(user=user_ctx, project=project_ctx, system=system_ctx)
+    combined_context = context_builder.combined_context(
+        user=user_ctx, project=project_ctx, system=system_ctx
+    )
     combined_context.setdefault("preset", {"environment": {}, "definitions": {}})
 
     user_mapping = dict(combined_context.get("user", {}))
@@ -141,12 +144,24 @@ def validate_project_templates(
 
     for preset_name, preset_data in project.presets.items():
         preset_context = dict(combined_context)
-        preset_environment = preset_data.get("environment", {}) if isinstance(preset_data, Mapping) else {}
-        preset_definitions = preset_data.get("definitions", {}) if isinstance(preset_data, Mapping) else {}
+        preset_environment = (
+            preset_data.get("environment", {})
+            if isinstance(preset_data, Mapping)
+            else {}
+        )
+        preset_definitions = (
+            preset_data.get("definitions", {})
+            if isinstance(preset_data, Mapping)
+            else {}
+        )
         preset_context["preset"] = {
             "name": preset_name,
-            "environment": dict(preset_environment) if isinstance(preset_environment, Mapping) else {},
-            "definitions": dict(preset_definitions) if isinstance(preset_definitions, Mapping) else {},
+            "environment": dict(preset_environment)
+            if isinstance(preset_environment, Mapping)
+            else {},
+            "definitions": dict(preset_definitions)
+            if isinstance(preset_definitions, Mapping)
+            else {},
         }
 
         values_to_check: dict[str, Any] = {}
@@ -164,16 +179,32 @@ def validate_project_templates(
                 label=f"Preset '{preset_name}' definitions",
             )
             values_to_check["definitions"] = preset_definitions
-        extra_config = preset_data.get("extra_config_args") if isinstance(preset_data, Mapping) else None
-        extra_build = preset_data.get("extra_build_args") if isinstance(preset_data, Mapping) else None
-        if isinstance(extra_config, Sequence) and not isinstance(extra_config, (str, bytes, bytearray)):
+        extra_config = (
+            preset_data.get("extra_config_args")
+            if isinstance(preset_data, Mapping)
+            else None
+        )
+        extra_build = (
+            preset_data.get("extra_build_args")
+            if isinstance(preset_data, Mapping)
+            else None
+        )
+        if isinstance(extra_config, Sequence) and not isinstance(
+            extra_config, (str, bytes, bytearray)
+        ):
             values_to_check["extra_config_args"] = extra_config
-        if isinstance(extra_build, Sequence) and not isinstance(extra_build, (str, bytes, bytearray)):
+        if isinstance(extra_build, Sequence) and not isinstance(
+            extra_build, (str, bytes, bytearray)
+        ):
             values_to_check["extra_build_args"] = extra_build
 
         if values_to_check:
             validate_variables(context=preset_context, values=values_to_check)
-def _validate_project_presets(project: ProjectDefinition, store: ConfigurationStore) -> list[str]:
+
+
+def _validate_project_presets(
+    project: ProjectDefinition, store: ConfigurationStore
+) -> list[str]:
     errors: list[str] = []
     available_presets = _collect_all_preset_names(store)
     if project.presets:
@@ -189,7 +220,9 @@ def _validate_project_presets(project: ProjectDefinition, store: ConfigurationSt
 def _collect_all_preset_names(store: ConfigurationStore) -> set[str]:
     names: set[str] = set()
 
-    def _add_variants(base_name: str, *, org: str | None = None, project: str | None = None) -> None:
+    def _add_variants(
+        base_name: str, *, org: str | None = None, project: str | None = None
+    ) -> None:
         names.add(base_name)
         if project:
             names.add(f"{project}/{base_name}")
@@ -211,7 +244,9 @@ def _collect_all_preset_names(store: ConfigurationStore) -> set[str]:
             org_text = org_text or None
 
             project_value = raw_definition.get("project")
-            project_text = str(project_value).strip() if isinstance(project_value, str) else None
+            project_text = (
+                str(project_value).strip() if isinstance(project_value, str) else None
+            )
             project_text = project_text or None
 
             if org_text or project_text:
@@ -233,7 +268,9 @@ def _collect_all_preset_names(store: ConfigurationStore) -> set[str]:
             org_text = org_text or None
 
             project_value = raw_definition.get("project")
-            project_text = str(project_value).strip() if isinstance(project_value, str) else None
+            project_text = (
+                str(project_value).strip() if isinstance(project_value, str) else None
+            )
             project_text = project_text or None
 
             if project_text:
@@ -287,7 +324,9 @@ def _validate_preset_definition(
     condition_value = data.get("condition")
     if condition_value is not None:
         if isinstance(condition_value, str):
-            _validate_expression(condition_value, source=f"{label} condition", errors=errors)
+            _validate_expression(
+                condition_value, source=f"{label} condition", errors=errors
+            )
         else:
             errors.append(f"{label} condition must be a string expression")
 
@@ -301,7 +340,9 @@ def _validate_preset_definition(
             )
         except TemplateError as exc:
             errors.append(str(exc))
-        _validate_embedded_expressions(environment, base_label=f"{label} environment", errors=errors)
+        _validate_embedded_expressions(
+            environment, base_label=f"{label} environment", errors=errors
+        )
 
     definitions = data.get("definitions")
     if isinstance(definitions, Mapping):
@@ -313,15 +354,23 @@ def _validate_preset_definition(
             )
         except TemplateError as exc:
             errors.append(str(exc))
-        _validate_embedded_expressions(definitions, base_label=f"{label} definitions", errors=errors)
+        _validate_embedded_expressions(
+            definitions, base_label=f"{label} definitions", errors=errors
+        )
 
     extra_config = data.get("extra_config_args")
-    if isinstance(extra_config, Sequence) and not isinstance(extra_config, (str, bytes)):
-        _validate_embedded_expressions(extra_config, base_label=f"{label} extra_config_args", errors=errors)
+    if isinstance(extra_config, Sequence) and not isinstance(
+        extra_config, (str, bytes)
+    ):
+        _validate_embedded_expressions(
+            extra_config, base_label=f"{label} extra_config_args", errors=errors
+        )
 
     extra_build = data.get("extra_build_args")
     if isinstance(extra_build, Sequence) and not isinstance(extra_build, (str, bytes)):
-        _validate_embedded_expressions(extra_build, base_label=f"{label} extra_build_args", errors=errors)
+        _validate_embedded_expressions(
+            extra_build, base_label=f"{label} extra_build_args", errors=errors
+        )
 
 
 def _parse_extends(value: Any, *, label: str, errors: list[str]) -> tuple[str, ...]:
@@ -366,14 +415,20 @@ def _validate_expression(value: str, *, source: str, errors: list[str]) -> None:
         errors.append(f"{source} expression error: {exc}")
 
 
-def _validate_embedded_expressions(value: Any, *, base_label: str, errors: list[str]) -> None:
+def _validate_embedded_expressions(
+    value: Any, *, base_label: str, errors: list[str]
+) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            _validate_embedded_expressions(item, base_label=f"{base_label}.{key}", errors=errors)
+            _validate_embedded_expressions(
+                item, base_label=f"{base_label}.{key}", errors=errors
+            )
         return
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         for index, item in enumerate(value):
-            _validate_embedded_expressions(item, base_label=f"{base_label}[{index}]", errors=errors)
+            _validate_embedded_expressions(
+                item, base_label=f"{base_label}[{index}]", errors=errors
+            )
         return
     if isinstance(value, str) and _EXPRESSION_PATTERN.match(value):
         _validate_expression(value, source=base_label, errors=errors)

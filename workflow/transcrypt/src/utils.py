@@ -21,14 +21,14 @@ from __future__ import annotations
 # Copyright (c) 2026 GinShio
 # --------------------------------------------------------------------------------
 #
-
 import sys
 from pathlib import Path
 from typing import Optional
 
-from core.command_runner import SubprocessCommandRunner, CommandResult
+from core.command_runner import CommandResult, SubprocessCommandRunner
 
 runner = SubprocessCommandRunner()
+
 
 def get_git_root() -> Path:
     """Get the root directory of the current git repository."""
@@ -40,6 +40,7 @@ def get_git_root() -> Path:
         print("Error: Not a git repository", file=sys.stderr)
         sys.exit(1)
 
+
 def get_git_config(key: str) -> Optional[str]:
     """Get a git config value, returning None if not set."""
     res = runner.run(["git", "config", "--get", key], check=False)
@@ -47,22 +48,27 @@ def get_git_config(key: str) -> Optional[str]:
         return None
     return res.stdout.strip()
 
+
 def set_git_config(key: str, value: str):
     """Set a local git config value."""
     runner.run(["git", "config", "--local", key, value], check=True)
 
+
 def unset_git_config(key: str):
     """Unset a local git config value."""
     runner.run(["git", "config", "--local", "--unset", key], check=False)
+
 
 def get_git_dir() -> Path:
     """Get the .git directory path."""
     res = runner.run(["git", "rev-parse", "--git-dir"], check=True)
     return Path(res.stdout.strip())
 
+
 def is_git_repo() -> bool:
     res = runner.run(["git", "rev-parse", "--is-inside-work-tree"], check=False)
     return res.returncode == 0
+
 
 def get_relative_path(path: Path) -> Path:
     """Get path relative to git root."""

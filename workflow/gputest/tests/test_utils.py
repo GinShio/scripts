@@ -1,10 +1,12 @@
 """
 Tests for gputest utilities.
 """
+
 import unittest
-from unittest.mock import MagicMock, patch, call
 from pathlib import Path
-from gputest.src.utils import substitute, resolve_env, deep_merge, load_merged_config
+from unittest.mock import MagicMock, call, patch
+
+from gputest.src.utils import deep_merge, load_merged_config, resolve_env, substitute
 
 
 class TestUtils(unittest.TestCase):

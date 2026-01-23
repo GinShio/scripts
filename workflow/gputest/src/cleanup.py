@@ -1,25 +1,21 @@
 """
 Cleanup logic.
 """
+
 import shutil
 import time
 from pathlib import Path
+
 from .context import Context
 
 
 def run_cleanup(ctx: Context):
     """Cleanup old results."""
-    archive_retention = ctx.config.get(
-        "global", {}).get(
-        "archive_retention_days", 360)
-    result_retention = ctx.config.get(
-        "global", {}).get(
-        "result_retention_days", 16)
+    archive_retention = ctx.config.get("global", {}).get("archive_retention_days", 360)
+    result_retention = ctx.config.get("global", {}).get("result_retention_days", 16)
 
-    ctx.console.info(
-        f"Cleaning up archives older than {archive_retention} days")
-    ctx.console.info(
-        f"Cleaning up runtime results older than {result_retention} days")
+    ctx.console.info(f"Cleaning up archives older than {archive_retention} days")
+    ctx.console.info(f"Cleaning up runtime results older than {result_retention} days")
 
     now = time.time()
 
@@ -55,7 +51,8 @@ def run_cleanup(ctx: Context):
                 for item in group_dir.iterdir():
                     if item.stat().st_mtime < (now - result_retention * 86400):
                         ctx.console.info(
-                            f"Deleting old result: {subdir}/{group_dir.name}/{item.name}")
+                            f"Deleting old result: {subdir}/{group_dir.name}/{item.name}"
+                        )
                         ctx.runner.run(["rm", "-rf", str(item)], check=False)
 
                 # Clean up empty grouping directories

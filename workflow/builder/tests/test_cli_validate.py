@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from pathlib import Path
-from types import SimpleNamespace
 import io
 import os
 import tempfile
 import textwrap
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from builder import TemplateError, cli, validation
@@ -74,9 +74,10 @@ class ValidateCommandTests(unittest.TestCase):
     def test_validate_all_projects_runs_for_each(self) -> None:
         args = SimpleNamespace(project=None)
         with patch("builder.cli.validate_store_structure", return_value=[]):
-            with patch("builder.cli.validate_project") as mock_validate, patch(
-                "builder.cli.validate_project_templates"
-            ) as mock_templates:
+            with (
+                patch("builder.cli.validate_project") as mock_validate,
+                patch("builder.cli.validate_project_templates") as mock_templates,
+            ):
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
                     cli._handle_validate(args, self.workspace)
@@ -89,9 +90,10 @@ class ValidateCommandTests(unittest.TestCase):
     def test_validate_single_project_runs_only_requested(self) -> None:
         args = SimpleNamespace(project="beta")
         with patch("builder.cli.validate_store_structure", return_value=[]):
-            with patch("builder.cli.validate_project") as mock_validate, patch(
-                "builder.cli.validate_project_templates"
-            ) as mock_templates:
+            with (
+                patch("builder.cli.validate_project") as mock_validate,
+                patch("builder.cli.validate_project_templates") as mock_templates,
+            ):
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
                     cli._handle_validate(args, self.workspace)
@@ -103,10 +105,13 @@ class ValidateCommandTests(unittest.TestCase):
     def test_validate_reports_failures_and_returns_nonzero(self) -> None:
         args = SimpleNamespace(project=None)
         with patch("builder.cli.validate_store_structure", return_value=[]):
-            with patch(
-                "builder.cli.validate_project",
-                side_effect=[None, ValueError("broken config")],
-            ) as mock_validate, patch("builder.cli.validate_project_templates") as mock_templates:
+            with (
+                patch(
+                    "builder.cli.validate_project",
+                    side_effect=[None, ValueError("broken config")],
+                ) as mock_validate,
+                patch("builder.cli.validate_project_templates") as mock_templates,
+            ):
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
                     status = cli._handle_validate(args, self.workspace)
@@ -118,10 +123,15 @@ class ValidateCommandTests(unittest.TestCase):
 
     def test_validate_reports_global_errors(self) -> None:
         args = SimpleNamespace(project="alpha")
-        with patch("builder.cli.validate_store_structure", return_value=["bad shared preset"]):
-            with patch("builder.cli.validate_project", side_effect=[None]) as mock_validate, patch(
-                "builder.cli.validate_project_templates"
-            ) as mock_templates:
+        with patch(
+            "builder.cli.validate_store_structure", return_value=["bad shared preset"]
+        ):
+            with (
+                patch(
+                    "builder.cli.validate_project", side_effect=[None]
+                ) as mock_validate,
+                patch("builder.cli.validate_project_templates") as mock_templates,
+            ):
                 buffer = io.StringIO()
                 with redirect_stdout(buffer):
                     status = cli._handle_validate(args, self.workspace)
@@ -169,7 +179,9 @@ class ValidateCommandTests(unittest.TestCase):
             )
         )
         store = cli.ConfigurationStore.from_directory(self.workspace)
-        with self.assertRaisesRegex(ValueError, "build_dir is required for build_system 'cargo'"):
+        with self.assertRaisesRegex(
+            ValueError, "build_dir is required for build_system 'cargo'"
+        ):
             validation.validate_project(store, "delta", workspace=self.workspace)
 
     def test_validate_project_catches_template_errors(self) -> None:

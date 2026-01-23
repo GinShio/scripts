@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
 import textwrap
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from builder.build import BuildEngine, BuildMode, BuildOptions
 from core.command_runner import RecordingCommandRunner
+
+from builder.build import BuildEngine, BuildMode, BuildOptions
 from builder.config_loader import ConfigurationStore
 
 
@@ -210,7 +211,9 @@ class BuildEngineTests(unittest.TestCase):
         self.workspace = root
         self.store = ConfigurationStore.from_directory(self.workspace)
         self.runner = RecordingCommandRunner()
-        self.engine = BuildEngine(store=self.store, command_runner=self.runner, workspace=self.workspace)
+        self.engine = BuildEngine(
+            store=self.store, command_runner=self.runner, workspace=self.workspace
+        )
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -222,7 +225,10 @@ class BuildEngineTests(unittest.TestCase):
             branch="feature-x",
             operation=BuildMode.AUTO,
         )
-        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+        with patch(
+            "builder.build.shutil.which",
+            side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache",
+        ):
             plan = self.engine.plan(options)
         self.assertIn("_build/feature-x_Release", plan.build_dir.as_posix())
         commands = [step.command for step in plan.steps]
@@ -243,7 +249,9 @@ class BuildEngineTests(unittest.TestCase):
             plan.environment.get("CUSTOM_PATH", "").endswith(f":{expected_bin_dir}"),
             msg="CUSTOM_PATH should append the resolved BIN_DIR",
         )
-        self.assertEqual(plan.git_environment.get("BOOTSTRAP_ROOT"), expected_tools_root)
+        self.assertEqual(
+            plan.git_environment.get("BOOTSTRAP_ROOT"), expected_tools_root
+        )
         configure_cmd = plan.steps[0].command
         configure_str = " ".join(configure_cmd)
         self.assertIn("-G", configure_cmd)
@@ -334,7 +342,10 @@ class BuildEngineTests(unittest.TestCase):
             dry_run=True,
         )
 
-        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+        with patch(
+            "builder.build.shutil.which",
+            side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache",
+        ):
             plan = self.engine.plan(options)
 
         self.assertTrue(build_dir.exists())
@@ -459,7 +470,10 @@ class BuildEngineTests(unittest.TestCase):
             install=True,
             install_dir=str(install_dir),
         )
-        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+        with patch(
+            "builder.build.shutil.which",
+            side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache",
+        ):
             plan = self.engine.plan(options)
 
         configure_cmd = plan.steps[0].command
@@ -481,7 +495,10 @@ class BuildEngineTests(unittest.TestCase):
             install=True,
             install_dir=str(install_dir),
         )
-        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+        with patch(
+            "builder.build.shutil.which",
+            side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache",
+        ):
             plan = self.engine.plan(options)
 
         install_cmd = plan.steps[-1].command
@@ -512,7 +529,10 @@ class BuildEngineTests(unittest.TestCase):
             build_type="Release",
             operation=BuildMode.AUTO,
         )
-        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+        with patch(
+            "builder.build.shutil.which",
+            side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache",
+        ):
             plan = self.engine.plan(options)
         configure_cmd = plan.steps[0].command
         configure_str = " ".join(configure_cmd)
@@ -526,7 +546,10 @@ class BuildEngineTests(unittest.TestCase):
             generator="Ninja Multi-Config",
             operation=BuildMode.AUTO,
         )
-        with patch("builder.build.shutil.which", side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache"):
+        with patch(
+            "builder.build.shutil.which",
+            side_effect=lambda exe: None if exe != "ccache" else "/usr/bin/ccache",
+        ):
             plan = self.engine.plan(options)
         self.assertIn("configs.debug", plan.presets)
         self.assertIn("configs.release", plan.presets)
@@ -548,6 +571,7 @@ class BuildEngineTests(unittest.TestCase):
             presets=["dev"],
             toolchain="gcc",
         )
+
         def fake_which(exe: str) -> str | None:
             return {
                 "mold": None,
@@ -565,13 +589,17 @@ class BuildEngineTests(unittest.TestCase):
         self.assertEqual(plan.steps[0].env.get("CC_LD"), "gold")
         self.assertEqual(plan.steps[0].env.get("CXX_LD"), "gold")
         self.assertEqual(plan.steps[0].env.get("CFLAGS"), "-fdiagnostics-color=always")
-        self.assertEqual(plan.steps[0].env.get("CXXFLAGS"), "-fdiagnostics-color=always")
+        self.assertEqual(
+            plan.steps[0].env.get("CXXFLAGS"), "-fdiagnostics-color=always"
+        )
         configure_str = " ".join(configure)
         self.assertIn("CMAKE_C_COMPILER:STRING=gcc", configure_str)
         self.assertIn("CMAKE_C_COMPILER_LAUNCHER:STRING=ccache", configure_str)
         self.assertIn("CMAKE_EXPORT_COMPILE_COMMANDS:BOOL=ON", configure_str)
         self.assertIn("CMAKE_C_FLAGS:STRING=-fdiagnostics-color=always", configure_str)
-        self.assertIn("CMAKE_CXX_FLAGS:STRING=-fdiagnostics-color=always", configure_str)
+        self.assertIn(
+            "CMAKE_CXX_FLAGS:STRING=-fdiagnostics-color=always", configure_str
+        )
 
     def test_toolchain_config_overrides_builtins(self) -> None:
         toolchains_path = self.workspace / "config" / "toolchains.toml"
@@ -593,7 +621,9 @@ class BuildEngineTests(unittest.TestCase):
         )
 
         store = ConfigurationStore.from_directory(self.workspace)
-        engine = BuildEngine(store=store, command_runner=self.runner, workspace=self.workspace)
+        engine = BuildEngine(
+            store=store, command_runner=self.runner, workspace=self.workspace
+        )
         options = BuildOptions(
             project_name="demo",
             presets=["dev"],
@@ -783,7 +813,9 @@ class BuildEngineTests(unittest.TestCase):
         )
 
         store = ConfigurationStore.from_directory(self.workspace)
-        engine = BuildEngine(store=store, command_runner=self.runner, workspace=self.workspace)
+        engine = BuildEngine(
+            store=store, command_runner=self.runner, workspace=self.workspace
+        )
         options = BuildOptions(
             project_name="split-args",
             presets=["extra"],
@@ -825,7 +857,9 @@ class BuildEngineTests(unittest.TestCase):
             },
         )
 
-        install_steps = [step for step in plan.steps if step.description == "Install project"]
+        install_steps = [
+            step for step in plan.steps if step.description == "Install project"
+        ]
         self.assertTrue(install_steps)
         install_cmd = install_steps[0].command
         for expected in [
@@ -835,7 +869,3 @@ class BuildEngineTests(unittest.TestCase):
             "--shared",
         ]:
             self.assertIn(expected, install_cmd)
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()

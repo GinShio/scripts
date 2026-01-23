@@ -21,21 +21,32 @@ from __future__ import annotations
 # Copyright (c) 2026 GinShio
 # --------------------------------------------------------------------------------
 #
-
 import argparse
 import sys
 from typing import List
 
 from . import actions
 
+
 def main(args: List[str]) -> int:
-    parser = argparse.ArgumentParser(description="Transparent encryption for git (Python version of transcrypt)")
+    parser = argparse.ArgumentParser(
+        description="Transparent encryption for git (Python version of transcrypt)"
+    )
 
     # Global arguments
-    parser.add_argument("-c", "--context", default="default", help="Encryption context (default: 'default')")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument(
+        "-c",
+        "--context",
+        default="default",
+        help="Encryption context (default: 'default')",
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable verbose logging"
+    )
 
-    subparsers = parser.add_subparsers(dest="command", required=True, help="Command to run")
+    subparsers = parser.add_subparsers(
+        dest="command", required=True, help="Command to run"
+    )
 
     # Internal Commands (Hidden from help)
     # These are called by git, not the user.
@@ -54,15 +65,19 @@ def main(args: List[str]) -> int:
     # User Commands
 
     # Install
-    install_parser = subparsers.add_parser("install",
+    install_parser = subparsers.add_parser(
+        "install",
         help="Install git filters locally",
-        description="Registers the clean/smudge filters in local git config. Run this after setting up password/cipher.")
+        description="Registers the clean/smudge filters in local git config. Run this after setting up password/cipher.",
+    )
 
     # Uninstall
     uninstall_parser = subparsers.add_parser("uninstall", help="Remove git filters")
 
     # Status
-    status_parser = subparsers.add_parser("status", help="Show current configuration status")
+    status_parser = subparsers.add_parser(
+        "status", help="Show current configuration status"
+    )
 
     parsed_args = parser.parse_args(args)
 

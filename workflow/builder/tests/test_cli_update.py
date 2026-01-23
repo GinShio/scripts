@@ -197,7 +197,3 @@ class UpdateCommandTests(unittest.TestCase):
         self.assertEqual(RecordingGitManager.last_component_dir, Path("libs/core"))
         self.assertEqual(RecordingGitManager.last_main_branch, "main")
         self.assertEqual(RecordingGitManager.last_component_branch, "comp/main")
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()

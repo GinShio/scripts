@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest
-
 from unittest.mock import patch
 
 from builder import TemplateError, TemplateResolver
@@ -11,8 +10,16 @@ class TemplateResolverTests(unittest.TestCase):
     def setUp(self) -> None:
         self.context = {
             "user": {"branch": "main", "build_type": "Release"},
-            "project": {"name": "demo", "source_dir": "/src/demo", "build_dir": "_build"},
-            "system": {"os": "linux", "architecture": "x86_64", "memory": {"total_gb": 16}},
+            "project": {
+                "name": "demo",
+                "source_dir": "/src/demo",
+                "build_dir": "_build",
+            },
+            "system": {
+                "os": "linux",
+                "architecture": "x86_64",
+                "memory": {"total_gb": 16},
+            },
             "env": {"CC": "clang"},
             "values": {"string_number": "42", "float_value": "3.25", "zero": 0},
         }
@@ -40,7 +47,9 @@ class TemplateResolverTests(unittest.TestCase):
             },
         }
         resolver = TemplateResolver(context)
-        self.assertEqual(resolver.resolve("{{project.install_dir}}"), "_build/dev_Debug")
+        self.assertEqual(
+            resolver.resolve("{{project.install_dir}}"), "_build/dev_Debug"
+        )
 
     def test_expression_dependencies_and_caching(self) -> None:
         context = {
@@ -52,7 +61,11 @@ class TemplateResolverTests(unittest.TestCase):
         }
         resolver = TemplateResolver(context)
         self.assertEqual(resolver.resolve("{{expressions.quad}}"), 20)
-        with patch.object(TemplateResolver, "_evaluate_expression", wraps=TemplateResolver._evaluate_expression) as spy:
+        with patch.object(
+            TemplateResolver,
+            "_evaluate_expression",
+            wraps=TemplateResolver._evaluate_expression,
+        ) as spy:
             first = resolver.resolve("{{expressions.double}}")
             second = resolver.resolve("{{expressions.double}}")
         self.assertEqual(first, 10)
@@ -74,7 +87,9 @@ class TemplateResolverTests(unittest.TestCase):
         result_int = self.resolver.resolve("[[ int({{values.string_number}}) + 1 ]]")
         self.assertEqual(result_int, 43)
 
-        result_float = self.resolver.resolve("[[ float({{values.string_number}}) / 2 ]]")
+        result_float = self.resolver.resolve(
+            "[[ float({{values.string_number}}) / 2 ]]"
+        )
         self.assertEqual(result_float, 21.0)
 
         result_str = self.resolver.resolve("[[ str({{system.memory.total_gb}}) ]]")
@@ -112,7 +127,3 @@ class TemplateResolverTests(unittest.TestCase):
         self.assertEqual(sum_result, 6)
         sum_with_start = sum_context.resolve("[[ sum({{values.items}}, 5) ]]")
         self.assertEqual(sum_with_start, 11)
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()

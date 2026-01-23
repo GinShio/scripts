@@ -1,12 +1,14 @@
 """
 Tests for gputest restore.
 """
-import unittest
-from unittest.mock import MagicMock, patch
-from pathlib import Path
+
 import time
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from gputest.src.context import Console, Context
 from gputest.src.restore import run_restore
-from gputest.src.context import Context, Console
 
 
 class TestRestore(unittest.TestCase):
@@ -21,7 +23,7 @@ class TestRestore(unittest.TestCase):
             runner=self.runner,
             project_root=Path("/project"),
             runner_root=Path("/runner"),
-            result_dir=Path("/result")
+            result_dir=Path("/result"),
         )
 
     @patch("gputest.src.restore.get_gpu_device_id", return_value="gpu1")
@@ -31,26 +33,25 @@ class TestRestore(unittest.TestCase):
     @patch("gputest.src.restore.ArchiveManager")
     @patch("pathlib.Path.mkdir")
     def test_run_restore(
-            self,
-            mock_mkdir,
-            mock_archive_manager,
-            mock_exists,
-            mock_glob,
-            mock_time,
-            mock_gpu):
+        self,
+        mock_mkdir,
+        mock_archive_manager,
+        mock_exists,
+        mock_glob,
+        mock_time,
+        mock_gpu,
+    ):
         mock_exists.return_value = True
         mock_time.return_value = 1000000
 
         # Mock files
         recent_file = MagicMock()
-        recent_file.stat.return_value.st_mtime = 1000000 - \
-            (1 * 86400)  # 1 day old
+        recent_file.stat.return_value.st_mtime = 1000000 - (1 * 86400)  # 1 day old
         recent_file.name = "suite1_gpu1_date.tar.zst"
         recent_file.parent.name = "driver1"
 
         old_file = MagicMock()
-        old_file.stat.return_value.st_mtime = 1000000 - \
-            (20 * 86400)  # 20 days old
+        old_file.stat.return_value.st_mtime = 1000000 - (20 * 86400)  # 20 days old
         old_file.name = "suite1_gpu1_old.tar.zst"
 
         mock_glob.return_value = [recent_file, old_file]
@@ -60,7 +61,10 @@ class TestRestore(unittest.TestCase):
         # Should restore recent file
         mock_archive_manager.return_value.extract_archive.assert_called_with(
             archive_path=recent_file,
-            destination_dir=self.ctx.runner_root / "baseline" / "driver1" / "suite1_date"
+            destination_dir=self.ctx.runner_root
+            / "baseline"
+            / "driver1"
+            / "suite1_date",
         )
 
         # Verify glob pattern
@@ -72,20 +76,15 @@ class TestRestore(unittest.TestCase):
     @patch("time.time")
     @patch("pathlib.Path.exists")
     def test_run_restore_dry_run(
-            self,
-            mock_exists,
-            mock_time,
-            mock_glob,
-            mock_archive_manager,
-            mock_gpu):
+        self, mock_exists, mock_time, mock_glob, mock_archive_manager, mock_gpu
+    ):
         self.console.dry_run = True
         mock_exists.return_value = True
         mock_time.return_value = 1000000
 
         # Mock files
         recent_file = MagicMock()
-        recent_file.stat.return_value.st_mtime = 1000000 - \
-            (1 * 86400)  # 1 day old
+        recent_file.stat.return_value.st_mtime = 1000000 - (1 * 86400)  # 1 day old
         recent_file.name = "suite1_gpu1_date.tar.zst"
         recent_file.parent.name = "driver1"
 

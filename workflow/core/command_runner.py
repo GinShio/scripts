@@ -1,12 +1,13 @@
 """Utilities for executing shell commands with optional dry-run support."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Sequence
 import os
 import shlex
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, List, Mapping, Sequence
 
 
 @dataclass
@@ -28,11 +29,7 @@ class CommandError(RuntimeError):
         if result.streamed:
             message = f"{message}\nstdout/stderr already streamed above."
         else:
-            message = (
-                f"{message}\n"
-                f"stdout: {result.stdout}\n"
-                f"stderr: {result.stderr}"
-            )
+            message = f"{message}\nstdout: {result.stdout}\nstderr: {result.stderr}"
         super().__init__(message)
         self.result = result
 
@@ -164,7 +161,9 @@ class RecordingCommandRunner(CommandRunner):
         stream: bool = False,
     ) -> CommandResult:
         self.commands.append(
-            self._record_entry(command=command, cwd=cwd, env=env, note=note, stream=stream)
+            self._record_entry(
+                command=command, cwd=cwd, env=env, note=note, stream=stream
+            )
         )
         return CommandResult(command=command, returncode=0, stdout="", stderr="")
 

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import base64
+import getpass
+import os
+
 #
 # transcrypt - https://github.com/elasticdog/transcrypt
 #
@@ -21,18 +25,24 @@ from __future__ import annotations
 # Copyright (c) 2026 GinShio
 # --------------------------------------------------------------------------------
 #
-
 import sys
-import os
-import getpass
-import base64
 from pathlib import Path
 from typing import Optional
 
 from core import crypto
-from .utils import get_git_config, set_git_config, unset_git_config, get_git_dir, get_git_root, get_relative_path, runner
+
+from .utils import (
+    get_git_config,
+    get_git_dir,
+    get_git_root,
+    get_relative_path,
+    runner,
+    set_git_config,
+    unset_git_config,
+)
 
 TRANSCRYPT_PREFIX = "transcrypt"
+
 
 def _get_env_val(key: str, context: str = "default") -> Optional[str]:
     """
@@ -55,10 +65,12 @@ def _get_env_val(key: str, context: str = "default") -> Optional[str]:
 
     return None
 
+
 def _get_config_key(key: str, context: str = "default") -> str:
     if context == "default":
         return f"{TRANSCRYPT_PREFIX}.{key}"
     return f"{TRANSCRYPT_PREFIX}.{context}.{key}"
+
 
 def _get_password(context: str = "default") -> str:
     # 1. Try Environment Variable
@@ -73,8 +85,11 @@ def _get_password(context: str = "default") -> str:
         # If not in config, maybe env var?
         # Original transcrypt checks config.
         # If running as filter, we can't prompt.
-        raise ValueError(f"Password not found in git config for context '{context}' (or env var). Run 'configure' first.")
+        raise ValueError(
+            f"Password not found in git config for context '{context}' (or env var). Run 'configure' first."
+        )
     return pwd
+
 
 def _get_cipher(context: str = "default") -> str:
     # 1. Try Environment Variable
@@ -87,6 +102,7 @@ def _get_cipher(context: str = "default") -> str:
     cipher = get_git_config(key)
     return cipher or crypto.DEFAULT_CIPHER
 
+
 def _get_digest(context: str = "default") -> str:
     # 1. Try Environment Variable
     val = _get_env_val("digest", context)
@@ -97,6 +113,7 @@ def _get_digest(context: str = "default") -> str:
     key = _get_config_key("digest", context)
     digest = get_git_config(key)
     return digest or crypto.DEFAULT_DIGEST
+
 
 def _get_iterations(context: str = "default") -> int:
     # 1. Try Environment Variable
@@ -117,6 +134,7 @@ def _get_iterations(context: str = "default") -> int:
             pass
     return crypto.DEFAULT_ITERATIONS
 
+
 def _get_kdf(context: str = "default") -> str:
     # 1. Try Environment Variable
     val = _get_env_val("kdf", context)
@@ -128,7 +146,9 @@ def _get_kdf(context: str = "default") -> str:
     kdf = get_git_config(key)
     return kdf or crypto.DEFAULT_KDF
 
+
 # deterministic option is removed, enforced by design
+
 
 def clean(context: str = "default", file_path: Optional[str] = None):
     """
@@ -154,7 +174,7 @@ def clean(context: str = "default", file_path: Optional[str] = None):
         siv_context = b""
         if file_path:
             # Normalize path to ensure consistency (Unix style)
-            siv_context = Path(file_path).as_posix().encode('utf-8')
+            siv_context = Path(file_path).as_posix().encode("utf-8")
 
         # Encrypt
         # core.crypto.encrypt returns base64 bytes
@@ -164,9 +184,9 @@ def clean(context: str = "default", file_path: Optional[str] = None):
             cipher_name=cipher,
             digest=digest,
             iterations=iterations,
-            deterministic=True, # Transcrypt script always uses deterministic mode
+            deterministic=True,  # Transcrypt script always uses deterministic mode
             context=siv_context,
-            kdf=kdf
+            kdf=kdf,
         )
 
         # Write to stdout
@@ -176,6 +196,7 @@ def clean(context: str = "default", file_path: Optional[str] = None):
         # Usually loud is better so the user knows something went wrong.
         print(f"Encryption failed: {e}", file=sys.stderr)
         sys.exit(1)
+
 
 def smudge(context: str = "default", file_path: Optional[str] = None):
     """
@@ -208,10 +229,10 @@ def smudge(context: str = "default", file_path: Optional[str] = None):
             # But the overhead is low.
             decoded_chk = base64.b64decode(data, validate=True)
             if not decoded_chk.startswith(crypto.SALT_HEADER):
-                 # Not encrypted by us (or at least not with Salted__ header)
-                 # Pass through
-                 sys.stdout.buffer.write(data)
-                 return
+                # Not encrypted by us (or at least not with Salted__ header)
+                # Pass through
+                sys.stdout.buffer.write(data)
+                return
         except Exception:
             # Not valid base64 -> not encrypted
             sys.stdout.buffer.write(data)
@@ -234,7 +255,7 @@ def smudge(context: str = "default", file_path: Optional[str] = None):
         # Prepare context for SIV
         siv_context = b""
         if file_path:
-            siv_context = Path(file_path).as_posix().encode('utf-8')
+            siv_context = Path(file_path).as_posix().encode("utf-8")
 
         # Decrypt
         decrypted = crypto.decrypt(
@@ -243,9 +264,9 @@ def smudge(context: str = "default", file_path: Optional[str] = None):
             cipher_name=cipher,
             digest=digest,
             iterations=iterations,
-            deterministic=True, # Transcrypt script always uses deterministic checks
+            deterministic=True,  # Transcrypt script always uses deterministic checks
             context=siv_context,
-            kdf=kdf
+            kdf=kdf,
         )
 
         sys.stdout.buffer.write(decrypted)
@@ -258,14 +279,23 @@ def smudge(context: str = "default", file_path: Optional[str] = None):
         print(f"Decryption failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-def configure(password: Optional[str] = None, cipher: Optional[str] = None, context: str = "default"):
+
+def configure(
+    password: Optional[str] = None,
+    cipher: Optional[str] = None,
+    context: str = "default",
+):
     """
     Deprecated: Use git config directly.
     """
-    print("Command 'configure' is deprecated/disabled. Please use 'git config' directly.", file=sys.stderr)
+    print(
+        "Command 'configure' is deprecated/disabled. Please use 'git config' directly.",
+        file=sys.stderr,
+    )
     print("Example:", file=sys.stderr)
     print(f"  git config transcrypt.password <your_password>", file=sys.stderr)
     sys.exit(1)
+
 
 def install(context: str = "default"):
     """
@@ -292,8 +322,8 @@ def install(context: str = "default"):
 
     wrapper_str = str(wrapper_path)
     if os.sep in wrapper_str:
-       # If it has path separators, it might need to be run from root.
-       pass
+        # If it has path separators, it might need to be run from root.
+        pass
 
     driver_name = "transcrypt"
     if context != "default":
@@ -318,6 +348,7 @@ def install(context: str = "default"):
     print(f"To enforce encryption, add the following to your .gitattributes file:")
     print(f"  <pattern> filter={driver_name} diff={driver_name} merge={driver_name}")
 
+
 def uninstall(context: str = "default"):
     driver_name = "transcrypt"
     if context != "default":
@@ -329,6 +360,7 @@ def uninstall(context: str = "default"):
     unset_git_config(f"diff.{driver_name}.textconv")
 
     print(f"Git filters for '{driver_name}' removed.")
+
 
 def textconv(file_path: str, context: str = "default"):
     """
@@ -344,8 +376,8 @@ def textconv(file_path: str, context: str = "default"):
         try:
             decoded_chk = base64.b64decode(data, validate=True)
             if not decoded_chk.startswith(crypto.SALT_HEADER):
-                 sys.stdout.buffer.write(data)
-                 return
+                sys.stdout.buffer.write(data)
+                return
         except Exception:
             sys.stdout.buffer.write(data)
             return
@@ -364,7 +396,7 @@ def textconv(file_path: str, context: str = "default"):
         # Textconv context
         siv_context = b""
         if file_path:
-             siv_context = Path(file_path).as_posix().encode('utf-8')
+            siv_context = Path(file_path).as_posix().encode("utf-8")
 
         decrypted = crypto.decrypt(
             data,
@@ -373,14 +405,13 @@ def textconv(file_path: str, context: str = "default"):
             digest=digest,
             iterations=iterations,
             deterministic=True,
-            context=siv_context
+            context=siv_context,
         )
         sys.stdout.buffer.write(decrypted)
 
     except Exception as e:
         print(f"Textconv failed: {e}", file=sys.stderr)
         sys.exit(1)
-
 
 
 def status(context: str = "default"):
@@ -409,15 +440,21 @@ def status(context: str = "default"):
     masked_pwd = "****" if pwd else "NOT SET"
 
     cipher = env_cipher or git_cipher
-    cipher_source = "Env Var" if env_cipher else ("Git Config" if git_cipher else "Default")
+    cipher_source = (
+        "Env Var" if env_cipher else ("Git Config" if git_cipher else "Default")
+    )
     cipher = cipher or crypto.DEFAULT_CIPHER
 
     digest = env_digest or git_digest
-    digest_source = "Env Var" if env_digest else ("Git Config" if git_digest else "Default")
+    digest_source = (
+        "Env Var" if env_digest else ("Git Config" if git_digest else "Default")
+    )
     digest = digest or crypto.DEFAULT_DIGEST
 
     iterations = env_iterations or git_iterations
-    iterations_source = "Env Var" if env_iterations else ("Git Config" if git_iterations else "Default")
+    iterations_source = (
+        "Env Var" if env_iterations else ("Git Config" if git_iterations else "Default")
+    )
     iterations = iterations or crypto.DEFAULT_ITERATIONS
 
     clean_filter = get_git_config(f"filter.{driver_name}.clean")
@@ -435,10 +472,16 @@ def status(context: str = "default"):
         print(f"  Clean CMD: {clean_filter}")
 
     if not pwd:
-         print("\nWarning: Password not found in git config or environment. Encryption/Decryption will fail.")
-         print(f"Run 'git config transcrypt{'.' + context if context != 'default' else ''}.password <your-password>'")
-         print(f"OR set TRANSCRYPT_{context.upper()}_PASSWORD environment variable.")
+        print(
+            "\nWarning: Password not found in git config or environment. Encryption/Decryption will fail."
+        )
+        print(
+            f"Run 'git config transcrypt{'.' + context if context != 'default' else ''}.password <your-password>'"
+        )
+        print(f"OR set TRANSCRYPT_{context.upper()}_PASSWORD environment variable.")
 
     if not is_installed:
-         print("\nWarning: Git filters not installed. Automatic encryption will not work.")
-         print(f"Run 'workflow/transcrypt.py install -c {context}' to register filters.")
+        print(
+            "\nWarning: Git filters not installed. Automatic encryption will not work."
+        )
+        print(f"Run 'workflow/transcrypt.py install -c {context}' to register filters.")

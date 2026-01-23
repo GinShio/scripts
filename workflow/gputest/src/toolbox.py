@@ -1,6 +1,7 @@
 """
 Toolbox installation logic.
 """
+
 import fnmatch
 import os
 import shutil
@@ -15,6 +16,7 @@ from .utils import substitute
 
 def _create_ignore_func(root, excludes):
     """Create an ignore function that handles path-based excludes."""
+
     def ignore_func(path, names):
         ignored = set()
         # path is the absolute path of the directory being visited
@@ -38,6 +40,7 @@ def _create_ignore_func(root, excludes):
                     ignored.add(name)
                     break
         return ignored
+
     return ignore_func
 
 
@@ -63,7 +66,7 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
     variables = {
         "project_root": str(ctx.project_root),
         "runner_root": str(ctx.runner_root),
-        "home": str(Path.home())
+        "home": str(Path.home()),
     }
 
     for suite_name in sorted(suites):
@@ -78,8 +81,7 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
 
         base_dest = None
         if "dest" in suite_def:
-            base_dest = ctx.runner_root / \
-                substitute(suite_def["dest"], variables)
+            base_dest = ctx.runner_root / substitute(suite_def["dest"], variables)
 
         # Collect all copy operations
         operations = []
@@ -121,7 +123,8 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
                     src = base_src / sub_src
                 else:
                     ctx.console.error(
-                        f"Relative src '{src_raw}' in suite {suite_name} but no base src defined.")
+                        f"Relative src '{src_raw}' in suite {suite_name} but no base src defined."
+                    )
                     continue
             elif base_src:
                 src = base_src
@@ -176,13 +179,16 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
                 # Use runner to print dry run command if possible, or just log
                 # Since shutil.copytree is python, we can't easily use runner.run() for it unless we wrap it in a shell command.
                 # But we can simulate it.
-                ctx.runner.run(["cp", "-r", str(src), str(dest)],
-                               note=f"includes: {includes}, excludes: {excludes}")
+                ctx.runner.run(
+                    ["cp", "-r", str(src), str(dest)],
+                    note=f"includes: {includes}, excludes: {excludes}",
+                )
             else:
                 if src.is_file():
                     if includes:
                         ctx.console.error(
-                            f"Cannot use 'includes' with a file source: {src}")
+                            f"Cannot use 'includes' with a file source: {src}"
+                        )
                         continue
 
                     # If dest is an existing directory, copy into it.
@@ -199,10 +205,8 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
 
                 elif not includes:
                     # Default: Copy everything
-                    ignore = _create_ignore_func(
-                        src, excludes) if excludes else None
-                    force_copytree(
-                        src, dest, ignore=ignore, dirs_exist_ok=True)
+                    ignore = _create_ignore_func(src, excludes) if excludes else None
+                    force_copytree(src, dest, ignore=ignore, dirs_exist_ok=True)
                 else:
                     # Includes mode: Copy only matching paths
                     dest.mkdir(parents=True, exist_ok=True)
@@ -230,15 +234,17 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
                             # Check exclusion for the root of the copy
                             if excludes:
                                 # Check filename
-                                if any(fnmatch.fnmatch(path.name, excl)
-                                       for excl in excludes):
+                                if any(
+                                    fnmatch.fnmatch(path.name, excl)
+                                    for excl in excludes
+                                ):
                                     continue
                                 # Check relative path from src
                                 path_from_src = path.relative_to(src)
                                 if any(
-                                    fnmatch.fnmatch(
-                                        str(path_from_src),
-                                        excl) for excl in excludes):
+                                    fnmatch.fnmatch(str(path_from_src), excl)
+                                    for excl in excludes
+                                ):
                                     continue
 
                             if path.is_dir():
@@ -270,17 +276,19 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
 
                                 # So yes, excludes are relative to the root of
                                 # the copy operation.
-                                ignore = _create_ignore_func(
-                                    path, excludes) if excludes else None
+                                ignore = (
+                                    _create_ignore_func(path, excludes)
+                                    if excludes
+                                    else None
+                                )
                                 force_copytree(
-                                    path, target, ignore=ignore, dirs_exist_ok=True)
+                                    path, target, ignore=ignore, dirs_exist_ok=True
+                                )
                             else:
-                                target.parent.mkdir(
-                                    parents=True, exist_ok=True)
+                                target.parent.mkdir(parents=True, exist_ok=True)
                                 if target.exists(follow_symlinks=False):
                                     target.unlink()
-                                shutil.copy2(
-                                    path, target, follow_symlinks=False)
+                                shutil.copy2(path, target, follow_symlinks=False)
 
         # Run post-install hooks
         suite_vars = variables.copy()
@@ -310,8 +318,7 @@ def run_toolbox(ctx: Context, targets: List[str] = None):
                 # Run in shell to support pipes/redirection as seen in config
                 # Use hook_dest as cwd if available, else runner_root
                 cwd = hook_dest if hook_dest else ctx.runner_root
-                ctx.runner.run(["sh", "-c", cmd_str], cwd=cwd,
-                               check=True, stream=True)
+                ctx.runner.run(["sh", "-c", cmd_str], cwd=cwd, check=True, stream=True)
             except CommandError as e:
                 ctx.console.error(f"Hook failed: {e}")
 

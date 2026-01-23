@@ -1,22 +1,23 @@
 import base64
 import os
 import re
-from typing import Optional, Union, Tuple, Type
+from typing import Optional, Tuple, Type, Union
 
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
 # Try to import AEAD modes directly if available
 try:
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM, ChaCha20Poly1305
+
     HAS_AEAD_PRIMITIVES = True
 except ImportError:
     HAS_AEAD_PRIMITIVES = False
 
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, padding
+from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 # Constants matching OpenSSL / Transcrypt behavior
 SALT_HEADER = b"Salted__"
@@ -40,6 +41,7 @@ SALT_SIZE = 8
 BLOCK_SIZE_AES = 16
 NONCE_SIZE_GCM = 12
 NONCE_SIZE_CHACHA = 12
+
 
 def get_digest_algorithm(name: str):
     name = name.lower().replace("-", "").replace("_", "")
@@ -70,7 +72,8 @@ def get_digest_algorithm(name: str):
     else:
         raise ValueError(f"Unsupported digest: {name}")
 
-def _parse_cipher_name(name: str) -> Tuple[str, Union[type,modes.Mode,str], int]:
+
+def _parse_cipher_name(name: str) -> Tuple[str, Union[type, modes.Mode, str], int]:
     """
     Parses a cipher string.
     Returns (AlgorithmName, ModeOrType, KeyLengthInBytes)
@@ -81,24 +84,24 @@ def _parse_cipher_name(name: str) -> Tuple[str, Union[type,modes.Mode,str], int]
     name = name.lower()
 
     # Special Case: ChaCha20-Poly1305
-    if name == 'chacha20-poly1305' or name == 'chacha20-poly1305-openssl':
-        return 'chacha20', 'poly1305', 32
+    if name == "chacha20-poly1305" or name == "chacha20-poly1305-openssl":
+        return "chacha20", "poly1305", 32
 
-    parts = name.split('-')
+    parts = name.split("-")
 
     # Handle GCM which might be aes-256-gcm
     if len(parts) != 3:
-         raise ValueError(f"Invalid cipher format: {name}. Expected algo-bits-mode.")
+        raise ValueError(f"Invalid cipher format: {name}. Expected algo-bits-mode.")
 
     algo_str, bits_str, mode_str = parts
 
     # 1. Algorithm
-    if algo_str == 'aes':
-        algo_name = 'aes'
-    elif algo_str == 'sm4':
-        algo_name = 'sm4'
-    elif algo_str == 'camellia':
-        algo_name = 'camellia'
+    if algo_str == "aes":
+        algo_name = "aes"
+    elif algo_str == "sm4":
+        algo_name = "sm4"
+    elif algo_str == "camellia":
+        algo_name = "camellia"
     else:
         # ARIA dropped per user request, and others not supported
         raise ValueError(f"Unsupported algorithm: {algo_str}")
@@ -107,9 +110,9 @@ def _parse_cipher_name(name: str) -> Tuple[str, Union[type,modes.Mode,str], int]
     try:
         bits = int(bits_str)
     except ValueError:
-         raise ValueError(f"Invalid key bits: {bits_str}")
+        raise ValueError(f"Invalid key bits: {bits_str}")
 
-    if algo_name == 'sm4' and bits != 128:
+    if algo_name == "sm4" and bits != 128:
         raise ValueError(f"SM4 only supports 128-bit keys, got {bits}")
 
     valid_bits = [128, 192, 256]
@@ -118,22 +121,23 @@ def _parse_cipher_name(name: str) -> Tuple[str, Union[type,modes.Mode,str], int]
     key_len = bits // 8
 
     # 3. Mode
-    if mode_str == 'gcm':
-        mode_val = 'gcm'
-    elif mode_str == 'cbc':
+    if mode_str == "gcm":
+        mode_val = "gcm"
+    elif mode_str == "cbc":
         mode_val = modes.CBC
-    elif mode_str == 'ctr':
+    elif mode_str == "ctr":
         mode_val = modes.CTR
-    elif mode_str == 'cfb':
+    elif mode_str == "cfb":
         mode_val = modes.CFB
-    elif mode_str == 'ecb':
+    elif mode_str == "ecb":
         mode_val = modes.ECB
-    elif mode_str == 'ofb':
+    elif mode_str == "ofb":
         mode_val = modes.OFB
     else:
         raise ValueError(f"Unsupported mode: {mode_str}")
 
     return algo_name, mode_val, key_len
+
 
 def derive_key(
     password: Union[str, bytes],
@@ -143,13 +147,13 @@ def derive_key(
     key_length: int,
     kdf_name: str = DEFAULT_KDF,
     memory_cost: int = ARGON2_DEFAULT_MEMORY,
-    lanes: int = ARGON2_DEFAULT_LANES
+    lanes: int = ARGON2_DEFAULT_LANES,
 ) -> bytes:
     """
     Derive a key from a password and salt using PBKDF2 or Argon2id.
     """
     if isinstance(password, str):
-        password = password.encode('utf-8')
+        password = password.encode("utf-8")
 
     if kdf_name == "argon2id":
         kdf = Argon2id(
@@ -165,24 +169,24 @@ def derive_key(
         # Scrypt doesn't use 'iterations' in the same way PBKDF2 does.
         # It uses N (cost), r (block size), p (parallelization).
         # We need to map 'iterations' to one of these or just use defaults modified by it?
-        # Typically 'iterations' maps to N (CPU/Memory cost) in simple mappings, 
-        # but N must be power of 2. 
+        # Typically 'iterations' maps to N (CPU/Memory cost) in simple mappings,
+        # but N must be power of 2.
         # For simplicity, if user provides standard PBKDF2 iterations (e.g. 100000), it's invalid for N.
         # We'll use defaults if iterations is the PBKDF2 default.
-        
+
         n_val = SCRYPT_DEFAULT_N
         if iterations != DEFAULT_ITERATIONS and iterations != ARGON2_DEFAULT_ITERATIONS:
-             # Try to interpret iterations as N
-             # Ensure power of 2
-             if (iterations & (iterations - 1) == 0) and iterations > 1:
-                 n_val = iterations
-        
+            # Try to interpret iterations as N
+            # Ensure power of 2
+            if (iterations & (iterations - 1) == 0) and iterations > 1:
+                n_val = iterations
+
         kdf = Scrypt(
             salt=salt,
             length=key_length,
             n=n_val,
             r=SCRYPT_DEFAULT_R,
-            p=SCRYPT_DEFAULT_P
+            p=SCRYPT_DEFAULT_P,
         )
         return kdf.derive(password)
 
@@ -191,9 +195,10 @@ def derive_key(
         length=key_length,
         salt=salt,
         iterations=iterations,
-        backend=default_backend()
+        backend=default_backend(),
     )
     return kdf.derive(password)
+
 
 def _compute_siv_params(
     password: Union[str, bytes],
@@ -203,16 +208,16 @@ def _compute_siv_params(
     iv_len: int,
     cipher_name: str = "",
     iterations: int = 0,
-    kdf_name: str = DEFAULT_KDF
+    kdf_name: str = DEFAULT_KDF,
 ) -> Tuple[bytes, bytes]:
     """
     Computes deterministic Salt and IV using S2V-like construction:
     Hash(Password | Len(Context) | Context | Data)
     """
     if isinstance(context, str):
-        context = context.encode('utf-8')
+        context = context.encode("utf-8")
     if isinstance(password, str):
-        pwd_bytes = password.encode('utf-8')
+        pwd_bytes = password.encode("utf-8")
     else:
         pwd_bytes = password
 
@@ -222,22 +227,22 @@ def _compute_siv_params(
     # We use Length Prefixing which mathematically prevents collisions.
     # We also include a Null Byte (\x00) as a standard binary separator (Domain Separation).
     sep = b"\x00"
-    
+
     # 1. Algo Params (Length prefixed)
     # Include algo info to prevent cross-protocol attacks if config changes.
     # We construct Domain Separation
-    algo_params = f"{digest_name}:{cipher_name}:{iterations}:{kdf_name}".encode('utf-8')
-    h.update(len(algo_params).to_bytes(4, byteorder='big'))
+    algo_params = f"{digest_name}:{cipher_name}:{iterations}:{kdf_name}".encode("utf-8")
+    h.update(len(algo_params).to_bytes(4, byteorder="big"))
     h.update(algo_params)
     h.update(sep)
 
     # 2. Length prefix password (4 bytes big endian)
-    h.update(len(pwd_bytes).to_bytes(4, byteorder='big'))
+    h.update(len(pwd_bytes).to_bytes(4, byteorder="big"))
     h.update(pwd_bytes)
     h.update(sep)
 
     # 3. Length prefix context (4 bytes big endian)
-    h.update(len(context).to_bytes(4, byteorder='big'))
+    h.update(len(context).to_bytes(4, byteorder="big"))
     h.update(context)
     h.update(sep)
 
@@ -247,16 +252,19 @@ def _compute_siv_params(
 
     required_len = SALT_SIZE + iv_len
     if len(digest_val) < required_len:
-         # Fallsack or expand? For now, assume standard digests are large enough (SHA256=32 bytes)
-         # Salt(8) + AES-IV(16) = 24 bytes. SHA256 is fine.
-         # For ChaCha (Nonce 12) = 20 bytes. Fine.
-         # For GCM (Nonce 12) = 20 bytes. Fine.
-         raise ValueError(f"Digest algorithm {digest_name} output ({len(digest_val)}) too short for needed SIV material ({required_len})")
+        # Fallsack or expand? For now, assume standard digests are large enough (SHA256=32 bytes)
+        # Salt(8) + AES-IV(16) = 24 bytes. SHA256 is fine.
+        # For ChaCha (Nonce 12) = 20 bytes. Fine.
+        # For GCM (Nonce 12) = 20 bytes. Fine.
+        raise ValueError(
+            f"Digest algorithm {digest_name} output ({len(digest_val)}) too short for needed SIV material ({required_len})"
+        )
 
     # Use first part for IV, next for Salt (arbitrary but consistent)
     iv = digest_val[:iv_len]
     salt = digest_val[iv_len : iv_len + SALT_SIZE]
     return salt, iv
+
 
 def encrypt(
     data: bytes,
@@ -268,7 +276,7 @@ def encrypt(
     cipher_name: str = DEFAULT_CIPHER,
     deterministic: bool = False,
     context: Union[str, bytes] = b"",
-    kdf: str = DEFAULT_KDF
+    kdf: str = DEFAULT_KDF,
 ) -> bytes:
     """
     Encrypt data.
@@ -293,9 +301,9 @@ def encrypt(
         iterations = ARGON2_DEFAULT_ITERATIONS
 
     # Determine IV/Nonce size
-    if algo_name == 'chacha20' and mode_val == 'poly1305':
+    if algo_name == "chacha20" and mode_val == "poly1305":
         iv_len = NONCE_SIZE_CHACHA
-    elif mode_val == 'gcm':
+    elif mode_val == "gcm":
         iv_len = NONCE_SIZE_GCM
     else:
         iv_len = BLOCK_SIZE_AES
@@ -303,8 +311,19 @@ def encrypt(
     # Handle SIV / Deterministic Mode
     if deterministic:
         if salt is not None or iv is not None:
-            raise ValueError("Cannot provide explicit salt/iv when using deterministic mode.")
-        salt, iv = _compute_siv_params(password, data, context, digest, iv_len, cipher_name, iterations, kdf_name=kdf)
+            raise ValueError(
+                "Cannot provide explicit salt/iv when using deterministic mode."
+            )
+        salt, iv = _compute_siv_params(
+            password,
+            data,
+            context,
+            digest,
+            iv_len,
+            cipher_name,
+            iterations,
+            kdf_name=kdf,
+        )
     else:
         # Standard Randomized Mode
         if salt is None:
@@ -323,11 +342,11 @@ def encrypt(
 
     # Encryption Logic
     ciphertext = b""
-    
-    # Prepare AAD from context
-    aad = context if isinstance(context, bytes) else context.encode('utf-8')
 
-    if algo_name == 'chacha20' and mode_val == 'poly1305':
+    # Prepare AAD from context
+    aad = context if isinstance(context, bytes) else context.encode("utf-8")
+
+    if algo_name == "chacha20" and mode_val == "poly1305":
         # ChaCha20-Poly1305
         # Note: We use the one-shot API which appends tag to ciphertext usually
         cipher = ChaCha20Poly1305(key)
@@ -337,7 +356,7 @@ def encrypt(
         # python cryptography returns Ciphertext || Tag
         ciphertext = ciphertext_with_tag
 
-    elif mode_val == 'gcm':
+    elif mode_val == "gcm":
         # AES-GCM
         cipher = AESGCM(key)
         ciphertext_with_tag = cipher.encrypt(iv, data, aad)
@@ -364,11 +383,11 @@ def encrypt(
         else:
             mode_inst = mode_cls(iv)
 
-        if algo_name == 'aes':
+        if algo_name == "aes":
             algo_cls = algorithms.AES
-        elif algo_name == 'sm4':
+        elif algo_name == "sm4":
             algo_cls = algorithms.SM4
-        elif algo_name == 'camellia':
+        elif algo_name == "camellia":
             algo_cls = algorithms.Camellia
         else:
             raise ValueError(f"Unknown block cipher algorithm: {algo_name}")
@@ -384,6 +403,7 @@ def encrypt(
     # Base64 Encode
     return base64.b64encode(packet)
 
+
 def decrypt(
     data_b64: bytes,
     password: str,
@@ -392,7 +412,7 @@ def decrypt(
     cipher_name: str = DEFAULT_CIPHER,
     deterministic: bool = False,
     context: Union[str, bytes] = b"",
-    kdf: str = DEFAULT_KDF
+    kdf: str = DEFAULT_KDF,
 ) -> bytes:
     """
     Decrypt data.
@@ -424,9 +444,9 @@ def decrypt(
     offset += SALT_SIZE
 
     # Determine needed IV length for parsing
-    if algo_name == 'chacha20' and mode_val == 'poly1305':
+    if algo_name == "chacha20" and mode_val == "poly1305":
         iv_len = NONCE_SIZE_CHACHA
-    elif mode_val == 'gcm':
+    elif mode_val == "gcm":
         iv_len = NONCE_SIZE_GCM
     else:
         iv_len = BLOCK_SIZE_AES
@@ -445,9 +465,9 @@ def decrypt(
 
     # Decryption Logic
     plaintext = b""
-    aad = context if isinstance(context, bytes) else context.encode('utf-8')
+    aad = context if isinstance(context, bytes) else context.encode("utf-8")
 
-    if algo_name == 'chacha20' and mode_val == 'poly1305':
+    if algo_name == "chacha20" and mode_val == "poly1305":
         cipher = ChaCha20Poly1305(key)
         # decrypt(nonce, data, associated_data)
         # Raises InvalidTag if tag verification fails
@@ -456,7 +476,7 @@ def decrypt(
         except Exception:
             raise ValueError("Decryption failed (AEAD Tag Check Failed)")
 
-    elif mode_val == 'gcm':
+    elif mode_val == "gcm":
         cipher = AESGCM(key)
         try:
             plaintext = cipher.decrypt(iv, ciphertext, aad)
@@ -475,11 +495,11 @@ def decrypt(
         else:
             mode_inst = mode_cls(iv)
 
-        if algo_name == 'aes':
+        if algo_name == "aes":
             algo_cls = algorithms.AES
-        elif algo_name == 'sm4':
+        elif algo_name == "sm4":
             algo_cls = algorithms.SM4
-        elif algo_name == 'camellia':
+        elif algo_name == "camellia":
             algo_cls = algorithms.Camellia
         else:
             raise ValueError(f"Unknown block cipher algorithm: {algo_name}")
@@ -496,14 +516,25 @@ def decrypt(
             try:
                 plaintext = unpadder.update(processed_data) + unpadder.finalize()
             except ValueError:
-                 raise ValueError("Decryption failed (Padding Error) - Wrong Password?")
+                raise ValueError("Decryption failed (Padding Error) - Wrong Password?")
         else:
             plaintext = processed_data
 
     # Post-Decryption SIV Verification
     if deterministic:
-        expected_salt, expected_iv = _compute_siv_params(password, plaintext, context, digest, iv_len, cipher_name, iterations, kdf_name=kdf)
+        expected_salt, expected_iv = _compute_siv_params(
+            password,
+            plaintext,
+            context,
+            digest,
+            iv_len,
+            cipher_name,
+            iterations,
+            kdf_name=kdf,
+        )
         if salt != expected_salt or iv != expected_iv:
-            raise ValueError("Integrity Check Failed: Data may have been tampered with or parameters do not match content.")
+            raise ValueError(
+                "Integrity Check Failed: Data may have been tampered with or parameters do not match content."
+            )
 
     return plaintext

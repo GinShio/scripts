@@ -1,10 +1,13 @@
 """
 Restore logic.
 """
+
 import time
 from pathlib import Path
-from core.command_runner import CommandError
+
 from core.archive import ArchiveManager
+from core.command_runner import CommandError
+
 from .context import Context
 from .runner import get_gpu_device_id
 
@@ -47,7 +50,7 @@ def run_restore(ctx: Context, days: int = 10):
 
             # Parse filename: {suite}_{gpu_id}_{date}
             # We split by '_' from the right
-            parts = stem.split('_')
+            parts = stem.split("_")
             if len(parts) >= 3:
                 # date is last, gpu_id is second to last
                 # suite is everything before
@@ -63,8 +66,7 @@ def run_restore(ctx: Context, days: int = 10):
 
             try:
                 archive_manager.extract_archive(
-                    archive_path=archive,
-                    destination_dir=target_dir
+                    archive_path=archive, destination_dir=target_dir
                 )
             except Exception as e:
                 ctx.console.error(f"Failed to extract {archive}: {e}")

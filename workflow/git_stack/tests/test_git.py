@@ -5,20 +5,19 @@ from git_stack.src import git
 
 
 class TestGit(unittest.TestCase):
-
-    @patch('git_stack.src.git._RUNNER')
+    @patch("git_stack.src.git._RUNNER")
     def test_run_git_success(self, mock_runner):
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = "git output\n"
         mock_runner.run.return_value = mock_result
 
-        output = git.run_git(['status'])
+        output = git.run_git(["status"])
 
         self.assertEqual(output, "git output")
-        mock_runner.run.assert_called_with(['git', 'status'], check=True)
+        mock_runner.run.assert_called_with(["git", "status"], check=True)
 
-    @patch('git_stack.src.git._RUNNER')
+    @patch("git_stack.src.git._RUNNER")
     def test_run_git_fail_check_false(self, mock_runner):
         # Simulate a command error expectation when check=False
         # SubprocessCommandRunner.run typically returns result if check=False in run_git logic?
@@ -36,40 +35,42 @@ class TestGit(unittest.TestCase):
         # But if check=False, _RUNNER.run might raise if the mocked run implementation raises?
         # The mock just returns value.
 
-        output = git.run_git(['status'], check=False)
+        output = git.run_git(["status"], check=False)
         self.assertEqual(output, "")
 
-    @patch('git_stack.src.git.run_git')
+    @patch("git_stack.src.git.run_git")
     def test_resolve_base_branch_provided(self, mock_run_git):
-        self.assertEqual(git.resolve_base_branch('feature'), 'feature')
+        self.assertEqual(git.resolve_base_branch("feature"), "feature")
 
-    @patch('git_stack.src.git.run_git')
+    @patch("git_stack.src.git.run_git")
     def test_resolve_base_branch_auto_main(self, mock_run_git):
         # Mock run_git to return sha for main
-        mock_run_git.side_effect = lambda args, check=True: "sha" if 'main' in args else ""
-        self.assertEqual(git.resolve_base_branch(None), 'main')
+        mock_run_git.side_effect = (
+            lambda args, check=True: "sha" if "main" in args else ""
+        )
+        self.assertEqual(git.resolve_base_branch(None), "main")
 
-    @patch('git_stack.src.git.run_git')
+    @patch("git_stack.src.git.run_git")
     def test_resolve_base_branch_auto_master(self, mock_run_git):
         # Mock run_git to fail for main, succeed for master
         def side_effect(args, check=True, **kwargs):
-            if 'main' in args:
+            if "main" in args:
                 return ""
-            if 'master' in args:
+            if "master" in args:
                 return "sha"
             return ""
-        mock_run_git.side_effect = side_effect
-        self.assertEqual(git.resolve_base_branch(None), 'master')
 
-    @patch('git_stack.src.git.run_git')
+        mock_run_git.side_effect = side_effect
+        self.assertEqual(git.resolve_base_branch(None), "master")
+
+    @patch("git_stack.src.git.run_git")
     def test_get_refs_map(self, mock_run_git):
         mock_run_git.return_value = "main 12345\nfeature 67890"
         refs = git.get_refs_map()
-        self.assertEqual(refs, {'main': '12345', 'feature': '67890'})
+        self.assertEqual(refs, {"main": "12345", "feature": "67890"})
 
-    @patch('git_stack.src.git.run_git')
+    @patch("git_stack.src.git.run_git")
     def test_get_config(self, mock_run_git):
         mock_run_git.return_value = "value"
         self.assertEqual(git.get_config("key"), "value")
-        mock_run_git.assert_called_with(
-            ['config', '--get', 'key'], check=False)
+        mock_run_git.assert_called_with(["config", "--get", "key"], check=False)

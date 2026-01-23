@@ -1,14 +1,15 @@
 """
 List command implementation.
 """
-import os
-import json
+
 import datetime
+import json
+import os
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 from .context import Context
-from .utils import substitute, resolve_env
+from .utils import resolve_env, substitute
 
 
 def run_list(ctx: Context, target: str, name: str = None):
@@ -31,7 +32,7 @@ def _list_drivers(ctx: Context, name: str = None):
         "runner_root": str(ctx.runner_root),
         "home": str(Path.home()),
         "date": datetime.datetime.now().strftime("%Y%m%d"),
-        "gpu_id": "unknown_gpu"
+        "gpu_id": "unknown_gpu",
     }
 
     targets = [name] if name else sorted(drivers_cfg.keys())
@@ -47,7 +48,9 @@ def _list_drivers(ctx: Context, name: str = None):
         layout = layouts_cfg.get(layout_name)
 
         if not layout:
-            ctx.console.error(f"Layout '{layout_name}' not found for driver '{driver_name}'.")
+            ctx.console.error(
+                f"Layout '{layout_name}' not found for driver '{driver_name}'."
+            )
             continue
 
         # Build Environment
@@ -56,10 +59,12 @@ def _list_drivers(ctx: Context, name: str = None):
         env_vars["root"] = layout_root
 
         # Inject names
-        env_vars.update({
-            "driver_name": driver_name,
-            "layout_name": layout_name,
-        })
+        env_vars.update(
+            {
+                "driver_name": driver_name,
+                "layout_name": layout_name,
+            }
+        )
 
         # Resolve Env
         merged_env = os.environ.copy()
@@ -79,7 +84,9 @@ def _list_drivers(ctx: Context, name: str = None):
         icd_files = []
 
         # 1. Check Env
-        env_icd = merged_env.get("VK_ICD_FILENAMES") or merged_env.get("VK_DRIVER_FILES")
+        env_icd = merged_env.get("VK_ICD_FILENAMES") or merged_env.get(
+            "VK_DRIVER_FILES"
+        )
         if env_icd:
             icd_files.extend(env_icd.split(os.pathsep))
         else:
@@ -99,7 +106,7 @@ def _list_drivers(ctx: Context, name: str = None):
                 try:
                     p = Path(icd_path)
                     if p.exists():
-                        with open(p, 'r') as f:
+                        with open(p, "r") as f:
                             data = json.load(f)
 
                         icd_data = data.get("ICD", {})

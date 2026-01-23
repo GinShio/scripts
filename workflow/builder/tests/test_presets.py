@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import unittest
 
+from builder import TemplateError, TemplateResolver
 from builder.presets import PresetRepository
-from builder import TemplateResolver, TemplateError
 
 
 class PresetRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.context = {
             "user": {"branch": "main", "build_type": "Debug"},
-            "project": {"name": "demo", "source_dir": "/src/demo", "build_dir": "/src/demo/_build"},
+            "project": {
+                "name": "demo",
+                "source_dir": "/src/demo",
+                "build_dir": "/src/demo/_build",
+            },
             "system": {"os": "linux", "architecture": "x86_64"},
             "env": {"PATH": "/usr/bin"},
         }
@@ -40,8 +44,14 @@ class PresetRepositoryTests(unittest.TestCase):
     def test_condition_prevents_application(self) -> None:
         repo = PresetRepository(
             project_presets={
-                "linux": {"condition": "[[ {{system.os}} == 'linux' ]]", "environment": {"CC": "clang"}},
-                "windows": {"condition": "[[ {{system.os}} == 'windows' ]]", "environment": {"CC": "cl"}},
+                "linux": {
+                    "condition": "[[ {{system.os}} == 'linux' ]]",
+                    "environment": {"CC": "clang"},
+                },
+                "windows": {
+                    "condition": "[[ {{system.os}} == 'windows' ]]",
+                    "environment": {"CC": "cl"},
+                },
             },
             project_name="demo",
             project_org=None,
@@ -177,7 +187,9 @@ class PresetRepositoryTests(unittest.TestCase):
         resolved_global = repo.resolve(["global"], template_resolver=self.resolver)
         self.assertEqual(resolved_global.environment["CC"], "icc")
 
-        fully_qualified = repo.resolve(["vendor/scoped"], template_resolver=self.resolver)
+        fully_qualified = repo.resolve(
+            ["vendor/scoped"], template_resolver=self.resolver
+        )
         self.assertEqual(fully_qualified.environment["CC"], "clang")
 
     def test_org_scoped_requires_explicit_name_for_different_org(self) -> None:
@@ -200,7 +212,3 @@ class PresetRepositoryTests(unittest.TestCase):
 
         resolved = repo.resolve(["vendor/scoped"], template_resolver=self.resolver)
         self.assertEqual(resolved.environment["OPT_LEVEL"], "3")
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()

@@ -1,18 +1,24 @@
 """Command line interface for the builder tool."""
+
 from __future__ import annotations
 
-from argparse import ArgumentParser, Namespace
-from pathlib import Path
-from typing import Iterable, List
 import json
 import os
 import sys
+from argparse import ArgumentParser, Namespace
+from pathlib import Path
+from typing import Iterable, List
+
+from core.command_runner import RecordingCommandRunner, SubprocessCommandRunner
 
 from .build import BuildEngine, BuildMode, BuildOptions, BuildPlan
-from core.command_runner import RecordingCommandRunner, SubprocessCommandRunner
 from .config_loader import ConfigurationStore, ProjectDefinition
 from .git_manager import GitManager
-from .validation import validate_project, validate_project_templates, validate_store_structure
+from .validation import (
+    validate_project,
+    validate_project_templates,
+    validate_store_structure,
+)
 
 
 def _make_runner(dry_run: bool) -> SubprocessCommandRunner | RecordingCommandRunner:
@@ -28,7 +34,9 @@ def _flatten_arg_groups(groups: Iterable[Iterable[str]]) -> List[str]:
     return flattened
 
 
-def _parse_extra_switches(values: Iterable[str]) -> tuple[List[str], List[str], List[str]]:
+def _parse_extra_switches(
+    values: Iterable[str],
+) -> tuple[List[str], List[str], List[str]]:
     config_args: List[str] = []
     build_args: List[str] = []
     install_args: List[str] = []
@@ -90,8 +98,9 @@ def _split_config_values(values: Iterable[str]) -> List[str]:
     return parts
 
 
-
-def _resolve_config_directories(workspace: Path, cli_values: Iterable[str]) -> List[Path]:
+def _resolve_config_directories(
+    workspace: Path, cli_values: Iterable[str]
+) -> List[Path]:
     config_dirs: List[Path] = [workspace / "config"]
 
     env_value = os.environ.get("BUILDER_CONFIG_DIR")
@@ -120,6 +129,7 @@ def _load_configuration_store(args: Namespace, workspace: Path) -> Configuration
     cli_dirs: Iterable[str] = getattr(args, "config_dirs", [])
     directories = _resolve_config_directories(workspace, cli_dirs)
     return ConfigurationStore.from_directories(workspace, directories)
+
 
 def _emit_dry_run_output(runner: RecordingCommandRunner, *, workspace: Path) -> None:
     for line in runner.iter_formatted(workspace=workspace):
@@ -161,7 +171,9 @@ def _resolve_install_directory(plan: BuildPlan) -> Path | None:
             if project.build_system == "cmake":
                 cache_file = build_dir / "CMakeCache.txt"
                 if cache_file.exists():
-                    for line in cache_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    for line in cache_file.read_text(
+                        encoding="utf-8", errors="ignore"
+                    ).splitlines():
                         stripped = line.strip()
                         if stripped.startswith("CMAKE_INSTALL_PREFIX:"):
                             value = stripped.partition("=")[2].strip()
@@ -173,7 +185,10 @@ def _resolve_install_directory(plan: BuildPlan) -> Path | None:
                     data = json.loads(intro_file.read_text(encoding="utf-8"))
                     if isinstance(data, list):
                         for option in data:
-                            if isinstance(option, dict) and option.get("name") == "prefix":
+                            if (
+                                isinstance(option, dict)
+                                and option.get("name") == "prefix"
+                            ):
                                 value = option.get("value")
                                 if value:
                                     return Path(str(value))
@@ -188,7 +203,9 @@ def _resolve_install_directory(plan: BuildPlan) -> Path | None:
 
 
 def _parse_arguments(argv: Iterable[str]) -> Namespace:
-    parser = ArgumentParser(prog="builder", description="Preset-driven build orchestrator")
+    parser = ArgumentParser(
+        prog="builder", description="Preset-driven build orchestrator"
+    )
     parser.add_argument(
         "-C",
         "--config-dir",
@@ -202,22 +219,59 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
 
     build_parser = subparsers.add_parser("build", help="Configure and build a project")
     build_parser.add_argument("project", help="Project name to build")
-    build_parser.add_argument("--org", help="Organization/namespace of the project", dest="org")
-    build_parser.add_argument("-p", "--preset", action="append", default=[], help="Preset name(s) to apply (comma-separated)")
+    build_parser.add_argument(
+        "--org", help="Organization/namespace of the project", dest="org"
+    )
+    build_parser.add_argument(
+        "-p",
+        "--preset",
+        action="append",
+        default=[],
+        help="Preset name(s) to apply (comma-separated)",
+    )
     build_parser.add_argument("-b", "--branch", help="Git branch to use for the build")
-    build_parser.add_argument("-B", "--build-type", help="Override build type (Debug/Release)")
-    build_parser.add_argument("-G", "--generator", help="Override build system generator")
+    build_parser.add_argument(
+        "-B", "--build-type", help="Override build type (Debug/Release)"
+    )
+    build_parser.add_argument(
+        "-G", "--generator", help="Override build system generator"
+    )
     build_parser.add_argument("-t", "--target", help="Build a specific target")
-    build_parser.add_argument("--install", action="store_true", help="Install after build")
-    build_parser.add_argument("-n", "--dry-run", action="store_true", help="Print commands without executing them")
-    build_parser.add_argument("--show-vars", action="store_true", help="Display resolved variables before building")
-    build_parser.add_argument("--no-switch-branch", action="store_true", help="Do not switch Git branches automatically")
-    build_parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    build_parser.add_argument(
+        "--install", action="store_true", help="Install after build"
+    )
+    build_parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="Print commands without executing them",
+    )
+    build_parser.add_argument(
+        "--show-vars",
+        action="store_true",
+        help="Display resolved variables before building",
+    )
+    build_parser.add_argument(
+        "--no-switch-branch",
+        action="store_true",
+        help="Do not switch Git branches automatically",
+    )
+    build_parser.add_argument(
+        "--verbose", action="store_true", help="Enable verbose output"
+    )
     build_parser.add_argument("-T", "--toolchain", help="Specify the toolchain to use")
     build_parser.add_argument("--install-dir", help="Override install directory")
-    build_parser.add_argument("--config-only", action="store_true", help="Run configuration only")
-    build_parser.add_argument("--build-only", action="store_true", help="Run build only")
-    build_parser.add_argument("--reconfig", action="store_true", help="Clean and reconfigure the build directory")
+    build_parser.add_argument(
+        "--config-only", action="store_true", help="Run configuration only"
+    )
+    build_parser.add_argument(
+        "--build-only", action="store_true", help="Run build only"
+    )
+    build_parser.add_argument(
+        "--reconfig",
+        action="store_true",
+        help="Clean and reconfigure the build directory",
+    )
     build_parser.add_argument(
         "-X",
         dest="extra_switches",
@@ -254,16 +308,43 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         help="Additional arguments appended to install commands",
     )
 
-    validate_parser = subparsers.add_parser("validate", help="Validate configuration files")
-    validate_parser.add_argument("project", nargs="?", help="Validate a single project by name")
-    validate_parser.add_argument("--org", dest="org", help="Organization/namespace for the project when validating")
+    validate_parser = subparsers.add_parser(
+        "validate", help="Validate configuration files"
+    )
+    validate_parser.add_argument(
+        "project", nargs="?", help="Validate a single project by name"
+    )
+    validate_parser.add_argument(
+        "--org",
+        dest="org",
+        help="Organization/namespace for the project when validating",
+    )
 
     update_parser = subparsers.add_parser("update", help="Update Git repositories")
-    update_parser.add_argument("project", nargs="?", help="Project to update; omit to update all")
-    update_parser.add_argument("--org", dest="org", help="Organization/namespace to filter projects when updating")
-    update_parser.add_argument("-b", "--branch", help="Branch to checkout during update")
-    update_parser.add_argument("-s", "--submodule", choices=["default", "latest", "skip"], default="default", help="Submodule update strategy")
-    update_parser.add_argument("-n", "--dry-run", action="store_true", help="Preview git commands without executing them")
+    update_parser.add_argument(
+        "project", nargs="?", help="Project to update; omit to update all"
+    )
+    update_parser.add_argument(
+        "--org",
+        dest="org",
+        help="Organization/namespace to filter projects when updating",
+    )
+    update_parser.add_argument(
+        "-b", "--branch", help="Branch to checkout during update"
+    )
+    update_parser.add_argument(
+        "-s",
+        "--submodule",
+        choices=["default", "latest", "skip"],
+        default="default",
+        help="Submodule update strategy",
+    )
+    update_parser.add_argument(
+        "-n",
+        "--dry-run",
+        action="store_true",
+        help="Preview git commands without executing them",
+    )
 
     list_parser = subparsers.add_parser(
         "list",
@@ -275,7 +356,10 @@ def _parse_arguments(argv: Iterable[str]) -> Namespace:
         metavar="PROJECT",
         help="Project names to inspect; omit to list all configured projects",
     )
-    list_parser.add_argument("--branch", help="Git branch to inspect (switches repositories unless --no-switch-branch is used)")
+    list_parser.add_argument(
+        "--branch",
+        help="Git branch to inspect (switches repositories unless --no-switch-branch is used)",
+    )
     list_parser.add_argument(
         "--no-switch-branch",
         action="store_true",
@@ -355,10 +439,14 @@ def main(argv: Iterable[str] | None = None) -> int:
 
 def _handle_build(args: Namespace, workspace: Path) -> int:
     store = _load_configuration_store(args, workspace)
-    switch_config_args, switch_build_args, switch_install_args = _parse_extra_switches(getattr(args, "extra_switches", []))
+    switch_config_args, switch_build_args, switch_install_args = _parse_extra_switches(
+        getattr(args, "extra_switches", [])
+    )
     cli_extra_config_args = _flatten_arg_groups(getattr(args, "extra_config_args", []))
     cli_extra_build_args = _flatten_arg_groups(getattr(args, "extra_build_args", []))
-    cli_extra_install_args = _flatten_arg_groups(getattr(args, "extra_install_args", []))
+    cli_extra_install_args = _flatten_arg_groups(
+        getattr(args, "extra_install_args", [])
+    )
     extra_config_args = [*switch_config_args, *cli_extra_config_args]
     extra_build_args = [*switch_build_args, *cli_extra_build_args]
     extra_install_args = [*switch_install_args, *cli_extra_install_args]
@@ -433,7 +521,9 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
             component_branch_arg: str | None = None
             if component_dir_arg and not options.no_switch_branch:
                 root_target_branch = plan.project.git.main_branch or root_target_branch
-                component_branch_arg = branch_override or plan.project.git.component_branch or build_branch
+                component_branch_arg = (
+                    branch_override or plan.project.git.component_branch or build_branch
+                )
             state = git_manager.prepare_checkout(
                 repo_path=plan.source_dir,
                 target_branch=root_target_branch,
@@ -446,7 +536,9 @@ def _handle_build(args: Namespace, workspace: Path) -> int:
             )
 
         if not plan_has_steps:
-            print(f"No build steps for project '{plan.project.name}' (build directory not configured)")
+            print(
+                f"No build steps for project '{plan.project.name}' (build directory not configured)"
+            )
             return
 
         try:
@@ -503,7 +595,9 @@ def _handle_validate(args: Namespace, workspace: Path) -> int:
     else:
         project_names = sorted(store.list_projects())
         if org_opt:
-            project_names = [key for key in project_names if store.projects[key].org == org_opt]
+            project_names = [
+                key for key in project_names if store.projects[key].org == org_opt
+            ]
         if not project_names:
             print("No projects found")
             return 0
@@ -524,7 +618,9 @@ def _handle_validate(args: Namespace, workspace: Path) -> int:
                 workspace=workspace,
             )
         except Exception as exc:
-            message = exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
+            message = (
+                exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
+            )
             errors.append((project_name, message))
 
     if errors:
@@ -541,7 +637,9 @@ def _handle_update(args: Namespace, workspace: Path) -> int:
     store = _load_configuration_store(args, workspace)
     runner = _make_runner(args.dry_run)
     git_manager = GitManager(runner)
-    planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
+    planning_engine = BuildEngine(
+        store=store, command_runner=RecordingCommandRunner(), workspace=workspace
+    )
 
     org_opt = getattr(args, "org", None)
     project_refs: List[tuple[str, ProjectDefinition]] = []
@@ -596,7 +694,9 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
     store = _load_configuration_store(args, workspace)
     runner = SubprocessCommandRunner()
     git_manager = GitManager(runner)
-    planning_engine = BuildEngine(store=store, command_runner=RecordingCommandRunner(), workspace=workspace)
+    planning_engine = BuildEngine(
+        store=store, command_runner=RecordingCommandRunner(), workspace=workspace
+    )
 
     org_opt = getattr(args, "org", None)
     selected_projects = list(getattr(args, "projects", []) or [])
@@ -605,7 +705,9 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         if not entry:
             continue
         if isinstance(entry, str) and "," in entry:
-            user_supplied.extend([part.strip() for part in entry.split(",") if part.strip()])
+            user_supplied.extend(
+                [part.strip() for part in entry.split(",") if part.strip()]
+            )
         else:
             user_supplied.append(str(entry))
 
@@ -685,7 +787,9 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
         commit: str | None = None
         state = None
         checkout_error: RuntimeError | None = None
-        repo_ready = git_manager.is_repository(repo_path, environment=plan.git_environment)
+        repo_ready = git_manager.is_repository(
+            repo_path, environment=plan.git_environment
+        )
         submodules: List[dict[str, str]] = []
 
         if repo_ready:
@@ -695,7 +799,9 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
             component_branch_arg: str | None = None
             if component_dir_arg and not args.no_switch_branch:
                 root_target_branch = plan.project.git.main_branch or root_target_branch
-                component_branch_arg = branch_override or plan.project.git.component_branch or plan.branch
+                component_branch_arg = (
+                    branch_override or plan.project.git.component_branch or plan.branch
+                )
 
             try:
                 state = git_manager.prepare_checkout(
@@ -711,16 +817,22 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
                 checkout_error = exc
 
             try:
-                branch, commit = git_manager.get_repository_state(repo_path, environment=plan.git_environment)
+                branch, commit = git_manager.get_repository_state(
+                    repo_path, environment=plan.git_environment
+                )
             except RuntimeError as exc:
                 if checkout_error is None:
                     checkout_error = exc
             else:
                 if repo_path.exists():
-                    submodules = git_manager.list_submodules(repo_path, environment=plan.git_environment)
+                    submodules = git_manager.list_submodules(
+                        repo_path, environment=plan.git_environment
+                    )
 
             if checkout_error is not None:
-                print(f"Warning: Could not prepare repository '{key}': {checkout_error}")
+                print(
+                    f"Warning: Could not prepare repository '{key}': {checkout_error}"
+                )
 
             if state is not None:
                 try:
@@ -732,7 +844,9 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
                 except RuntimeError as exc:
                     print(f"Warning: Could not restore repository '{key}': {exc}")
         else:
-            branch, commit = git_manager.get_repository_state(repo_path, environment=plan.git_environment)
+            branch, commit = git_manager.get_repository_state(
+                repo_path, environment=plan.git_environment
+            )
 
         branch_display = branch or "-"
         commit_display = commit[:11] if commit else "<missing>"
@@ -751,10 +865,14 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
             row["Build Dir"] = build_dir_display
         if include_install_dir:
             resolved_install_dir = _resolve_install_directory(plan)
-            install_dir_display = str(resolved_install_dir) if resolved_install_dir else "-"
+            install_dir_display = (
+                str(resolved_install_dir) if resolved_install_dir else "-"
+            )
             row["Install Dir"] = install_dir_display
         if include_presets:
-            preset_names = ", ".join(sorted(project.presets)) if project.presets else "-"
+            preset_names = (
+                ", ".join(sorted(project.presets)) if project.presets else "-"
+            )
             row["Presets"] = preset_names
         if include_dependencies:
             dependency_entries: List[str] = []
@@ -765,15 +883,21 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
                     )
                 else:
                     dependency_entries.append(dependency.name)
-            row["Dependencies"] = ", ".join(dependency_entries) if dependency_entries else "-"
+            row["Dependencies"] = (
+                ", ".join(dependency_entries) if dependency_entries else "-"
+            )
         rows.append(row)
 
         if not repo_path.exists():
-            print(f"Warning: Repository path '{repo_path}' does not exist for project '{key}'")
+            print(
+                f"Warning: Repository path '{repo_path}' does not exist for project '{key}'"
+            )
             continue
 
         if not repo_ready:
-            print(f"Warning: Git repository not found at '{repo_path}' for project '{key}'")
+            print(
+                f"Warning: Git repository not found at '{repo_path}' for project '{key}'"
+            )
             continue
 
         if not include_submodules:
@@ -826,7 +950,9 @@ def _handle_list(args: Namespace, workspace: Path) -> int:
             widths[header] = max(widths[header], len(value))
 
     def _format(row: dict[str, str]) -> str:
-        return "  ".join(row.get(header, "").ljust(widths[header]) for header in headers)
+        return "  ".join(
+            row.get(header, "").ljust(widths[header]) for header in headers
+        )
 
     header_row = {header: header for header in headers}
     print(_format(header_row))
@@ -843,7 +969,3 @@ def _collect_presets(values: List[str]) -> List[str]:
             continue
         presets.extend(part.strip() for part in value.split(",") if part.strip())
     return presets
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

@@ -1,11 +1,11 @@
 """Shared helpers for locating and loading configuration mappings."""
-from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
+from __future__ import annotations
 
 import json
 import tomllib
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 
 try:  # Optional dependency for YAML support
     from ruamel.yaml import YAML as _YamlFactory
@@ -68,12 +68,16 @@ def load_config_file(path: Path) -> Mapping[str, Any]:
         data = loader(handle)
 
     if not isinstance(data, Mapping):
-        raise TypeError(f"Configuration file '{path}' must contain a mapping at the root")
+        raise TypeError(
+            f"Configuration file '{path}' must contain a mapping at the root"
+        )
 
     return data
 
 
-def collect_config_files(directory: Path, *, suffixes: Iterable[str] | None = None) -> Dict[str, Path]:
+def collect_config_files(
+    directory: Path, *, suffixes: Iterable[str] | None = None
+) -> Dict[str, Path]:
     """Return a mapping of filename stems to configuration files within ``directory``."""
 
     allowed = {suffix.lower() for suffix in (suffixes or FILE_LOADERS.keys())}
@@ -100,7 +104,9 @@ def collect_config_files(directory: Path, *, suffixes: Iterable[str] | None = No
     return files
 
 
-def merge_mappings(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> Dict[str, Any]:
+def merge_mappings(
+    base: Mapping[str, Any], overlay: Mapping[str, Any]
+) -> Dict[str, Any]:
     """Deep merge two mapping objects."""
 
     result: Dict[str, Any] = dict(base)
@@ -138,7 +144,9 @@ def normalize_string_list(value: Any, *, field_name: str | None = None) -> List[
     raise TypeError(f"{label}must be a string or sequence of strings")
 
 
-def resolve_config_paths(root: Path, directories: Iterable[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+def resolve_config_paths(
+    root: Path, directories: Iterable[Path]
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     """Resolve ``directories`` relative to ``root`` and partition existing/missing paths."""
 
     resolved: List[Path] = []

@@ -1,16 +1,20 @@
 import unittest
 from unittest.mock import patch
 
-from core.git_remotes import (GitService, RemoteInfo, normalize_domain,
-                              parse_remote_url, resolve_ssh_alias)
+from core.git_remotes import (
+    GitService,
+    RemoteInfo,
+    normalize_domain,
+    parse_remote_url,
+    resolve_ssh_alias,
+)
 
 
 class TestGitRemotes(unittest.TestCase):
-    
     def test_normalize_domain(self):
-        self.assertEqual(normalize_domain('ssh.github.com'), 'github.com')
-        self.assertEqual(normalize_domain('altssh.gitlab.com'), 'gitlab.com')
-        self.assertEqual(normalize_domain('bitbucket.org'), 'bitbucket.org')
+        self.assertEqual(normalize_domain("ssh.github.com"), "github.com")
+        self.assertEqual(normalize_domain("altssh.gitlab.com"), "gitlab.com")
+        self.assertEqual(normalize_domain("bitbucket.org"), "bitbucket.org")
 
     def test_parse_ssh_scp_style(self):
         # user@host:path/to/repo.git
@@ -44,7 +48,7 @@ class TestGitRemotes(unittest.TestCase):
 
     def test_parse_alias_resolve_mock(self):
         # Mocking resolve_ssh_alias
-        with patch('core.git_remotes.resolve_ssh_alias') as mock_resolve:
+        with patch("core.git_remotes.resolve_ssh_alias") as mock_resolve:
             mock_resolve.return_value = "github.com"
             url = "gh-alias:owner/repo.git"
             info = parse_remote_url(url)
@@ -63,6 +67,3 @@ class TestGitRemotes(unittest.TestCase):
     def test_parse_invalid_url(self):
         self.assertIsNone(parse_remote_url("invalid-url"))
         self.assertIsNone(parse_remote_url("http://domain-only.com"))
-
-if __name__ == '__main__':
-    unittest.main()

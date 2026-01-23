@@ -1,4 +1,5 @@
 """Sync module for pushing branches and managing PRs."""
+
 from __future__ import annotations
 
 import sys
@@ -24,7 +25,7 @@ def push_branch(branch: str, check: bool = False) -> bool:
         # --force-with-lease is safer, but if user rebased local, lease might fail if
         # remote has moved strictly forward (unlikely in single-user stack).
         # We use simple force for now as per requirement.
-        run_git(['push', 'origin', branch, '--force-with-lease'], check=True)
+        run_git(["push", "origin", branch, "--force-with-lease"], check=True)
         return True
     except Exception as e:
         print(f"Failed to push {branch}: {e}", file=sys.stderr)
@@ -33,7 +34,12 @@ def push_branch(branch: str, check: bool = False) -> bool:
         return False
 
 
-def sync_stack(push: bool = True, pr: bool = False, dry_run: bool = False, limit_to_branch: Optional[str] = None) -> None:
+def sync_stack(
+    push: bool = True,
+    pr: bool = False,
+    dry_run: bool = False,
+    limit_to_branch: Optional[str] = None,
+) -> None:
     """
     Sync code by pushing local branches to remote, and optionally manage PRs.
     Traverses the Machete tree mostly once (conceptually).
@@ -59,6 +65,7 @@ def sync_stack(push: bool = True, pr: bool = False, dry_run: bool = False, limit
             sys.exit(1)
 
         from .machete import get_linear_stack
+
         linear_stack = get_linear_stack(limit_to_branch, nodes)
 
         if not linear_stack:
@@ -126,15 +133,16 @@ def sync_stack(push: bool = True, pr: bool = False, dry_run: bool = False, limit
         else:
             print(f"Pushing {len(push_tasks)} branches in parallel...")
             with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(
-                    push_branch, branch): branch for branch in push_tasks}
+                futures = {
+                    executor.submit(push_branch, branch): branch
+                    for branch in push_tasks
+                }
                 for future in as_completed(futures):
                     branch = futures[future]
                     try:
                         future.result()
                     except Exception as exc:
-                        print(
-                            f"Push task for {branch} generated an exception: {exc}")
+                        print(f"Push task for {branch} generated an exception: {exc}")
 
     # Execute PR Tasks
     if pr_tasks:
@@ -145,7 +153,7 @@ def sync_stack(push: bool = True, pr: bool = False, dry_run: bool = False, limit
 
             def do_pr_sync(payload):
                 branch, parent_name = payload
-                is_stack_base = (parent_name == stack_base)
+                is_stack_base = parent_name == stack_base
                 # Fallback check if parent is root but not explicit base (upstream)
                 # But since we passed string names, we rely on the logic used during collection or here
                 # In collect_tasks we passed `parent.name`.
@@ -178,8 +186,7 @@ def sync_stack(push: bool = True, pr: bool = False, dry_run: bool = False, limit
                     print(f"PR sync failed for {branch}: {e}", file=sys.stderr)
 
             with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(
-                    do_pr_sync, task): task for task in pr_tasks}
+                futures = {executor.submit(do_pr_sync, task): task for task in pr_tasks}
                 for future in as_completed(futures):
                     pass  # Exceptions printed in thread function
 

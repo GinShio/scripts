@@ -1,12 +1,14 @@
 """
 Utility functions for gputest.
 """
+
 import os
 import platform
 from pathlib import Path
 from typing import Any, Dict, Optional
-from core.template import TemplateResolver
+
 from core.config_loader import load_config_file
+from core.template import TemplateResolver
 
 
 def _get_default_context() -> Dict[str, Any]:
@@ -16,7 +18,7 @@ def _get_default_context() -> Dict[str, Any]:
         "system": {
             "os": platform.system().lower(),
             "architecture": platform.machine(),
-        }
+        },
     }
 
 
@@ -28,8 +30,9 @@ def substitute(text: str, variables: Dict[str, Any]) -> str:
     return str(resolver.resolve(text))
 
 
-def resolve_env(env_config: Dict[str, str],
-                variables: Dict[str, Any]) -> Dict[str, str]:
+def resolve_env(
+    env_config: Dict[str, str], variables: Dict[str, Any]
+) -> Dict[str, str]:
     """Resolve environment variables with substitution."""
     context = _get_default_context()
     deep_merge(context, variables)
@@ -41,15 +44,10 @@ def resolve_env(env_config: Dict[str, str],
     return resolved
 
 
-def deep_merge(target: Dict[str, Any],
-               source: Dict[str, Any]) -> Dict[str, Any]:
+def deep_merge(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively merge source dict into target dict."""
     for key, value in source.items():
-        if isinstance(
-                value,
-                dict) and key in target and isinstance(
-                target[key],
-                dict):
+        if isinstance(value, dict) and key in target and isinstance(target[key], dict):
             deep_merge(target[key], value)
         else:
             target[key] = value
