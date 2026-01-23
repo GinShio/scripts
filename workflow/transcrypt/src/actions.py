@@ -272,12 +272,25 @@ def smudge(context: str = "default", file_path: Optional[str] = None):
         sys.stdout.buffer.write(decrypted)
 
     except Exception as e:
-        # If decryption fails for other reasons (authentication error usually),
-        # we might want to fail or fallback.
-        # Failing hard is safer to warn user that "Hey, you have a password but it's WRONG".
-        # Missing password is one thing (checkout encrypted), wrong password is another.
-        print(f"Decryption failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        # Check if user explicitly allows fallback
+        allow_fallback = os.environ.get("TRANSCRYPT_ALLOW_RAW_FALLBACK", "")
+
+        if allow_fallback == "1" or allow_fallback.lower() == "true":
+            # Fallback Mode: Output raw data
+            print(
+                f"Warning: Decryption failed ({e}). Outputting raw data (Fallback Mode).",
+                file=sys.stderr,
+            )
+            # Ensure we write the original data
+            sys.stdout.buffer.write(data)
+            sys.exit(0)
+        else:
+            # If decryption fails for other reasons (authentication error usually),
+            # we might want to fail or fallback.
+            # Failing hard is safer to warn user that "Hey, you have a password but it's WRONG".
+            # Missing password is one thing (checkout encrypted), wrong password is another.
+            print(f"Decryption failed: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 def configure(
@@ -410,8 +423,21 @@ def textconv(file_path: str, context: str = "default"):
         sys.stdout.buffer.write(decrypted)
 
     except Exception as e:
-        print(f"Textconv failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        # Check if user explicitly allows fallback
+        allow_fallback = os.environ.get("TRANSCRYPT_ALLOW_RAW_FALLBACK", "")
+
+        if allow_fallback == "1" or allow_fallback.lower() == "true":
+            # Fallback Mode: Output raw data
+            print(
+                f"Warning: Textconv decryption failed ({e}). Outputting raw data (Fallback Mode).",
+                file=sys.stderr,
+            )
+            # Ensure we write the original data
+            sys.stdout.buffer.write(data)
+            sys.exit(0)
+        else:
+            print(f"Textconv failed: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 def status(context: str = "default"):
