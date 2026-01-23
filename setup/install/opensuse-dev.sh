@@ -76,7 +76,7 @@ sudo -E zypper in -y \
 # -----------------------------------------------------------------------------
 # Interpreter & Core
 sudo -E zypper in -y \
-    python3 python3-devel python3-doc python3-pipx python3-virtualenv tree-sitter-python
+    python3 python3-devel python3-doc python3-pipx python3-ruff python3-virtualenv tree-sitter-python
 
 # AI / ML / Math
 sudo -E zypper in -y \
