@@ -265,19 +265,3 @@ get_main_branch() {
     # 3. Fallback
     echo "master"
 }
-
-# Parse Git Remote URL to Domain, Org, Repo
-# Support HTTPS and SSH (including ~/.ssh/config aliases)
-# Usage: parse_git_remote <url>
-# Output: <domain> <org> <repo> (space separated)
-parse_git_remote() {
-    _url="$1"
-
-     # Use variable from entry script
-    if [ -n "$HOOKS_DIR" ] && [ -f "$HOOKS_DIR/core/remote_parser.py" ]; then
-        python3 "$HOOKS_DIR/core/remote_parser.py" "$_url"
-    else
-        log_error "Cannot find remote_parser.py helper. Ensure HOOKS_DIR is set or structure is standard."
-        return 1
-    fi
-}

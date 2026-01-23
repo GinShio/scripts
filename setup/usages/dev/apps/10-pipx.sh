@@ -6,8 +6,8 @@ if command -v pipx &>/dev/null; then
     # Ensure pipx path is fine
     pipx ensurepath || true
 
-    # Core Tools: git-machete (Stacked Diffs), dotdrop, etc.
-    PARAMS=(dotdrop git-machete iree-base-compiler[onnx] pyright trash-cli)
+    # Core Tools: dotdrop, etc.
+    PARAMS=(dotdrop iree-base-compiler[onnx] pyright trash-cli)
     for pkg in "${PARAMS[@]}"; do
         # Extract package name for check (e.g. iree-base-compiler[onnx] -> iree-base-compiler)
         # But pipx list is slow. Let's just try install, pipx skips if installed.
