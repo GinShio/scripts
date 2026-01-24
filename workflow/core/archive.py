@@ -172,24 +172,35 @@ class ArchiveManager:
         cls, source_size: int
     ) -> zstd.ZstdCompressionParameters:
         size = max(1, source_size)
+
+        # Determine window log but cap to 27 (128 MiB) to keep decompression compatible.
         window_log = cls._zstd_window_log(size)
-        threads = cls._zstd_thread_count(size)
-        enable_ldm = size >= 32 * 1024 * 1024 and window_log >= 23
+        window_log = min(window_log, 27)
+
+        # Prefer using all available CPUs to maximize throughput; memory checks below will
+        # reduce thread count if necessary.
+        cpu_count = os.cpu_count() or 1
+        threads = max(1, cpu_count)
+
+        # Enable LDM more eagerly for large inputs to speed compression while preserving ratio.
+        enable_ldm = size >= 16 * 1024 * 1024 and window_log >= 22
 
         mem_bytes = cls._available_memory_bytes()
         if mem_bytes > 0:
             budget = max(mem_bytes // 2, 1)
             per_thread_bytes = 1 << window_log
-            estimated_thread = per_thread_bytes * 2
+            # Use slightly larger per-thread estimation to allow faster operation.
+            estimated_thread = per_thread_bytes * 3
             max_threads_by_mem = max(1, budget // max(estimated_thread, 1))
             if max_threads_by_mem < threads:
                 threads = max_threads_by_mem
+            # Reduce window_log first if memory does not permit current threads.
             while (
                 threads > 0 and estimated_thread * threads > budget and window_log > 10
             ):
                 window_log -= 1
                 per_thread_bytes = 1 << window_log
-                estimated_thread = per_thread_bytes * 2
+                estimated_thread = per_thread_bytes * 3
                 max_threads_by_mem = max(1, budget // max(estimated_thread, 1))
                 threads = min(threads, max_threads_by_mem)
             if threads == 0:
@@ -220,6 +231,8 @@ class ArchiveManager:
             else:
                 base_job = 32 * 1024 * 1024
 
+            # Favor larger jobs to reduce overhead per job and speed up throughput.
+            base_job *= 2
             upper_bound = max(1 << 20, size // threads)
             job_size = max(1 << 20, min(base_job, upper_bound))
 

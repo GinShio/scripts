@@ -84,11 +84,13 @@ class TestRunner(unittest.TestCase):
 
     @patch("gputest.src.runner.get_gpu_device_id", return_value="gpu1")
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
+    @patch("gputest.src.runner.shutil")
+    @patch("gputest.src.runner.os.replace")
     @patch("gputest.src.runner.ArchiveManager")
     @patch("gputest.src.runner.get_gpu_id_from_vulkan")
     @patch("gputest.src.runner.generate_testlist")
     def test_run_tests_with_archive(
-        self, mock_gen_testlist, mock_get_vk, mock_archive_manager, mock_cpu, mock_gpu
+        self, mock_gen_testlist, mock_get_vk, mock_archive_manager, mock_os_replace, mock_shutil, mock_cpu, mock_gpu
     ):
         mock_get_vk.return_value = "1002:73bf"
         # Update config to trigger archiving (needs runner_bin to be
@@ -98,18 +100,28 @@ class TestRunner(unittest.TestCase):
         run_tests(self.ctx, ["test1"])
 
         mock_archive_manager.return_value.create_archive.assert_called()
-        # Verify archive path structure:
-        # result_dir/driver/suite_gpu_date.tar.zst
         call_args = mock_archive_manager.return_value.create_archive.call_args
         target_path = call_args.kwargs["target_path"]
-        self.assertIn("driver1", str(target_path))
+        # Archive should be created inside the testing output directory first
+        self.assertTrue(str(target_path).startswith(str(self.ctx.runner_root / "testing")))
         self.assertIn("suite1_1002:73bf", target_path.name)
 
-        # Verify mkdir calls - implicitly verified by successful execution and directory existence if we checked it
-        # Since we are not patching mkdir, we can check if the directory exists in the temp dir
-        # But the exact path depends on timestamp.
-        # We can check if result_dir/driver1 exists
-        self.assertTrue((self.ctx.result_dir / "driver1").exists())
+        # Verify the runner logged that it will preserve the temporary archive
+        self.ctx.console.info.assert_any_call(
+            f"Preserving temporary archive at {target_path} for debugging"
+        )
+
+        # Verify we attempted to copy to the final dir and atomically replace
+        mock_shutil.copy2.assert_called()
+        copy_src, copy_dest = mock_shutil.copy2.call_args[0]
+        self.assertEqual(copy_src, str(target_path))
+        self.assertTrue(str(copy_dest).startswith(str(self.ctx.result_dir / "driver1")))
+
+        # os.replace should have been used to move the temp file into place
+        mock_os_replace.assert_called()
+        replace_src, replace_dest = mock_os_replace.call_args[0]
+        self.assertTrue(str(replace_src).startswith(str(self.ctx.result_dir / "driver1")))
+        self.assertTrue(str(replace_dest).startswith(str(self.ctx.result_dir / "driver1")))
 
     @patch("gputest.src.runner.get_gpu_device_id", return_value="gpu1")
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
@@ -319,3 +331,9 @@ class TestRunner(unittest.TestCase):
 
         # source_dir should be the staging dir
         self.assertIn(".archive_staging", str(artifact.source_dir))
+
+        # Verify we attempted to move the temporary archive into result_dir
+        mock_shutil.move.assert_called()
+        move_src, move_dest = mock_shutil.move.call_args[0]
+        self.assertTrue(str(move_src).startswith(str(self.ctx.runner_root / "testing")))
+        self.assertTrue(str(move_dest).startswith(str(self.ctx.result_dir / "driver1")))

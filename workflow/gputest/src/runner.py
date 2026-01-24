@@ -458,11 +458,6 @@ def run_tests(ctx: Context, test_names: List[str]):
                 }
             )
 
-            # Run pre-run hooks
-            pre_hooks = suite.get("pre_run_hooks", []) + test_def.get("pre_run", [])
-            # So I should probably default to running 'get_git_info' if
-            # it exists, or add a global 'default_pre_hooks'.
-
             # Let's implement generic hooks execution
             def run_hooks(hooks_list, phase_name):
                 for hook_name in hooks_list:
@@ -476,14 +471,17 @@ def run_tests(ctx: Context, test_names: List[str]):
                         ctx.runner.run(
                             ["sh", "-c", substitute(hook_cmd_tpl, hook_vars)],
                             cwd=output_dir,
-                            check=False,
+                            env=merged_env,
+                            check=True,
+                            stream=True
                         )
                     except Exception as e:
                         ctx.console.error(
                             f"{phase_name} hook '{hook_name}' failed: {e}"
                         )
 
-            # Run explicit pre-run hooks
+            # Run pre-run hooks
+            pre_hooks = suite.get("pre_run_hooks", []) + test_def.get("pre_run", [])
             run_hooks(pre_hooks, "pre-run")
 
             # Run the test
@@ -498,14 +496,8 @@ def run_tests(ctx: Context, test_names: List[str]):
             archive_filename = (
                 f"{suite_name}_{test_vars['gpu_id']}_{test_vars['date']}.tar.zst"
             )
-            archive_parent = ctx.result_dir / driver_name
 
-            if not ctx.console.dry_run:
-                archive_parent.mkdir(parents=True, exist_ok=True)
-
-            archive_path = archive_parent / archive_filename
-
-            ctx.console.info(f"Archiving results to {archive_path}")
+            ctx.console.info(f"Archiving results to temporary location in {output_dir}")
 
             # Baseline naming: vendor_suite_date
             baseline_name = f"{driver_name}_{suite_name}_{test_vars['date']}"
@@ -515,7 +507,7 @@ def run_tests(ctx: Context, test_names: List[str]):
             source_dir_for_archive = output_dir
 
             if archive_files and not ctx.console.dry_run:
-                # Create a staging directory
+                # Create a staging directory inside output_dir
                 staging_dir = output_dir / ".archive_staging"
                 if staging_dir.exists():
                     shutil.rmtree(staging_dir)
@@ -538,32 +530,70 @@ def run_tests(ctx: Context, test_names: List[str]):
                             shutil.copy2(match, dest_path)
                         elif match.is_dir():
                             # For directories, we copy the whole tree
-                            # If dest exists (e.g. from another pattern), we might need to merge?
-                            # shutil.copytree fails if dest exists.
-                            # Let's use a simple approach: if dest exists, skip or merge?
-                            # For now, assume distinct matches or handle simple cases.
                             if not dest_path.exists():
                                 shutil.copytree(match, dest_path)
 
                 source_dir_for_archive = staging_dir
 
-            # Use ArchiveManager for archiving
+            # Use ArchiveManager to create archive inside the testing output_dir first
             archive_manager = ArchiveManager(ctx.console)
             artifact = ArchiveArtifact(
                 source_dir=source_dir_for_archive, label=test_name
             )
 
+            tmp_archive_path = output_dir / archive_filename
+
             try:
                 if source_dir_for_archive.exists():
                     archive_manager.create_archive(
-                        artifact=artifact, target_path=archive_path, overwrite=True
+                        artifact=artifact, target_path=tmp_archive_path, overwrite=True
                     )
+
+                    # After successful archive creation in testing dir, move to final result dir
+                    final_parent = ctx.result_dir / driver_name
+                    if not ctx.console.dry_run:
+                        final_parent.mkdir(parents=True, exist_ok=True)
+                        final_archive_path = final_parent / archive_filename
+
+                        # Copy to a temporary file in the final directory then atomically replace
+                        final_tmp = final_parent / f"{archive_filename}.part"
+                        try:
+                            # Ensure previous temp is removed
+                            if final_tmp.exists():
+                                final_tmp.unlink()
+
+                            shutil.copy2(str(tmp_archive_path), str(final_tmp))
+                            os.replace(str(final_tmp), str(final_archive_path))
+
+                            # Preserve the temporary archive in testing dir for local verification
+                            ctx.console.info(f"Preserving temporary archive at {tmp_archive_path} for debugging")
+
+                            ctx.console.info(f"Moved archive to {final_archive_path}")
+                        except Exception:
+                            # Cleanup any partially written temp file
+                            try:
+                                if final_tmp.exists():
+                                    final_tmp.unlink()
+                            except Exception:
+                                pass
+                            raise
+                    else:
+                        ctx.console.info(
+                            f"[dry-run] Would move {tmp_archive_path} to {ctx.result_dir / driver_name}"
+                        )
+
                 elif ctx.console.dry_run:
                     ctx.console.info(
-                        f"[dry-run] Would archive {test_name} to {archive_path}"
+                        f"[dry-run] Would archive {test_name} to {tmp_archive_path}"
                     )
             except Exception as e:
                 ctx.console.error(f"Failed to archive results: {e}")
+                # If a temporary archive was left behind, try to clean it up
+                try:
+                    if tmp_archive_path.exists():
+                        tmp_archive_path.unlink()
+                except Exception:
+                    pass
             finally:
                 # Cleanup staging directory
                 if (
