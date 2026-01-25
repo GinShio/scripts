@@ -198,7 +198,7 @@ resolve_build_dirs() {
     _branch="$2"
 
     # Locate builder script
-     . "$HOME/.config/workflow/.env"
+     . "$XDG_CONFIG_HOME/workflow/.env"
     _builder_script="$PROJECTS_SCRIPT_DIR/builder.py"
 
     # Query builder script

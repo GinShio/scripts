@@ -17,7 +17,6 @@ set -e
 # Configuration & Defaults
 # ==============================================================================
 
-: "${XDG_CONFIG_HOME:=$HOME/.config}"
 ENV_FILE="$XDG_CONFIG_HOME/workflow/.env"
 TIMESTAMP=$(date "+%Y")
 ARCHIVE_NAME="ssh-${TIMESTAMP}"

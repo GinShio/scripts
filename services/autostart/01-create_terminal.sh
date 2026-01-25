@@ -11,4 +11,4 @@ tmux new-session -d -s runner -c "$XDG_RUNTIME_DIR/runner" \
 # systemctl --user show tmux-runner.scope -p MemoryCurrent -p MemoryMax
 
 tmux new-session -d -s editor -c "$HOME"
-tmux send-keys -t editor "emacsclient -nw --eval '(doom/load-session \"$HOME/.config/emacs/.local/etc/workspaces/projs\")'" ENTER
+tmux send-keys -t editor "emacsclient -nw --eval '(doom/load-session \"$XDG_CONFIG_HOME/emacs/.local/etc/workspaces/projs\")'" ENTER

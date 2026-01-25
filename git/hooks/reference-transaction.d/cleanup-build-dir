@@ -15,7 +15,7 @@ if [ "$STATE" != "committed" ]; then
     exit 0
 fi
 
-. $HOME/.config/workflow/.env
+. $XDG_CONFIG_HOME/workflow/.env
 BUILDER_SCRIPT="$PROJECTS_SCRIPT_DIR/builder.py"
 # Resolve builder script path if relative or environment var? 
 # For now assume fixed path matching user description.

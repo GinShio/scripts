@@ -170,7 +170,7 @@ function install_theme {
                 [[ "$component" == "color-schemes" && ! -e $source_dir ]] && local source_dir=$(dirname $source_dir)/colorschemes
                 ;&
             "latte-layout")
-                [[ "$component" == "latte-layout" ]] && local target_dir=$HOME/.config/latte
+                [[ "$component" == "latte-layout" ]] && local target_dir=$XDG_CONFIG_HOME/latte
                 sudo mkdir -p $target_dir
                 ;&
             "wallpapers")
@@ -178,7 +178,7 @@ function install_theme {
                 ;&
             "kvantum")
                 [[ "$component" == "kvantum" && ! -e $source_dir ]] && local source_dir=$(dirname $source_dir)/Kvantum
-                [[ "$component" == "kvantum" ]] && local target_dir=$HOME/.config/Kvantum
+                [[ "$component" == "kvantum" ]] && local target_dir=$XDG_CONFIG_HOME/Kvantum
                 sudo mkdir -p $target_dir
                 ;&
             *)
@@ -232,6 +232,6 @@ function install_plugin {
 # kpackagetool5 -t Plasma/Applet --install plasmoid
 # popd
 # curl -o panon-shaders.tar.gz -SL https://github.com/rbn42/panon-effects/archive/master.tar.gz
-# mkdir -p panon-shaders $HOME/.config/panon
+# mkdir -p panon-shaders $XDG_CONFIG_HOME/panon
 # tar -xzf panon-shaders.tar.gz -C panon-shaders
-# cp -R panon-shaders/panon-effects-master/effects/rbn42-* $HOME/.config/panon
+# cp -R panon-shaders/panon-effects-master/effects/rbn42-* $XDG_CONFIG_HOME/panon
