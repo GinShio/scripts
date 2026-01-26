@@ -90,6 +90,7 @@ class TestAnnotateCommand(unittest.TestCase):
         # Setup
         mock_plat = MagicMock()
         mock_plat.get_item_label.return_value = "PR"
+        mock_plat.get_item_char.return_value = "#"
         mock_get_platform.return_value = mock_plat
 
         # Machete Graph: Main (0) -> Feat (1)
