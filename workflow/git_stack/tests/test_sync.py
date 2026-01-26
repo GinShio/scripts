@@ -66,7 +66,14 @@ class TestSync(unittest.TestCase):
         sync.sync_stack(push=False, pr=True)
 
         # sync_mr should be called for feat1 (parent=main), draft=False since it's base
-        mock_plat.sync_mr.assert_called_with("feat1", "main", draft=False)
+        called = mock_plat.sync_mr.call_args
+        args, kwargs = called
+        self.assertEqual(args[0], "feat1")
+        self.assertEqual(args[1], "main")
+        self.assertEqual(kwargs.get("draft"), False)
+        # Since platform API now requires title/body, ensure they are present
+        self.assertIn("title", kwargs)
+        self.assertIn("body", kwargs)
 
     # --- Tests from test_topology_update ---
 
@@ -84,7 +91,13 @@ class TestSync(unittest.TestCase):
         ]
 
         # Use sync_mr on self.plat (GitHubPlatform)
-        self.plat.sync_mr(branch="feature-C", base_branch="feature-A")
+        self.plat.sync_mr(
+            branch="feature-C",
+            base_branch="feature-A",
+            draft=False,
+            title="feature-C",
+            body="Stack PR managed by git-stack.",
+        )
 
         # Check that PATCH was called with base='feature-A'
         # Call 0 is get_mr
@@ -110,7 +123,13 @@ class TestSync(unittest.TestCase):
         # Use sync_mr on self.plat (GitHubPlatform) matches test setup
         # But we need to update the logic to expect NO creation
 
-        self.plat.sync_mr(branch="feature-A", base_branch="main")
+        self.plat.sync_mr(
+            branch="feature-A",
+            base_branch="main",
+            draft=False,
+            title="feature-A",
+            body="Stack PR managed by git-stack.",
+        )
 
         # Verify:
         # 1. GET open
@@ -134,7 +153,13 @@ class TestSync(unittest.TestCase):
             {"number": 126, "html_url": "..."},  # create_mr -> Success
         ]
 
-        self.plat.sync_mr(branch="feature-B", base_branch="main")
+        self.plat.sync_mr(
+            branch="feature-B",
+            base_branch="main",
+            draft=False,
+            title="feature-B",
+            body="Stack PR managed by git-stack.",
+        )
 
         self.assertEqual(mock_request.call_count, 3)
         self.assertEqual(mock_request.call_args_list[2][0][0], "POST")
@@ -172,11 +197,17 @@ class TestSyncFeatures(unittest.TestCase):
         sync.sync_stack(push=False, pr=True, limit_to_branch="feat2")
 
         # Check calls via platform
-        calls = [c[0] for c in mock_plat.sync_mr.call_args_list]
-        self.assertTrue(("feat1", "main") in calls or ("feat1", "main", False) in calls)
-        self.assertTrue(
-            ("feat2", "feat1") in calls or ("feat2", "feat1", True) in calls
-        )
+        found_feat1 = False
+        found_feat2 = False
+        for call in mock_plat.sync_mr.call_args_list:
+            args, kwargs = call
+            if args[0] == "feat1" and args[1] == "main":
+                found_feat1 = True
+            if args[0] == "feat2" and args[1] == "feat1":
+                found_feat2 = True
+
+        self.assertTrue(found_feat1)
+        self.assertTrue(found_feat2)
 
     @patch("git_stack.src.sync.resolve_base_branch", return_value="main")
     @patch("git_stack.src.sync.get_platform")
@@ -193,8 +224,141 @@ class TestSyncFeatures(unittest.TestCase):
 
         sync.sync_stack(push=False, pr=True)
 
-        mock_plat.sync_mr.assert_any_call("feat1", "main", draft=False)
-        mock_plat.sync_mr.assert_any_call("feat2", "feat1", draft=True)
+        # Check that calls exist with expected branch/base and draft kwargs
+        found_feat1 = False
+        found_feat2 = False
+        for call in mock_plat.sync_mr.call_args_list:
+            args, kwargs = call
+            if (
+                args[0] == "feat1"
+                and args[1] == "main"
+                and kwargs.get("draft") is False
+            ):
+                found_feat1 = True
+            if (
+                args[0] == "feat2"
+                and args[1] == "feat1"
+                and kwargs.get("draft") is True
+            ):
+                found_feat2 = True
+
+        self.assertTrue(found_feat1)
+        self.assertTrue(found_feat2)
+
+    @patch("git_stack.src.sync.run_git")
+    @patch("git_stack.src.sync.resolve_base_branch", return_value="main")
+    @patch("git_stack.src.sync.get_platform")
+    @patch("git_stack.src.sync.parse_machete")
+    @patch("git_stack.src.sync.get_refs_map")
+    def test_title_source_last(
+        self, mock_refs, mock_machete, mock_get_platform, mock_resolve, mock_run_git
+    ):
+        """Title should be chosen from the last commit subject by default."""
+        mock_machete.return_value = self.nodes
+        mock_refs.return_value = {"main": "h1", "feat1": "h2", "feat2": "h3"}
+        mock_plat = MagicMock()
+        mock_get_platform.return_value = mock_plat
+
+        # Simulate git log returning two commits with body marker
+        mock_run_git.return_value = (
+            "==GITSTACK_COMMIT==\nFirst subject\n==GITSTACK_BODY==\nFirst body\n"
+            "==GITSTACK_COMMIT==\nLast subject\n==GITSTACK_BODY==\nLast body\n"
+        )
+
+        sync.sync_stack(push=False, pr=True, title_source="last")
+
+        # Inspect calls and ensure title/body kwarg is for the last commit
+        found = False
+        for call in mock_plat.sync_mr.call_args_list:
+            args, kwargs = call
+            if (
+                kwargs.get("title") == "Last subject"
+                and kwargs.get("body") == "Last body"
+            ):
+                found = True
+        self.assertTrue(found)
+
+    @patch("git_stack.src.sync.run_git")
+    @patch("git_stack.src.sync.resolve_base_branch", return_value="main")
+    @patch("git_stack.src.sync.get_platform")
+    @patch("git_stack.src.sync.parse_machete")
+    @patch("git_stack.src.sync.get_refs_map")
+    def test_title_source_first(
+        self, mock_refs, mock_machete, mock_get_platform, mock_resolve, mock_run_git
+    ):
+        """Title should be chosen from the first commit subject when requested."""
+        mock_machete.return_value = self.nodes
+        mock_refs.return_value = {"main": "h1", "feat1": "h2", "feat2": "h3"}
+        mock_plat = MagicMock()
+        mock_get_platform.return_value = mock_plat
+
+        mock_run_git.return_value = (
+            "==GITSTACK_COMMIT==\nFirst subject\n==GITSTACK_BODY==\nFirst body\n"
+            "==GITSTACK_COMMIT==\nLast subject\n==GITSTACK_BODY==\nLast body\n"
+        )
+
+        sync.sync_stack(push=False, pr=True, title_source="first")
+
+        found = False
+        for call in mock_plat.sync_mr.call_args_list:
+            args, kwargs = call
+            if (
+                kwargs.get("title") == "First subject"
+                and kwargs.get("body") == "First body"
+            ):
+                found = True
+        self.assertTrue(found)
+
+    @patch("subprocess.check_call")
+    @patch("git_stack.src.sync.run_git")
+    @patch("git_stack.src.sync.resolve_base_branch", return_value="main")
+    @patch("git_stack.src.sync.get_platform")
+    @patch("git_stack.src.sync.parse_machete")
+    @patch("git_stack.src.sync.get_refs_map")
+    def test_title_source_custom_from_template(
+        self,
+        mock_refs,
+        mock_machete,
+        mock_get_platform,
+        mock_resolve,
+        mock_run_git,
+        mock_check_call,
+    ):
+        """Custom title/body should be loaded from commit.template when present."""
+        mock_machete.return_value = self.nodes
+        mock_refs.return_value = {"main": "h1", "feat1": "h2"}
+        mock_plat = MagicMock()
+        mock_get_platform.return_value = mock_plat
+
+        # Create a real temp file to act as commit.template
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w+", delete=False) as tf:
+            tf.write("Custom Title\n\nCustom body line")
+            temp_path = tf.name
+
+        # run_git will be called to query commit.template; return that path
+        mock_run_git.return_value = temp_path
+
+        try:
+            sync.sync_stack(push=False, pr=True, title_source="custom")
+
+            found = False
+            for call in mock_plat.sync_mr.call_args_list:
+                args, kwargs = call
+                if (
+                    kwargs.get("title") == "Custom Title"
+                    and kwargs.get("body") == "Custom body line"
+                ):
+                    found = True
+            self.assertTrue(found)
+        finally:
+            try:
+                import os
+
+                os.remove(temp_path)
+            except Exception:
+                pass
 
 
 class TestSyncParallel(unittest.TestCase):

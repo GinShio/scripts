@@ -10,7 +10,9 @@ from .src.sync import sync_stack
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Git stack workflow tools")
+    parser = argparse.ArgumentParser(
+        description="Git stack workflow tools for managing PR/MR stacks on remote forges."
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Slice command
@@ -38,6 +40,12 @@ def main():
         "--all",
         action="store_true",
         help="Sync ALL stacks in .git/machete (default: current stack only)",
+    )
+    sync_parser.add_argument(
+        "--title-source",
+        choices=["first", "last", "custom"],
+        default="last",
+        help="Source for PR title and description (default: last).",
     )
 
     # Create command (Legacy/Alias)
@@ -90,11 +98,22 @@ def main():
             else:
                 print("Warning: Could not detect current branch. Syncing all stacks.")
 
-        sync_stack(push=push, pr=pr, dry_run=args.dry_run, limit_to_branch=limit_to)
+        sync_stack(
+            push=push,
+            pr=pr,
+            dry_run=args.dry_run,
+            limit_to_branch=limit_to,
+            title_source=args.title_source,
+        )
 
     elif args.command == "create":
         # Equivalent to sync --pr --no-push
-        sync_stack(push=False, pr=True, dry_run=args.dry_run)
+        sync_stack(
+            push=False,
+            pr=True,
+            dry_run=args.dry_run,
+            title_source=args.title_source,
+        )
 
     elif args.command == "anno":
         limit_to = None

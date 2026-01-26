@@ -16,9 +16,17 @@ from .git import get_config, run_git
 
 
 class PlatformInterface(Protocol):
-    def sync_mr(self, branch: str, base_branch: str, draft: bool = False) -> None: ...
+    def sync_mr(
+        self,
+        branch: str,
+        base_branch: str,
+        draft: bool,
+        title: str,
+        body: str,
+    ) -> None: ...
 
     def get_item_label(self) -> str: ...
+    def get_item_char(self) -> str: ...
     def check_auth(self) -> bool: ...
     def get_mr_description(self, number: str) -> Optional[str]: ...
     def update_mr_description(self, number: str, body: str) -> None: ...
@@ -58,6 +66,9 @@ class GitHubPlatform:
 
     def get_item_label(self) -> str:
         return "PR"
+
+    def get_item_char(self) -> str:
+        return "#"
 
     def check_auth(self) -> bool:
         return bool(self.repo and self.token)
@@ -109,13 +120,23 @@ class GitHubPlatform:
             pass
         return None
 
-    def create_mr(self, branch: str, base: str, draft: bool = True) -> Optional[Dict]:
+    def create_mr(
+        self,
+        branch: str,
+        base: str,
+        draft: bool,
+        title: str,
+        body: str,
+    ) -> Optional[Dict]:
         print(f"Creating PR for {branch} (base: {base})...")
+        chosen_title = title
+        chosen_body = body
+
         data = {
-            "title": branch,
+            "title": chosen_title,
             "head": branch,
             "base": base,
-            "body": "Stack PR managed by git-stack.",
+            "body": chosen_body,
             "draft": draft,
         }
         try:
@@ -133,7 +154,9 @@ class GitHubPlatform:
         except Exception as e:
             print(f"Failed to update PR base: {e}")
 
-    def sync_mr(self, branch: str, base_branch: str, draft: bool = False) -> None:
+    def sync_mr(
+        self, branch: str, base_branch: str, draft: bool, title: str, body: str
+    ) -> None:
         if not self.check_auth():
             return
 
@@ -173,7 +196,7 @@ class GitHubPlatform:
                 return
 
         # 3. Create new if none exist
-        self.create_mr(branch, base_branch, draft=draft)
+        self.create_mr(branch, base_branch, draft=draft, title=title, body=body)
 
     def get_mr_description(self, number: str) -> Optional[str]:
         try:
@@ -205,6 +228,9 @@ class GitLabPlatform:
     def get_item_label(self) -> str:
         return "MR"
 
+    def get_item_char(self) -> str:
+        return "!"
+
     def check_auth(self) -> bool:
         return bool(self.project_path and self.token)
 
@@ -233,17 +259,26 @@ class GitLabPlatform:
             pass
         return None
 
-    def create_mr(self, branch: str, base: str, draft: bool = True) -> Optional[Dict]:
+    def create_mr(
+        self,
+        branch: str,
+        base: str,
+        draft: bool,
+        title: str,
+        body: str,
+    ) -> Optional[Dict]:
         print(f"Creating MR for {branch} (base: {base})...")
-        title = branch
+        chosen_title = title
         if draft:
-            title = f"Draft: {title}"
+            chosen_title = f"Draft: {chosen_title}"
+
+        chosen_body = body
 
         data = {
             "source_branch": branch,
             "target_branch": base,
-            "title": title,
-            "description": "Stack MR managed by git-stack.",
+            "title": chosen_title,
+            "description": chosen_body,
             "remove_source_branch": True,
         }
         try:
@@ -263,7 +298,9 @@ class GitLabPlatform:
         except Exception as e:
             print(f"Failed to update MR base: {e}")
 
-    def sync_mr(self, branch: str, base_branch: str, draft: bool = False) -> None:
+    def sync_mr(
+        self, branch: str, base_branch: str, draft: bool, title: str, body: str
+    ) -> None:
         if not self.check_auth():
             return
 
@@ -312,7 +349,7 @@ class GitLabPlatform:
                 return
 
         # 3. Create
-        self.create_mr(branch, base_branch, draft=draft)
+        self.create_mr(branch, base_branch, draft=draft, title=title, body=body)
 
     def get_mr_description(self, number: str) -> Optional[str]:
         try:
@@ -391,6 +428,9 @@ class BitbucketPlatform:
 
     def get_item_label(self) -> str:
         return "PR"
+
+    def get_item_char(self) -> str:
+        return "#"
 
     def check_auth(self) -> bool:
         return bool(self.token)
@@ -563,6 +603,9 @@ class AzurePlatform:
 
     def get_item_label(self) -> str:
         return "PR"
+
+    def get_item_char(self) -> str:
+        return "#"
 
     def check_auth(self) -> bool:
         return bool(self.token)

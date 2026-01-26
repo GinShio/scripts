@@ -5,7 +5,7 @@ from git_stack.src import anno
 from git_stack.src.machete import (
     MacheteNode,
     StackItem,
-    generate_nested_list,
+    format_stack_markdown,
     strip_existing_stack_block,
 )
 
@@ -45,7 +45,7 @@ Outro.
         self.assertIn("Outro.", stripped)
         self.assertNotIn("Old Stack", stripped)
 
-    def test_generate_nested_list(self):
+    def test_format_stack_markdown(self):
         # Setup a mock stack
         node_root = MacheteNode("root-branch", 0, "")
 
@@ -65,20 +65,21 @@ Outro.
         ]
 
         target_branch = "feature-b"
-        output = generate_nested_list(stack, target_branch)
+        output = format_stack_markdown(stack, target_branch)
 
         # Validation
         self.assertIn("PR #101", output)
-        self.assertIn("**[2/3] PR #101** 👈 **(THIS PR)**", output)
-        self.assertIn("**[1/3] PR #100**", output)
+        self.assertIn("[3/3] PR #102", output)
+        self.assertIn("**[2/3] PR #101** ⬅️ **(THIS PR)**", output)
+        self.assertIn("[1/3] PR #100", output)
 
     def test_mr_label_support(self):
         """Test GitLab MR labeling style."""
         node_a = MacheteNode("feature-a", 2, "PR #100")
         stack = [{"node": node_a, "pr_num": "100"}]
 
-        output = generate_nested_list(stack, "feature-a", item_label="MR")
-        self.assertIn("**[1/1] MR #100** 👈 **(THIS MR)**", output)
+        output = format_stack_markdown(stack, "feature-a", item_label="MR")
+        self.assertIn("**[1/1] MR #100** ⬅️ **(THIS MR)**", output)
 
 
 class TestAnnotateCommand(unittest.TestCase):
@@ -120,5 +121,5 @@ class TestAnnotateCommand(unittest.TestCase):
         mock_plat.update_mr_description.assert_called()
         args = mock_plat.update_mr_description.call_args[0]
         self.assertEqual(args[0], "123")
-        self.assertIn("🥞 Stack", args[1])
+        self.assertIn("### Stack List", args[1])
         self.assertIn("Old Desc", args[1])

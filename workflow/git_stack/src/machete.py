@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 from .git import get_git_dir
 
@@ -166,39 +166,47 @@ STACK_HEADER = "<!-- start git-stack-sync generated -->"
 STACK_FOOTER = "<!-- end git-stack-sync generated -->"
 
 
-def generate_nested_list(
-    stack: List[Dict[str, Any]], current_focused_branch: str, item_label: str = "PR"
+def format_stack_markdown(
+    stack: List[Dict[str, Any]],
+    current_focused_branch: str,
+    item_label: str = "PR",
+    item_char: str = "#",
 ) -> str:
     """
     Generate ASCII nested list for the stack.
     stack items: {'node': MacheteNode, 'pr_num': str}
     """
-    lines = [STACK_HEADER, "", "### 🥞 Stack", ""]
+    lines = [STACK_HEADER, "", "### Stack List", ""]
 
     if not stack:
         return ""
 
-    total_items = len(stack)
+    # Filter out root entries (those typically represented with pr_num == '-')
+    # from the numbered list while still showing parent/flow information.
+    filtered = [item for item in stack if item.get("pr_num") != "-"]
+    if not filtered:
+        return ""
 
-    for i, item in enumerate(stack):
+    total_items = len(filtered)
+
+    for i, item in enumerate(filtered):
         node = item["node"]
         pr_num = item["pr_num"]
 
-        indent = "  " * i
+        indent = "  "
 
         is_current = node.name == current_focused_branch
-        highlight = f" 👈 **(THIS {item_label})**" if is_current else ""
+        highlight = f" ⬅️ **(THIS {item_label})**" if is_current else ""
+        block_highlight = "**" if is_current else ""
 
         index_str = f"[{i + 1}/{total_items}]"
 
-        line_pr = f"{indent}* **{index_str} {item_label} #{pr_num}**{highlight}"
-
+        line_pr = f"{indent}* {block_highlight}{index_str} {item_label} {item_char}{pr_num}{block_highlight}{highlight}"
         parent_name = node.parent.name if node.parent else "?"
         line_flow = f"{indent}  `{parent_name}` ← `{node.name}`"
 
         lines.append(line_pr)
         lines.append(line_flow)
-        lines.append("")
 
     lines.append(STACK_FOOTER)
     return "\n".join(lines)
@@ -216,13 +224,3 @@ def strip_existing_stack_block(body: str) -> str:
             flags=re.DOTALL,
         )
     return body.strip()
-
-
-def extract_pr_number(annotation: str) -> Optional[str]:
-    """Assuming format 'PR #123 (author) ...', extract '123'."""
-    import re
-
-    match = re.search(r"PR #(\d+)", annotation)
-    if match:
-        return match.group(1)
-    return None
