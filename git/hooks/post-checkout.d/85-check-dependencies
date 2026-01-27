@@ -1,0 +1,44 @@
+#!/bin/sh
+# Check for dependency file changes and warn user
+# Hook: post-checkout, post-merge
+
+. "$HOOKS_DIR/core/lib.sh"
+
+# Args for post-checkout: prev_head new_head flag
+# Args for post-merge: is_squash
+
+if [ "$HOOK_NAME" = "post-checkout" ]; then
+    PREV_HEAD="$1"
+    NEW_HEAD="$2"
+    FLAG="$3"
+    # Only run on branch checkout (1)
+    if [ "$FLAG" != "1" ]; then exit 0; fi
+elif [ "$HOOK_NAME" = "post-merge" ]; then
+    # For post-merge, we compare ORIG_HEAD to HEAD
+    PREV_HEAD="ORIG_HEAD"
+    NEW_HEAD="HEAD"
+else
+    exit 0
+fi
+
+# Define lockfiles to watch
+LOCKFILES="package-lock.json yarn.lock pnpm-lock.yaml poetry.lock Cargo.lock go.sum requirements.txt"
+
+changed_files=""
+
+for lockfile in $LOCKFILES; do
+    if git diff --name-only "$PREV_HEAD" "$NEW_HEAD" | grep -q "^$lockfile$"; then
+        changed_files="$changed_files $lockfile"
+    fi
+done
+
+if [ -n "$changed_files" ]; then
+    log_warn "Dependencies changed in:$changed_files"
+    log_warn "You may need to run your package manager install command."
+    
+    # Optional: Auto-install (commented out by default for safety)
+    # if echo "$changed_files" | grep -q "package-lock.json"; then
+    #    log_info "Running npm install..."
+    #    npm install
+    # fi
+fi
