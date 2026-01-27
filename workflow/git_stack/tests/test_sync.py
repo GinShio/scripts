@@ -47,10 +47,13 @@ class TestSync(unittest.TestCase):
         # push_branch should be called for feat1
         mock_push_branch.assert_called_with("feat1")
 
+    @patch("git_stack.src.sync.run_git")
     @patch("git_stack.src.sync.parse_machete")
     @patch("git_stack.src.sync.get_refs_map")
     @patch("git_stack.src.sync.get_platform")
-    def test_create_stack_prs(self, mock_get_platform, mock_refs, mock_parse):
+    def test_create_stack_prs(
+        self, mock_get_platform, mock_refs, mock_parse, mock_run_git
+    ):
         # Setup graph: main -> feat1
         root = machete.MacheteNode("main")
         feat = machete.MacheteNode("feat1")
@@ -62,6 +65,9 @@ class TestSync(unittest.TestCase):
 
         mock_plat = MagicMock()
         mock_get_platform.return_value = mock_plat
+
+        # Mock run_git to return empty so it falls back to branch name
+        mock_run_git.return_value = ""
 
         sync.sync_stack(push=False, pr=True)
 
@@ -180,18 +186,26 @@ class TestSyncFeatures(unittest.TestCase):
 
         self.nodes = {"main": self.root, "feat1": self.feat1, "feat2": self.feat2}
 
+    @patch("git_stack.src.sync.run_git")
     @patch("git_stack.src.sync.resolve_base_branch", return_value="main")
     @patch("git_stack.src.sync.get_platform")
     @patch("git_stack.src.sync.parse_machete")
     @patch("git_stack.src.sync.get_refs_map")
     def test_sync_scope_limit(
-        self, mock_refs, mock_machete, mock_get_platform, mock_resolve_base
+        self,
+        mock_refs,
+        mock_machete,
+        mock_get_platform,
+        mock_resolve_base,
+        mock_run_git,
     ):
         """Test that sync limits scope correctly."""
         mock_machete.return_value = self.nodes
         mock_refs.return_value = {"main": "h1", "feat1": "h2", "feat2": "h3"}
         mock_plat = MagicMock()
         mock_get_platform.return_value = mock_plat
+
+        mock_run_git.return_value = ""  # Default empty for title derivation
 
         # Limit to feat2 -> Should verify parent chain up to main, then sync that tree
         sync.sync_stack(push=False, pr=True, limit_to_branch="feat2")
@@ -209,18 +223,26 @@ class TestSyncFeatures(unittest.TestCase):
         self.assertTrue(found_feat1)
         self.assertTrue(found_feat2)
 
+    @patch("git_stack.src.sync.run_git")
     @patch("git_stack.src.sync.resolve_base_branch", return_value="main")
     @patch("git_stack.src.sync.get_platform")
     @patch("git_stack.src.sync.parse_machete")
     @patch("git_stack.src.sync.get_refs_map")
     def test_sync_draft_logic(
-        self, mock_refs, mock_machete, mock_get_platform, mock_resolve_base
+        self,
+        mock_refs,
+        mock_machete,
+        mock_get_platform,
+        mock_resolve_base,
+        mock_run_git,
     ):
         """Test draft status logic based on stack position."""
         mock_machete.return_value = self.nodes
         mock_refs.return_value = {"main": "h1", "feat1": "h2", "feat2": "h3"}
         mock_plat = MagicMock()
         mock_get_platform.return_value = mock_plat
+
+        mock_run_git.return_value = ""
 
         sync.sync_stack(push=False, pr=True)
 
@@ -245,13 +267,20 @@ class TestSyncFeatures(unittest.TestCase):
         self.assertTrue(found_feat1)
         self.assertTrue(found_feat2)
 
+    @patch("uuid.uuid4")
     @patch("git_stack.src.sync.run_git")
     @patch("git_stack.src.sync.resolve_base_branch", return_value="main")
     @patch("git_stack.src.sync.get_platform")
     @patch("git_stack.src.sync.parse_machete")
     @patch("git_stack.src.sync.get_refs_map")
     def test_title_source_last(
-        self, mock_refs, mock_machete, mock_get_platform, mock_resolve, mock_run_git
+        self,
+        mock_refs,
+        mock_machete,
+        mock_get_platform,
+        mock_resolve,
+        mock_run_git,
+        mock_uuid,
     ):
         """Title should be chosen from the last commit subject by default."""
         mock_machete.return_value = self.nodes
@@ -259,10 +288,13 @@ class TestSyncFeatures(unittest.TestCase):
         mock_plat = MagicMock()
         mock_get_platform.return_value = mock_plat
 
-        # Simulate git log returning two commits with body marker
+        # Mock UUIDs
+        mock_uuid.side_effect = [MagicMock(hex="COMMIT"), MagicMock(hex="BODY")] * 2
+
+        # Simulate git log returning two commits with UUID markers
         mock_run_git.return_value = (
-            "==GITSTACK_COMMIT==\nFirst subject\n==GITSTACK_BODY==\nFirst body\n"
-            "==GITSTACK_COMMIT==\nLast subject\n==GITSTACK_BODY==\nLast body\n"
+            "GITSTACK_COMMIT_COMMIT\nFirst subject\nGITSTACK_BODY_BODY\nFirst body\n"
+            "GITSTACK_COMMIT_COMMIT\nLast subject\nGITSTACK_BODY_BODY\nLast body\n"
         )
 
         sync.sync_stack(push=False, pr=True, title_source="last")
@@ -278,13 +310,20 @@ class TestSyncFeatures(unittest.TestCase):
                 found = True
         self.assertTrue(found)
 
+    @patch("uuid.uuid4")
     @patch("git_stack.src.sync.run_git")
     @patch("git_stack.src.sync.resolve_base_branch", return_value="main")
     @patch("git_stack.src.sync.get_platform")
     @patch("git_stack.src.sync.parse_machete")
     @patch("git_stack.src.sync.get_refs_map")
     def test_title_source_first(
-        self, mock_refs, mock_machete, mock_get_platform, mock_resolve, mock_run_git
+        self,
+        mock_refs,
+        mock_machete,
+        mock_get_platform,
+        mock_resolve,
+        mock_run_git,
+        mock_uuid,
     ):
         """Title should be chosen from the first commit subject when requested."""
         mock_machete.return_value = self.nodes
@@ -292,9 +331,12 @@ class TestSyncFeatures(unittest.TestCase):
         mock_plat = MagicMock()
         mock_get_platform.return_value = mock_plat
 
+        # Mock UUIDs
+        mock_uuid.side_effect = [MagicMock(hex="COMMIT"), MagicMock(hex="BODY")] * 2
+
         mock_run_git.return_value = (
-            "==GITSTACK_COMMIT==\nFirst subject\n==GITSTACK_BODY==\nFirst body\n"
-            "==GITSTACK_COMMIT==\nLast subject\n==GITSTACK_BODY==\nLast body\n"
+            "GITSTACK_COMMIT_COMMIT\nFirst subject\nGITSTACK_BODY_BODY\nFirst body\n"
+            "GITSTACK_COMMIT_COMMIT\nLast subject\nGITSTACK_BODY_BODY\nLast body\n"
         )
 
         sync.sync_stack(push=False, pr=True, title_source="first")
@@ -454,6 +496,10 @@ class TestSyncParallel(unittest.TestCase):
 
         self.assertTrue(mock_tpe.called)
         self.assertEqual(mock_executor.submit.call_count, 1)
+        # The args passed to submit are (method, arg1, arg2)
+        # method is self._sync_single_pr bound method
+        # arg1 is branch, arg2 is parent_name
+        # So call_args[0] is (method, "feat1", "main")
         call_args = mock_executor.submit.call_args[0]
-        payload = call_args[1]
-        self.assertEqual(payload, ("feat1", "main"))
+        self.assertEqual(call_args[1], "feat1")
+        self.assertEqual(call_args[2], "main")

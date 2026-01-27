@@ -103,16 +103,17 @@ class TestAnnotateCommand(unittest.TestCase):
 
         # Mock PR responses
         # feat returns a PR, main returns None
+        # Updated to accept **kwargs for 'base'
         mock_plat.get_mr.side_effect = (
-            lambda name: {"number": 123} if name == "feat" else None
+            lambda name, **kwargs: {"number": 123} if name == "feat" else None
         )
         mock_plat.get_mr_description.return_value = "Old Desc"
 
         anno.annotate_stack()
 
         # Verify
-        # 1. get_mr called for feat
-        mock_plat.get_mr.assert_called_with("feat")
+        # 1. get_mr called for feat with base
+        mock_plat.get_mr.assert_called_with("feat", base="main")
 
         # 2. write_machete called (feat annotation updated)
         mock_write.assert_called()

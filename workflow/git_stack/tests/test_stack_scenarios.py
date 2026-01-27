@@ -70,17 +70,12 @@ class TestStackScenarios(unittest.TestCase):
         mock_resolve.return_value = "main"
         mock_refs.return_value = {"A": "hashA", "B": "hashB", "main": "hashMain"}
 
-        # Mock run_git for title/body derivation
-        def git_side_effect(args, check=False):
-            if "log" in args:
-                return "Title\n==GITSTACK_COMMIT==\nTitle\n==GITSTACK_BODY==\nTitle\nBodyContent"
-            return ""
-
-        mock_run_git.side_effect = git_side_effect
+        mock_run_git.return_value = ""
 
         # Mock platform.get_mr
         # A returns existing PR, B returns None
-        def get_mr_smart(branch, state="open"):
+        # Updated to accept **kwargs for base
+        def get_mr_smart(branch, state="open", **kwargs):
             if branch == "A" and state == "open":
                 return {"number": 101, "base": {"ref": "main"}, "state": "open"}
             return None
@@ -127,7 +122,7 @@ class TestStackScenarios(unittest.TestCase):
         mock_refs.return_value = {"A": "hash", "main": "hashMain"}
 
         # A exists but base is 'dev'
-        def get_mr_mock(branch, state="open"):
+        def get_mr_mock(branch, state="open", **kwargs):
             if branch == "A":
                 return {"number": 102, "base": {"ref": "dev"}, "state": "open"}
             return None
@@ -163,8 +158,8 @@ class TestStackScenarios(unittest.TestCase):
             "B": {"number": 2, "iid": 2},
             "C": {"number": 3, "iid": 3},
         }
-        self.platform.get_mr.side_effect = lambda branch, state="open": pr_map.get(
-            branch
+        self.platform.get_mr.side_effect = (
+            lambda branch, state="open", **kwargs: pr_map.get(branch)
         )
 
         # Mock descriptions
@@ -217,7 +212,7 @@ class TestStackScenarios(unittest.TestCase):
         mock_machete.return_value = nodes
 
         # A merged (None), B open (dict)
-        def get_mr_mock(branch, state="open"):
+        def get_mr_mock(branch, state="open", **kwargs):
             if branch == "B" and state == "open":
                 return {"number": 20, "iid": 20}
             return None
@@ -261,7 +256,7 @@ class TestStackScenarios(unittest.TestCase):
 
         # All open. Use simple number via char code
         self.platform.get_mr.side_effect = (
-            lambda br, s="open": {"number": ord(br[0]), "iid": ord(br[0])}
+            lambda br, s="open", **kwargs: {"number": ord(br[0]), "iid": ord(br[0])}
             if s == "open" and br != "main"
             else None
         )
@@ -308,6 +303,7 @@ class TestStackScenarios(unittest.TestCase):
         self.assertIn("C", desc_c)
         self.assertNotIn("B", desc_c)
 
+    @patch("uuid.uuid4")
     @patch("git_stack.src.sync.get_platform")
     @patch("git_stack.src.sync.parse_machete")
     @patch("git_stack.src.sync.run_git")
@@ -322,6 +318,7 @@ class TestStackScenarios(unittest.TestCase):
         mock_run_git,
         mock_machete,
         mock_get_platform,
+        mock_uuid,
     ):
         """
         Scenario: Stack main -> A -> B. All New.
@@ -334,15 +331,18 @@ class TestStackScenarios(unittest.TestCase):
         mock_resolve.return_value = "main"
         mock_refs.return_value = {"A": "hA", "B": "hB", "main": "hM"}
 
+        # Mock UUIDs
+        mock_uuid.side_effect = [MagicMock(hex="COMMIT"), MagicMock(hex="BODY")] * 2
+
         # Mock run_git to return different bodies for different ranges
         def git_side_effect(args, check=False):
             if "log" in args:
                 # args[-1] is "parent..branch" typcially
                 rng = args[-1]
                 if "main..A" in rng:
-                    return "TitleA\n==GITSTACK_COMMIT==\nTitleA\n==GITSTACK_BODY==\nTitleA\nBodyA"
+                    return "GITSTACK_COMMIT_COMMIT\nTitleA\nGITSTACK_BODY_BODY\nTitleA\nBodyA"
                 if "A..B" in rng:
-                    return "TitleB\n==GITSTACK_COMMIT==\nTitleB\n==GITSTACK_BODY==\nTitleB"  # No body content
+                    return "GITSTACK_COMMIT_COMMIT\nTitleB\nGITSTACK_BODY_BODY\nTitleB"  # No body content
             return ""
 
         mock_run_git.side_effect = git_side_effect
@@ -366,6 +366,7 @@ class TestStackScenarios(unittest.TestCase):
         self.assertIsNotNone(call_b)
         self.assertIn("TitleB", call_b[1]["body"])
 
+    @patch("uuid.uuid4")
     @patch("git_stack.src.sync.get_platform")
     @patch("git_stack.src.sync.parse_machete")
     @patch("git_stack.src.sync.run_git")
@@ -380,6 +381,7 @@ class TestStackScenarios(unittest.TestCase):
         mock_run_git,
         mock_machete,
         mock_get_platform,
+        mock_uuid,
     ):
         """
         Scenario: Check title_source='first' vs 'last'
@@ -390,17 +392,27 @@ class TestStackScenarios(unittest.TestCase):
         mock_resolve.return_value = "main"
         mock_refs.return_value = {"A": "hA", "main": "hM"}
 
+        # Mock UUIDs
+        mock_uuid.side_effect = [
+            MagicMock(hex="COMMIT"),
+            MagicMock(hex="BODY"),
+        ] * 4  # Enough for multiple calls
+
         # Commit chunks
-        c_old = "TitleOld\n==GITSTACK_COMMIT==\nTitleOld\n==GITSTACK_BODY==\nTitleOld\nBodyOld"
-        c_new = "TitleNew\n==GITSTACK_COMMIT==\nTitleNew\n==GITSTACK_BODY==\nTitleNew\nBodyNew"
+        c_old = (
+            "GITSTACK_COMMIT_COMMIT\nTitleOld\nGITSTACK_BODY_BODY\nTitleOld\nBodyOld"
+        )
+        c_new = (
+            "GITSTACK_COMMIT_COMMIT\nTitleNew\nGITSTACK_BODY_BODY\nTitleNew\nBodyNew"
+        )
 
         def run_git_effect(args, check=False):
             if "log" in args:
                 # If --reverse, git returns Old -> New
                 if "--reverse" in args:
-                    return f"{c_old}\n==GITSTACK_COMMIT==\n{c_new}"
+                    return f"{c_old}\n{c_new}"
                 # content default: New -> Old
-                return f"{c_new}\n==GITSTACK_COMMIT==\n{c_old}"
+                return f"{c_new}\n{c_old}"
             return ""
 
         mock_run_git.side_effect = run_git_effect
@@ -458,7 +470,7 @@ class TestStackScenarios(unittest.TestCase):
         mock_machete.return_value = nodes
 
         # Platform: B(20), C(30) open.
-        self.platform.get_mr.side_effect = lambda br, s="open": {
+        self.platform.get_mr.side_effect = lambda br, s="open", **kwargs: {
             "B": {"number": 20, "iid": 20},
             "C": {"number": 30, "iid": 30},
         }.get(br)
@@ -508,7 +520,7 @@ class TestStackScenarios(unittest.TestCase):
         mock_machete.return_value = nodes
 
         # Platform: B open (20)
-        self.platform.get_mr.side_effect = lambda br, s="open": {
+        self.platform.get_mr.side_effect = lambda br, s="open", **kwargs: {
             "B": {"number": 20, "iid": 20}
         }.get(br)
 
@@ -573,7 +585,7 @@ Body
         mock_machete.return_value = nodes
 
         # Platform: D(40), B(50), C(60) are open PRs
-        self.platform.get_mr.side_effect = lambda br, s="open": {
+        self.platform.get_mr.side_effect = lambda br, s="open", **kwargs: {
             "D": {"number": 40, "iid": 40},
             "B": {"number": 50, "iid": 50},
             "C": {"number": 60, "iid": 60},

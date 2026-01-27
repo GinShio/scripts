@@ -75,7 +75,10 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
             if not node.parent:
                 continue
             # Submit network call
-            get_mr_futures[executor.submit(platform.get_mr, node.name)] = node
+            # Pass base branch (parent) to help Gitea optimization
+            get_mr_futures[
+                executor.submit(platform.get_mr, node.name, base=node.parent.name)
+            ] = node
 
         for future in as_completed(get_mr_futures):
             node = get_mr_futures[future]

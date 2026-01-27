@@ -1,4 +1,5 @@
 import unittest
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
@@ -202,10 +203,22 @@ class TestPlatform(unittest.TestCase):
     @patch("git_stack.src.platform.GiteaPlatform._request")
     @patch("git_stack.src.platform.GiteaPlatform.check_auth", return_value=True)
     def test_gitea_sync_mr_create(self, mock_check, mock_request):
+        # Gitea now attempts optimization: GET pulls/{base}/{head}
+        # If that fails (404/Exception), it falls back to GET pulls?state=...
+
+        # We need 5 responses:
+        # 1. get_mr(open) -> Opt: Exception (404)
+        # 2. get_mr(open) -> Fallback: []
+        # 3. get_mr(closed) -> Opt: Exception (404)
+        # 4. get_mr(closed) -> Fallback: []
+        # 5. create_mr -> Success
+
         mock_request.side_effect = [
-            [],
-            [],
-            {"number": 55, "html_url": "http://gitea"},
+            Exception("404"),  # Opt open
+            [],  # Fallback open
+            Exception("404"),  # Opt closed
+            [],  # Fallback closed
+            {"number": 55, "html_url": "http://gitea"},  # Create
         ]
 
         info = RemoteInfo(
@@ -216,8 +229,8 @@ class TestPlatform(unittest.TestCase):
 
         plat.sync_mr("feat", "main", draft=False, title="feat", body="body")
 
-        self.assertEqual(mock_request.call_count, 3)
-        create_call = mock_request.call_args_list[2]
+        self.assertEqual(mock_request.call_count, 5)
+        create_call = mock_request.call_args_list[4]
         self.assertEqual(create_call[0][0], "POST")
 
     @patch("git_stack.src.platform.BitbucketPlatform._request")
@@ -235,7 +248,7 @@ class TestPlatform(unittest.TestCase):
         plat = platform.BitbucketPlatform(info)
         plat.token = "tok"
 
-        plat.sync_mr("feat", "main", draft=False)
+        plat.sync_mr("feat", "main", draft=False, title="feat", body="body")
 
         # Bitbucket does OPEN + MERGED + DECLINED + create => 4
         self.assertEqual(mock_request.call_count, 4)
@@ -259,7 +272,7 @@ class TestPlatform(unittest.TestCase):
         plat = platform.AzurePlatform(info)
         plat.token = "tok"
 
-        plat.sync_mr("feat", "main", draft=False)
+        plat.sync_mr("feat", "main", draft=False, title="feat", body="body")
 
         # Azure: active + completed + create => 3
         self.assertEqual(mock_request.call_count, 3)
