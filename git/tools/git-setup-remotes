@@ -349,59 +349,128 @@ setup_mirroring() {
     done
 }
 
+# Extract path from a git URL (e.g. user/repo)
+# Usage: extract_path_from_url <url>
+extract_path_from_url() {
+    url="$1"
+    # Remove protocol (https://, ssh://, git://)
+    no_proto="${url#*://}"
+    
+    if [ "$url" = "$no_proto" ]; then
+        # SCP syntax: user@host:path/to/repo.git
+        # Remove everything up to first colon
+        path="${url#*:}"
+    else
+        # URI syntax: host/path/to/repo.git
+        # Remove host part (everything up to first slash)
+        path="${no_proto#*/}"
+    fi
+    
+    # Remove .git suffix
+    path="${path%.git}"
+    echo "$path"
+}
+
 setup_contributor() {
     echo "Configuring contributor mode..."
     
-    # 1. Handle Upstream
-    # If 'upstream' exists, we assume it's already set up.
-    # If not, we rename 'origin' to 'upstream' (assuming user cloned from official repo).
-    if git remote get-url upstream >/dev/null 2>&1; then
-        echo "  'upstream' remote already exists."
-        upstream_url=$(git remote get-url upstream)
-    else
-        echo "  Renaming 'origin' to 'upstream'..."
-        git remote rename origin upstream
-        upstream_url=$(git remote get-url upstream)
+    # 1. Get Origin Info
+    origin_url=$(git remote get-url origin 2>/dev/null || true)
+    if [ -z "$origin_url" ]; then
+        echo "Error: No 'origin' remote found. Cannot setup contributor mode." >&2
+        exit 1
     fi
-
-    # 2. Handle Origin (Fork)
-    if git remote get-url origin >/dev/null 2>&1; then
-        echo "  'origin' remote already exists."
+    
+    origin_host=$(extract_host_from_url "$origin_url")
+    origin_path=$(extract_path_from_url "$origin_url")
+    
+    # 2. Determine Platform & User
+    platform=$(identify_platform_by_host "$origin_host")
+    if [ -z "$platform" ]; then platform="$origin_host"; fi
+    
+    user=$(get_platform_user "$platform")
+    if [ -z "$user" ]; then
+        echo "Could not determine user for platform '$platform'. Please configure 'platform.$platform.user'." >&2
+        exit 1
+    fi
+    
+    # 3. Check if Origin is owned by User (Fork Detection)
+    # origin_path is "owner/repo" or "group/subgroup/repo"
+    # We check if the path starts with "user/"
+    case "$origin_path" in
+        "$user/"*)
+            is_origin_fork=true
+            ;;
+        *)
+            is_origin_fork=false
+            ;;
+    esac
+    
+    if [ "$is_origin_fork" = "true" ]; then
+        # Origin is Fork
+        echo "Detected 'origin' ($origin_url) points to your user '$user'."
+        
+        # Check Upstream
+        if git remote get-url upstream >/dev/null 2>&1; then
+            echo "Upstream remote already exists."
+        else
+            echo "WARNING: 'upstream' remote is missing."
+            echo "Since you cloned your fork, I cannot determine the upstream repository URL automatically."
+            echo "Please run: git remote add upstream <original-repo-url>"
+        fi
+        
+        # Standardize origin URL (optional but good for consistency)
+        # Extract repo name (last component)
+        target_repo="${origin_path##*/}"
+        
+        # Handle Page Repo logic for Fork
+        # If it's a page repo, we might need to adjust the name if it was renamed?
+        # Usually forks keep the name, or become user.github.io.
+        # We'll trust the current repo name for now.
+        
+        new_origin_url=$(construct_url "$platform" "$user" "$target_repo")
+        
+        # Check if we need to update
+        # Resolve aliases to compare accurately
+        origin_real_host=$(resolve_real_host "$origin_host")
+        new_host=$(extract_host_from_url "$new_origin_url")
+        new_real_host=$(resolve_real_host "$new_host")
+        
+        # Simple string compare for now, or check host+path
+        if [ "$origin_url" != "$new_origin_url" ]; then
+             # Only update if it looks like a protocol/alias change, not a different repo
+             # This is a bit risky to auto-update without confirmation, but 'setup' implies configuration.
+             echo "Updating 'origin' to canonical URL: $new_origin_url"
+             git remote set-url origin "$new_origin_url"
+        fi
+        
     else
-        current_repo=$(get_repo_name)
+        # Origin is Upstream (Owner != User)
+        echo "Detected 'origin' ($origin_url) likely belongs to upstream (owner not '$user')."
         
-        # Determine Platform from Upstream URL
-        host=$(extract_host_from_url "$upstream_url")
-        platform=$(identify_platform_by_host "$host")
-        
-        if [ -z "$platform" ]; then
-            # If we can't identify the platform name, use the host as the platform key
-            # This allows users to set `platform.my-gitea.com.user`
-            platform="$host"
-            echo "  Identified host: $host (using as platform key)"
+        if git remote get-url upstream >/dev/null 2>&1; then
+            echo "'upstream' already exists."
         else
-            echo "  Identified platform: $platform (host: $host)"
+            echo "Renaming 'origin' to 'upstream'..."
+            git remote rename origin upstream
         fi
         
-        user=$(get_platform_user "$platform")
+        # Create Origin (Fork)
+        # We assume the fork has the same repo name (last component)
+        target_repo="${origin_path##*/}"
         
-        if [ -z "$user" ]; then
-            echo "Could not determine user for platform '$platform'. Please configure 'platform.$platform.user'." >&2
-            exit 1
-        fi
+        # Page Repo Logic for Fork Creation
+        # If upstream is 'org/project.github.io', fork is 'user/project.github.io' usually.
+        # If upstream is 'org/org.github.io', fork is 'user/org.github.io' (gh pages limitation) or 'user/user.github.io'?
+        # We'll stick to simple repo name inheritance.
         
-        # For forks, we assume the repo name is the same as upstream
-        # unless it's a page repo? Usually forks of page repos keep the name or change it to user.page.
-        # For simplicity, we keep the repo name.
+        new_origin_url=$(construct_url "$platform" "$user" "$target_repo")
         
-        url=$(construct_url "$platform" "$user" "$current_repo")
-        
-        if [ -n "$url" ]; then
-            echo "  Adding 'origin' pointing to $url"
-            git remote add origin "$url"
+        if git remote get-url origin >/dev/null 2>&1; then
+             echo "'origin' already exists."
         else
-            echo "Failed to construct URL for fork." >&2
-            exit 1
+             echo "Adding 'origin' (fork) pointing to: $new_origin_url"
+             git remote add origin "$new_origin_url"
         fi
     fi
 }
