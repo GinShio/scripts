@@ -31,6 +31,12 @@ To disable a specific script within a hook directory (e.g., `code-formatter` in 
     ```bash
     git config --local hooks.ginshio.pre-commit.code-formatter-disable true
     ```
+*   **Env Var**: `GINSHIO_HOOKS_<HOOK_NAME>_<SCRIPT_NAME>_DISABLE`
+
+    Use the clean name without the numeric prefix (e.g., `CODE_FORMATTER` for `85-code-formatter`).
+    ```bash
+    export GINSHIO_HOOKS_PRE_COMMIT_CODE_FORMATTER_DISABLE=true
+    ```
 
 ### 4. Logging and Debugging
 Control log verbosity. Levels: `0` (OFF), `1` (ERROR), `2` (WARN, Default), `3` (INFO).

@@ -99,8 +99,17 @@ is_enabled() {
 
     # 3. Script Level Disable
     if [ -n "$script_name" ]; then
-        cfg_script_disable=$(git config --bool "hooks.ginshio.$hook_name.$script_name-disable" 2>/dev/null)
-        if is_truthy "$cfg_script_disable"; then return 1; fi
+        # Clean script name (remove leading numbers, e.g. 85-code-formatter -> code-formatter)
+        clean_script_name=$(echo "$script_name" | sed -E 's/^[0-9]+-//')
+
+        # 3a. Env Var: Always use clean name (User request)
+        env_clean_name=$(echo "$clean_script_name" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
+        eval env_clean_val="\$GINSHIO_HOOKS_${env_hook_name}_${env_clean_name}_DISABLE"
+        if is_truthy "$env_clean_val"; then return 1; fi
+
+        # 3b. Git Config: Check clean name (New standard)
+        cfg_clean_disable=$(git config --bool "hooks.ginshio.$hook_name.$clean_script_name-disable" 2>/dev/null)
+        if is_truthy "$cfg_clean_disable"; then return 1; fi
     fi
 
     return 0
