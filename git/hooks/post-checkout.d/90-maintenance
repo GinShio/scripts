@@ -1,0 +1,21 @@
+#!/bin/sh
+# Auto-register repository for background maintenance
+# This ensures 'git maintenance start' is enabled for this repo.
+
+. "$HOOKS_DIR/core/lib.sh"
+
+# Check if this repo is already registered in global config to avoid redundant calls.
+# We redirect stderr to /dev/null because 'git config' returns exit code 1 
+# and might print to stderr if the key 'maintenance.repo' does not exist yet.
+#
+# Logic:
+# 1. If key missing: git config exits 1, prints nothing to stdout. grep fails. 'if !' succeeds. -> Register.
+# 2. If key exists but repo not in it: git config prints list. grep fails. 'if !' succeeds. -> Register.
+# 3. If key exists and repo in it: git config prints list. grep succeeds. 'if !' fails. -> Skip.
+if ! git config --global --get-all maintenance.repo 2>/dev/null | grep -Fq "$GIT_TOPLEVEL"; then
+    # Try to start maintenance.
+    # If 'maintenance' subcommand doesn't exist (git < 2.29), this will fail silently.
+    if git maintenance start >/dev/null 2>&1; then
+        log_info "Auto-registered repository for git maintenance."
+    fi
+fi
