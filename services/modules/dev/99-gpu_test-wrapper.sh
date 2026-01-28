@@ -2,7 +2,7 @@
 
 # shellcheck disable=SC1091
 . "$XDG_CONFIG_HOME/workflow/.env"
-now_timestamps=${1:-${NIGHTLY_TIMESTAMP:-$(date +%s)}}
+now_timestamps=${1:-${NIGHTLY_CURRENT_TIMESTAMP:-$(date +%s)}}
 
 # Testing every 3 days
 if [ "$(date +%j | awk '{print $1 % 3}')" -ne 0 ]; then
