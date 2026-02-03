@@ -21,7 +21,7 @@ if [ -n "${!TRANSCRYPT_VAR_NAME:-}" ]; then
     (
         cd "$DOTFILES_ROOT_PATH" || exit
         # Install filters for the specific profile context
-        python3 "$SCRIPT_DIR/transcrypt.py" install -c "$SETUP_PROFILE"
+        python3 "$SCRIPT_DIR/transcrypt.py" -c "$SETUP_PROFILE" install
 
         # Force a hard reset to re-checkout files through the newly installed smudge filter
         # This ensures 'secret.yaml' and others are decrypted on disk
