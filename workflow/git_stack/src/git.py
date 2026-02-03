@@ -63,13 +63,32 @@ def resolve_base_branch(provided_base: Optional[str] = None) -> str:
     if cfg_base:
         return cfg_base
 
-    # 2. Try to guess default branch
-    base_branch = "main"
-    if run_git(["rev-parse", "--verify", "main"], check=False) == "":
-        if run_git(["rev-parse", "--verify", "master"], check=False) != "":
-            base_branch = "master"
-        # Default to main anyway if neither found, or let it fail downstream
-    return base_branch
+    remote_prefix = "refs/remotes/origin/"
+
+    # 1. Check local tracking info (fastest)
+    # 1.1 Verify if 'refs/remotes/origin/HEAD' is missing, try to detect it once?
+    # This invokes network and is slow, so we only implicitly trust if cached.
+    # Alternatively, users should run `git remote set-head origin -a`
+    base_branch = run_git(["symbolic-ref", f"{remote_prefix}HEAD"], check=False)
+    if base_branch != "":
+        return base_branch.removeprefix(remote_prefix)
+
+    # 2. Guess common names
+    for candidate in ("main", "master", "trunk", "development"):
+        base_branch = run_git(
+            ["show-ref", "--verify", "--quiet", f"{remote_prefix}{candidate}"],
+            check=False,
+        )
+        if base_branch != "":
+            return base_branch
+        base_branch = run_git(
+            ["show-ref", "--verify", "--quiet", f"refs/heads/{candidate}"], check=False
+        )
+        if base_branch != "":
+            return base_branch
+
+    # 3. Fallback
+    return "master"
 
 
 def get_refs_map() -> Dict[str, str]:
