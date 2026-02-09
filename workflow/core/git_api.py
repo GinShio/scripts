@@ -1,13 +1,25 @@
-"""High-level Git API wrapper using pygit2."""
+"""High-level Git API wrapper integrating pygit2 for reads and CLI for writes."""
 
 from __future__ import annotations
 
 import os
+import re
+import subprocess
+import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Any, List, Mapping, Optional, Union
+from typing import Any, Generator, List, Mapping, Optional, Union
 
 import pygit2
+
+from .command_runner import (
+    CommandError,
+    CommandResult,
+    CommandRunner,
+    SubprocessCommandRunner,
+)
 
 
 @dataclass
@@ -20,15 +32,163 @@ class SubmoduleInfo:
     branch: Optional[str] = None
 
 
+@dataclass
+class GitCommit:
+    """Represents a git commit."""
+
+    oid: str
+    message: str
+    author_name: str
+    author_email: str
+    date: int
+    parents: List[str]
+
+    @property
+    def subject(self) -> str:
+        return self.message.splitlines()[0] if self.message else ""
+
+    @property
+    def body(self) -> str:
+        lines = self.message.splitlines()
+        if len(lines) <= 1:
+            return ""
+        return "\n".join(lines[1:]).strip()
+
+
+class GitService(Enum):
+    """Supported git hosting services."""
+
+    AUTO = "auto"
+    GITHUB = "github"
+    GITLAB = "gitlab"
+    GITEA = "gitea"
+    CODEBERG = "codeberg"
+    BITBUCKET = "bitbucket"
+    AZURE = "azure"
+
+
+@dataclass(frozen=True)
+class RemoteInfo:
+    host: str
+    owner: str
+    repo: str
+    service: GitService
+
+    @property
+    def project_path(self) -> str:
+        """Return 'owner/repo' string."""
+        return f"{self.owner}/{self.repo}"
+
+
+# --- Standalone Utilities ---
+
+
+def resolve_ssh_alias(host: str) -> str:
+    """Resolve SSH alias using 'ssh -G'."""
+    try:
+        proc = subprocess.run(
+            ["ssh", "-G", host], capture_output=True, text=True, timeout=2
+        )
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                if line.lower().startswith("hostname "):
+                    return line.split(" ", 1)[1].strip()
+    except Exception:
+        pass
+    return host
+
+
+def normalize_domain(domain: str) -> str:
+    """Normalize specialized domains to their main service domain."""
+    domain = domain.lower()
+    mapping = {
+        "ssh.github.com": "github.com",
+        "altssh.gitlab.com": "gitlab.com",
+        "ssh.dev.azure.com": "dev.azure.com",
+        "vs-ssh.visualstudio.com": "visualstudio.com",
+        "altssh.bitbucket.org": "bitbucket.org",
+    }
+    return mapping.get(domain, domain)
+
+
+def parse_remote_url(url: str) -> Optional[RemoteInfo]:
+    """
+    Parse a Git remote URL into (host, owner, repo).
+    Handles SSH aliases, scp-syntax, and standard URIs.
+    """
+    if not url:
+        return None
+
+    domain = ""
+    path = ""
+
+    # 1. Check for standard SCP-like SSH syntax: user@host:path/to/repo.git
+    sc_match = re.match(r"^(?:[^@]+@)?([^:]+):(.+)$", url)
+    is_uri = any(url.startswith(p) for p in ["http:", "https:", "ssh:", "git:"])
+
+    if sc_match and not is_uri:
+        raw_host = sc_match.group(1)
+        path = sc_match.group(2)
+        resolved_host = resolve_ssh_alias(raw_host)
+        domain = normalize_domain(resolved_host)
+    else:
+        # 2. Generic URI matching
+        match = re.search(
+            r"^(?:ssh|git|https?)://(?:[^@/]+@)?([^:/]+)(?::\d+)?/(.+)$", url
+        )
+        if match:
+            raw_host = match.group(1)
+            path = match.group(2)
+            resolved_host = resolve_ssh_alias(raw_host)
+            domain = normalize_domain(resolved_host)
+
+    if domain and path:
+        if path.endswith(".git"):
+            path = path[:-4]
+        path = path.strip("/")
+
+        parts = path.split("/")
+        if len(parts) >= 2:
+            repo = parts[-1]
+            owner = "/".join(parts[:-1])
+
+            service = GitService.AUTO
+            if domain in ("github.com", "www.github.com"):
+                service = GitService.GITHUB
+            elif domain in ("gitlab.com", "www.gitlab.com") or "gitlab" in domain:
+                service = GitService.GITLAB
+            elif domain in ("codeberg.org", "www.codeberg.org"):
+                service = GitService.CODEBERG
+            elif "gitea" in domain:
+                service = GitService.GITEA
+            elif domain in ("bitbucket.org", "www.bitbucket.org"):
+                service = GitService.BITBUCKET
+            elif domain in ("dev.azure.com", "visualstudio.com"):
+                service = GitService.AZURE
+
+            return RemoteInfo(host=domain, owner=owner, repo=repo, service=service)
+
+    return None
+
+
 class GitRepository:
     """
-    High-level API for git operations using pygit2.
-    Replaces usages of CLI git commands in workflow scripts.
+    High-level API for git operations.
+
+    Design Philosophy:
+    - READ operations use pygit2 for performance and structured data.
+    - WRITE operations use Git CLI to ensure hooks run and config is respected.
+    - CONFIG operations use Git CLI to avoid libgit2/git format incompatibilities.
     """
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(
+        self, path: Path | str, runner: Optional[CommandRunner] = None
+    ) -> None:
         self.path = Path(path).resolve()
         self._repo: Optional[pygit2.Repository] = None
+        self._runner = runner or SubprocessCommandRunner()
+
+    # --- Core & Properties (pygit2) ---
 
     def open(self) -> None:
         """Opens the repository. Raises exception if not found."""
@@ -39,334 +199,528 @@ class GitRepository:
 
     @property
     def repo(self) -> pygit2.Repository:
-        """Access the underlying pygit2 Repository object."""
+        """Access the underlying pygit2 Repository object (Read-only usage recommended)."""
         if self._repo is None:
             self.open()
-        return self._repo
+        return self._repo  # type: ignore
 
     @property
     def is_valid(self) -> bool:
         """Checks if the path is a valid git repository."""
+        if not self.path.exists():
+            return False
         try:
-            pygit2.Repository(str(self.path))
+            # We explicitly check for .git or if it's a bare repo
+            self.open()
             return True
         except Exception:
             return False
 
     @property
-    def working_dir(self) -> Optional[Path]:
+    def root_dir(self) -> Path:
         """Returns the working directory root path."""
-        try:
-            wd = self.repo.workdir
-            return Path(wd) if wd else None
-        except Exception:
-            return None
+        # Bare repos have no working directory, return path
+        if self.repo.is_bare:
+            return Path(self.repo.path)
+        workdir = self.repo.workdir
+        return Path(workdir) if workdir else self.path
 
     @property
-    def git_dir(self) -> Optional[Path]:
+    def working_dir(self) -> Path:
+        """Alias for root_dir for backward compatibility."""
+        return self.root_dir
+
+    @property
+    def git_dir(self) -> Path:
         """Returns the .git directory path."""
+        return Path(self.repo.path)
+
+    def relpath(self, path: Union[str, Path]) -> Path:
+        """Returns path relative to the repository root."""
         try:
-            gd = self.repo.path
-            return Path(gd) if gd else None
+            p = Path(path).resolve()
+            return p.relative_to(self.root_dir)
+        except ValueError:
+            # If path is not relative to root, return absolute or original
+            return Path(path)
+
+    # --- CLI Helper ---
+
+    def _run_git(
+        self,
+        args: List[str],
+        check: bool = True,
+        capture: bool = True,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        """Internal helper to run git CLI commands in this repo."""
+        # Use root_dir for standard repos, or path for bare repos
+        # If repo is not valid (e.g. during init), use path
+        try:
+            cwd = self.root_dir
         except Exception:
+            cwd = self.path
+
+        return self._runner.run(
+            ["git"] + args, cwd=cwd, env=env, check=check, stream=not capture
+        )
+
+    def run_git_cmd(
+        self,
+        args: List[str],
+        check: bool = True,
+        capture: bool = True,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> CommandResult:
+        """
+        Run arbitrary git command in the repository context.
+        Useful for complex commands not covered by high-level API.
+        """
+        return self._run_git(args, check, capture, env)
+
+    # --- Configuration (CLI) ---
+
+    def get_config(self, key: str) -> Optional[str]:
+        """Gets a git config value via CLI."""
+        res = self._run_git(["config", "--get", key], check=False)
+        if res.returncode != 0:
             return None
+        return res.stdout.strip()
 
-    # --- Configuration ---
+    def get_config_all(self, key: str) -> List[str]:
+        """Gets all values for a git config key via CLI."""
+        res = self._run_git(["config", "--get-all", key], check=False)
+        if res.returncode != 0:
+            return []
+        return [line.strip() for line in res.stdout.splitlines() if line.strip()]
 
-    def get_config(self, key: str) -> Optional[Union[str, int, bool]]:
-        """Gets a git config value."""
+    def set_config(self, key: str, value: str, scope: str = "local") -> None:
+        """
+        Sets a git config value via CLI.
+        scope: 'local', 'global', or 'system'
+        """
+        self._run_git(["config", f"--{scope}", key, value])
+
+    def unset_config(self, key: str, scope: str = "local") -> None:
+        """Unsets a git config value via CLI."""
+        self._run_git(["config", f"--{scope}", "--unset", key], check=False)
+
+    def is_sparse_checkout(self) -> bool:
+        """Checks if sparse checkout is enabled."""
+        val = self.get_config("core.sparseCheckout")
+        return val is not None and val.lower() in ("true", "1", "yes", "on")
+
+    # --- Status & Inspection (pygit2) ---
+
+    def get_head_branch(self) -> Optional[str]:
+        """Returns the current branch name, or None if detached HEAD."""
         try:
-            # pygit2 config getter behaves like dict-ish but depends on type
-            # We can use get_bool, get_int, etc if we know type.
-            # But generic get usually returns string or value.
-            # config[key] returns the value.
-            return self.repo.config[key]
-        except (KeyError, pygit2.GitError):
+            if self.repo.head_is_detached:
+                return None
+            return self.repo.head.shorthand
+        except pygit2.GitError:
+            # Handle unborn HEAD (empty repo properly initialized)
+            try:
+                head = self.repo.lookup_reference("HEAD")
+                target = head.target
+                # target is str for symbolic ref
+                if isinstance(target, str) and target.startswith("refs/heads/"):
+                    return target[11:]
+            except Exception:
+                pass
             return None
-
-    def set_config(self, key: str, value: Any, local: bool = True) -> None:
-        """Sets a git config value. Local defaults to repo config."""
-        # For full "local vs global" control, we might need to access specific level
-        # self.repo.config is the aggregate.
-        # To write to local, we can use:
-        # repo.config.add_file_ondisk(path, level, repo) ... but that's for loading.
-        # repo.config[key] = value writes to the highest priority config file usually local.
-        # To be safe for "local" specifically:
-        try:
-            if local:
-                # This ensures it writes to the repository's configuration
-                # pygit2's Config object handles writes to the appropriate place
-                self.repo.config[key] = value
-            else:
-                pygit2.Config.get_global_config()[key] = value
-        except pygit2.GitError as e:
-            raise RuntimeError(f"Failed to set config {key}: {e}")
-
-    def unset_config(self, key: str) -> None:
-        """Unsets a git config value."""
-        try:
-            del self.repo.config[key]
-        except (KeyError, pygit2.GitError):
-            pass
-
-    # --- Status & Inspection ---
 
     def get_current_branch(self) -> Optional[str]:
-        """Returns the current branch name (shorthand), or None if detached HEAD."""
-        if self.repo.head_is_detached:
-            return None
-        return self.repo.head.shorthand
+        """Alias for get_head_branch."""
+        return self.get_head_branch()
 
     def get_head_commit(self) -> str:
         """Returns the full commit hash of HEAD."""
         return str(self.repo.head.target)
 
-    def resolve_commit(self, revision: str) -> Optional[str]:
+    def resolve_rev(self, spec: str) -> Optional[str]:
         """Resolves a revision (branch, tag, sha) to a full commit hash."""
         try:
-            obj = self.repo.revparse_single(revision)
+            obj = self.repo.revparse_single(spec)
             return str(obj.id)
         except (KeyError, pygit2.GitError):
             return None
 
-    def is_dirty(self, ignore_submodules: bool = True) -> bool:
-        """Checks if working directory has uncommitted changes."""
-        # pygit2 status returns a dict of path -> flags
-        status_opts: dict[str, Any] = {}
-        if ignore_submodules:
-            # GIT_STATUS_OPT_EXCLUDE_SUBMODULES = (1 << 5) ? No directly in pygit2 main namespace sometimes?
-            # pygit2 usually maps options to kwargs or Enums
+    def resolve_commit(self, spec: str) -> Optional[str]:
+        """Alias for resolve_rev."""
+        return self.resolve_rev(spec)
+
+    def is_dirty(self, untracked: bool = False) -> bool:
+        """
+        Checks if working directory has uncommitted changes.
+        Uses pygit2 for speed.
+        """
+        try:
+            mode = "normal" if untracked else "no"
+            status = self.repo.status(untracked_files=mode)
+            return len(status) > 0
+        except Exception:
+            return False
+
+    def resolve_default_branch(self, remote: str = "origin") -> str:
+        """
+        Heuristic to resolve the default branch (main/master).
+        """
+        # 1. Configured base
+        cfg_base = self.get_config("workflow.base-branch") or self.get_config(
+            "stack.base"
+        )
+        if cfg_base:
+            return cfg_base
+
+        # 2. Try to guess from remote HEAD
+        remote_prefix = f"refs/remotes/{remote}/"
+        try:
+            sym_ref = self.repo.lookup_reference(f"{remote_prefix}HEAD")
+            target = sym_ref.target
+            if target.startswith(remote_prefix):
+                return target[len(remote_prefix) :]
+        except (KeyError, ValueError, pygit2.GitError):
             pass
 
-        # Simple check: if status is not empty, it's dirty.
-        # However, we only care about modification, addition, deletion, etc.
-        # We generally want to ignore untracked files if 'git status --porcelain' behavior is mimic'd roughly,
-        # but usually untracked files are considered dirty in some contexts.
-        # existing git_manager uses: --untracked-files=no
-
-        # pygit2.GIT_STATUS_SHOW_INDEX_AND_WORKDIR is default
-        status = self.repo.status(untracked_files="no")
-        return len(status) > 0
-
-    def is_sparse_checkout(self) -> bool:
-        """Checks git config for sparse checkout."""
-        try:
-            config = self.repo.config
-            # core.sparseCheckout is a boolean
-            val = config.get_bool("core.sparseCheckout")
-            return val
-        except (KeyError, ValueError):
-            return False
-
-    # --- Actions: Switch/Checkout ---
-
-    def checkout(self, target: str, force: bool = False, dry_run: bool = False) -> None:
-        """
-        Switches to a branch or commit.
-        Equivalents: 'git switch', 'git checkout'.
-        """
-        if dry_run:
-            print(f"[Dry-run] would checkout '{target}' in {self.path}")
-            return
-
-        # Resolve target to an object (commit/branch)
-        # If it's a branch name
-        repo = self.repo
-
-        # Check if local branch exists
-        branch = repo.lookup_branch(target)
-        if branch:
-            ref = branch
-            repo.checkout(ref)
-            # Update HEAD
-            # checkout(ref) usually updates HEAD if ref is a branch
-        else:
-            # Try as a commit/tag/remote branch
+        # 3. Fallback check for existence of main/master
+        for candidate in ["main", "master", "trunk", "development"]:
             try:
-                # Resolve reference or revision
-                obj = repo.revparse_single(target)
-                repo.checkout_tree(obj)
-                if not repo.head_is_detached:
-                    repo.set_head(obj.id)
-                else:
-                    repo.set_head(obj.id)
+                self.repo.lookup_reference(f"{remote_prefix}{candidate}")
+                return candidate
             except (KeyError, pygit2.GitError):
-                raise ValueError(f"Target '{target}' not found in repository.")
+                continue
 
-    def create_branch(
-        self, branch_name: str, point_at: str, dry_run: bool = False
-    ) -> None:
-        if dry_run:
-            print(
-                f"[Dry-run] would create branch '{branch_name}' at '{point_at}' in {self.path}"
-            )
-            return
-        # Implementation to come if needed
-        pass
+        return "main"
 
-    # --- Actions: Sync ---
-
-    def fetch(self, remote_name: str = "origin", dry_run: bool = False) -> None:
-        """Fetches from the specified remote."""
-        if dry_run:
-            print(f"[Dry-run] would fetch remote '{remote_name}' in {self.path}")
-            return
-
-        try:
-            remote = self.repo.remotes[remote_name]
-        except KeyError:
-            raise ValueError(f"Remote '{remote_name}' not found.")
-
-        remote.fetch()
-
-    def merge_fast_forward(self, target_commit: str, dry_run: bool = False) -> None:
+    def get_commits(
+        self, rev_range: str, order: int = pygit2.GIT_SORT_TOPOLOGICAL
+    ) -> List[GitCommit]:
         """
-        Performs a fast-forward merge to target_commit.
-        Raises error if not possible.
+        Get list of commits for a range (e.g. 'main..feature').
+        Uses pygit2 for efficiency.
         """
-        if dry_run:
-            print(
-                f"[Dry-run] would fast-forward merge HEAD to '{target_commit}' in {self.path}"
-            )
-            return
-
-        repo = self.repo
         try:
-            target_obj = repo.revparse_single(target_commit)
-        except KeyError:
-            raise ValueError(f"Commit '{target_commit}' not found.")
+            if ".." in rev_range:
+                start, end = rev_range.split("..", 1)
+                # handle empty start implies HEAD if not careful, but usually explicit.
+                # If start is empty, revparse fails?
+                if not start:
+                    # ..end -> reachable from end? No, usually range implies DAG subset.
+                    # let's assume valid git range refs.
+                    pass
 
-        target_oid = target_obj.id
+                end_obj = self.repo.revparse_single(end)
+                start_obj = self.repo.revparse_single(start)
 
-        # Merge analysis
-        analysis, _ = repo.merge_analysis(target_oid)
-
-        if analysis & pygit2.GIT_MERGE_ANALYSIS_FASTFORWARD:
-            # Perform Fast-forward
-            # 1. Checkout tree
-            repo.checkout_tree(target_obj)
-            # 2. Update HEAD to point to new commit
-            # If HEAD is a branch, update the branch ref
-            if not repo.head_is_detached:
-                head_ref = repo.head
-                head_ref.set_target(target_oid)
+                walker = self.repo.walk(end_obj.id, order)
+                walker.hide(start_obj.id)
             else:
-                repo.set_head(target_oid)
-        elif analysis & pygit2.GIT_MERGE_ANALYSIS_UP_TO_DATE:
-            # Nothing to do
-            return
-        else:
-            raise RuntimeError(
-                f"Cannot fast-forward merge to {target_commit}. Analysis result: {analysis}"
-            )
+                # Just reachable from rev
+                obj = self.repo.revparse_single(rev_range)
+                walker = self.repo.walk(obj.id, order)
 
-    # --- Actions: Stash ---
-
-    def stash_save(self, message: str, dry_run: bool = False) -> bool:
-        """
-        Stashes changes. Returns True if stash was created.
-        """
-        if dry_run:
-            dirty = self.is_dirty()
-            if dirty:
-                print(
-                    f"[Dry-run] would stash changes with message '{message}' in {self.path}"
+            commits = []
+            for commit in walker:
+                commits.append(
+                    GitCommit(
+                        oid=str(commit.id),
+                        message=commit.message,
+                        author_name=commit.author.name,
+                        author_email=commit.author.email,
+                        date=commit.commit_time,
+                        parents=[str(p.id) for p in commit.parents],
+                    )
                 )
-            return dirty
+            return commits
+        except Exception:
+            return []
 
+    def get_branches(self) -> Mapping[str, str]:
+        """
+        Get all local branches and their tips.
+        Returns: Dict[branch_name, commit_sha]
+        """
+        branches = {}
         try:
-            # Get default signature for stasher
-            sig = self.repo.default_signature
-            self.repo.stash(sig, message)
-            return True
-        except pygit2.GitError:
-            # Usually raises if nothing to stash
-            return False
+            for ref_name in self.repo.listall_references():
+                if ref_name.startswith("refs/heads/"):
+                    name = ref_name[11:]
+                    target = self.repo.lookup_reference(ref_name).target
+                    if hasattr(target, "hex"):
+                        branches[name] = target.hex
+                    else:
+                        branches[name] = str(target)
+        except Exception:
+            pass
+        return branches
 
-    def stash_pop(self, dry_run: bool = False) -> None:
-        """Pops the latest stash."""
-        if dry_run:
-            print(f"[Dry-run] would pop stash in {self.path}")
+    # --- Remote Management (pygit2 READ / CLI WRITE) ---
+
+    def list_remotes(self) -> List[str]:
+        """List remote names."""
+        return [r.name for r in self.repo.remotes]
+
+    def get_remote_url(self, name: str, push: bool = False) -> Optional[str]:
+        """Get fetch or push URL for a remote (returns first one)."""
+        urls = self.get_remote_urls(name, push=push)
+        return urls[0] if urls else None
+
+    def get_remote_urls(self, name: str, push: bool = False) -> List[str]:
+        """(CLI) Get all fetch or push URLs for a remote."""
+        args = ["remote", "get-url", "--all"]
+        if push:
+            args.append("--push")
+        args.append(name)
+
+        res = self._run_git(args, check=False)
+        if res.returncode != 0:
+            return []
+        return [line.strip() for line in res.stdout.splitlines() if line.strip()]
+
+    def add_remote(self, name: str, url: str) -> None:
+        """Add a new remote via CLI."""
+        self._run_git(["remote", "add", name, url])
+
+    def rename_remote(self, old_name: str, new_name: str) -> None:
+        """Rename a remote via CLI."""
+        self._run_git(["remote", "rename", old_name, new_name])
+
+    def set_remote_url(
+        self, name: str, url: str, push: bool = False, add: bool = False
+    ) -> None:
+        """
+        Set remote URL via CLI.
+        If add=True, adds an extra URL (e.g. for pushing to multiple mirrors).
+        """
+        args = ["remote", "set-url"]
+        if push:
+            args.append("--push")
+        if add:
+            args.append("--add")
+        args.extend([name, url])
+        self._run_git(args)
+
+    # --- Write Actions (CLI) ---
+
+    def fetch(
+        self, remote: str = "origin", prune: bool = True, all_remotes: bool = False
+    ) -> None:
+        """Fetch from remote."""
+        if all_remotes:
+            args = ["fetch", "--all"]
+        else:
+            args = ["fetch", remote]
+
+        if prune:
+            args.append("--prune")
+        self._run_git(args)
+
+    def checkout(
+        self, target: str, force: bool = False, create_branch: Optional[str] = None
+    ) -> None:
+        """
+        Checkout a branch or commit.
+        """
+        args = ["checkout"]
+        if force:
+            args.append("-f")
+        if create_branch:
+            args.extend(["-b", create_branch])
+
+        args.append(target)
+        self._run_git(args)
+
+    def add(self, paths: List[str] | List[Path]) -> None:
+        """Stage files."""
+        if not paths:
             return
+        args = ["add"] + [str(p) for p in paths]
+        self._run_git(args)
+
+    def commit(self, message: str, allow_empty: bool = False) -> None:
+        """Commit staged changes."""
+        args = ["commit", "-m", message]
+        if allow_empty:
+            args.append("--allow-empty")
+        self._run_git(args)
+
+    def push(
+        self,
+        remote: str = "origin",
+        refspec: Optional[str] = None,
+        force: bool = False,
+        force_with_lease: bool = False,
+    ) -> None:
+        """Push to remote."""
+        args = ["push"]
+        if force:
+            args.append("--force")
+        if force_with_lease:
+            args.append("--force-with-lease")
+        args.append(remote)
+        if refspec:
+            args.append(refspec)
+        self._run_git(args)
+
+    def merge(self, target: str, fast_forward_only: bool = False) -> None:
+        """Merge target into current branch."""
+        args = ["merge", target]
+        if fast_forward_only:
+            args.append("--ff-only")
+        self._run_git(args)
+
+    def stash(
+        self, message: Optional[str] = None, include_untracked: bool = False
+    ) -> bool:
+        """
+        Stash changes. Returns True if a stash was created.
+        """
+        args = ["stash", "push"]
+        if include_untracked:
+            args.append("--include-untracked")
+        if message:
+            args.extend(["-m", message])
+
+        res = self._run_git(args, check=False)
+        return res.returncode == 0 and "No local changes to save" not in res.stdout
+
+    def stash_pop(self) -> None:
+        """Pop the latest stash."""
+        self._run_git(["stash", "pop"])
+
+    @contextmanager
+    def safe_checkout(
+        self, target: str, auto_stash: bool = True, force: bool = False
+    ) -> Generator[None, None, None]:
+        """
+        Context manager to safely checkout a target, optionally stashing changes.
+        Restores original state (branch) on exit can be tricky, so this specifically
+        just handles the "stash -> checkout" flow safely.
+
+        If you want to return to the original branch, you should handle that in the caller.
+        """
+        dirty = self.is_dirty()
+        stashed = False
+
+        if dirty:
+            if auto_stash:
+                stashed = self.stash(
+                    message=f"Safe checkout stash for {target}", include_untracked=True
+                )
+            elif not force:
+                raise RuntimeError(
+                    "Working directory is dirty and auto-stash is disabled."
+                )
 
         try:
-            self.repo.stash_pop()
-        except pygit2.GitError as e:
-            raise RuntimeError(f"Stash pop failed: {e}")
+            self.checkout(target, force=force)
+            yield
+        finally:
+            if stashed:
+                # Check if we can pop. If checkout changed base significantly, pop might conflict.
+                # But we attempt it.
+                try:
+                    self.stash_pop()
+                except Exception:
+                    print("Warning: Failed to pop stash after safe checkout.")
 
-    # --- Submodules ---
+    # --- Submodules (Reads via pygit2, Updates via CLI) ---
 
     def get_submodules(self) -> List[SubmoduleInfo]:
-        """Lists all submodules with their status."""
+        """
+        Lists all submodules with their status.
+        Uses pygit2 for listing paths and accessing submodule repos,
+        but CLI for config reading since pygit2.Repository.lookup_submodule is missing in this version.
+        """
         submodules = []
-        for name in self.repo.listall_submodules():
+        # Force reload to ensure freshness
+        self._repo = None
+
+        paths = []
+        try:
+            paths = self.repo.listall_submodules()
+        except Exception:
+            pass
+
+        for path in paths:
             try:
-                sub = self.repo.lookup_submodule(name)
-                current_commit = (
-                    str(sub.head_id)
-                    if sub.head_id
-                    else "0000000000000000000000000000000000000000"
-                )
+                # 1. Get current commit in submodule workdir
+                current_commit = "0000000000000000000000000000000000000000"
+                sub_path_abs = self.root_dir / path
+
+                # Try to open submodule repo to get HEAD
+                if sub_path_abs.exists():
+                    try:
+                        # Open directly using pygit2
+                        sub_repo = pygit2.Repository(str(sub_path_abs))
+                        if not sub_repo.head_is_unborn:
+                            current_commit = str(sub_repo.head.target)
+                    except Exception:
+                        pass
+
+                # 2. Get URL and Branch
+                # Helper to get config value
+                def get_cfg(source_args: List[str], key: str) -> Optional[str]:
+                    cmd = (
+                        ["git", "-C", str(self.root_dir), "config"]
+                        + source_args
+                        + ["--get", key]
+                    )
+                    res = self._runner.run(cmd, check=False)
+                    return res.stdout.strip() if res.returncode == 0 else None
+
+                # URL: prefer .git/config (active), fallback to .gitmodules
+                url = get_cfg([], f"submodule.{path}.url")
+                if not url:
+                    url = (
+                        get_cfg(["--file", ".gitmodules"], f"submodule.{path}.url")
+                        or ""
+                    )
+
+                # Branch: .gitmodules
+                branch = get_cfg(["--file", ".gitmodules"], f"submodule.{path}.branch")
 
                 submodules.append(
                     SubmoduleInfo(
-                        path=sub.path,
-                        url=sub.url or "",
-                        current_commit=current_commit,
-                        branch=sub.branch,
+                        path=path, url=url, current_commit=current_commit, branch=branch
                     )
                 )
             except Exception:
                 continue
+
         return submodules
 
-    def update_submodules(
-        self, recursive: bool = True, init: bool = False, dry_run: bool = False
-    ) -> None:
-        """Updates submodules."""
-        if dry_run:
-            print(
-                f"[Dry-run] would update submodules (recursive={recursive}, init={init}) in {self.path}"
-            )
-            return
+    def update_submodules(self, recursive: bool = True, init: bool = False) -> None:
+        """Updates submodules (CLI)."""
+        args = ["submodule", "update"]
+        if init:
+            args.append("--init")
+        if recursive:
+            args.append("--recursive")
+        self._run_git(args)
 
-        # pygit2's submodule update support is limited compared to CLI.
-        # It typically requires iterating and calling update() on each submodule.
-        for name in self.repo.listall_submodules():
-            sub = self.repo.lookup_submodule(name)
-            sub.update(init=init)
-            if recursive:
-                # Recursively open submodule repo and update its submodules
-                try:
-                    sub_repo_path = self.path / sub.path
-                    if sub_repo_path.exists():
-                        sub_repo = GitRepository(sub_repo_path)
-                        sub_repo.update_submodules(recursive=True, init=init)
-                except Exception:
-                    pass
+    # --- Factory ---
 
-    # --- Factory/Init ---
+    @staticmethod
+    def init(path: Path | str, initial_branch: str = "main") -> GitRepository:
+        """Initialize a new git repository (CLI)."""
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        runner = SubprocessCommandRunner()
+        runner.run(["git", "init", "-b", initial_branch, str(path)], check=True)
+        return GitRepository(path, runner=runner)
 
     @staticmethod
     def init_repository(
         path: Path | str, origin_url: Optional[str] = None, dry_run: bool = False
     ) -> GitRepository:
-        """Initializes a new repo and optional remote."""
-        path_obj = Path(path)
-
+        """Legacy compatibility wrapper for init."""
         if dry_run:
-            print(f"[Dry-run] would init git repository at {path_obj}")
-            if origin_url:
-                print(f"[Dry-run] would add origin {origin_url}")
-            return GitRepository(path_obj)
+            print(f"[Dry-run] init repo at {path}")
+            return GitRepository(path)
 
-        path_obj.mkdir(parents=True, exist_ok=True)
-        pygit2.init_repository(str(path_obj))
-
-        repo_wrapper = GitRepository(path_obj)
-        repo_wrapper.open()
-
+        repo = GitRepository.init(path)
         if origin_url:
-            repo_wrapper.repo.remotes.create("origin", origin_url)
-
-        return repo_wrapper
+            repo.add_remote("origin", origin_url)
+        return repo
