@@ -41,8 +41,9 @@ class PlatformInterface(Protocol):
 class BasePlatform(abc.ABC):
     """Base class for all platforms containing common logic."""
 
-    def __init__(self, info: RemoteInfo) -> None:
+    def __init__(self, info: RemoteInfo, fork_owner: Optional[str] = None) -> None:
         self.info = info
+        self.fork_owner = fork_owner
         self.token: Optional[str] = None
 
     @abc.abstractmethod
@@ -90,8 +91,8 @@ class BasePlatform(abc.ABC):
 
 
 class GitHubPlatform(BasePlatform):
-    def __init__(self, info: RemoteInfo) -> None:
-        super().__init__(info)
+    def __init__(self, info: RemoteInfo, fork_owner: Optional[str] = None) -> None:
+        super().__init__(info, fork_owner)
         self.repo = info.project_path
         self.owner = info.owner
         self.token = (
@@ -136,7 +137,8 @@ class GitHubPlatform(BasePlatform):
     def get_mr(
         self, branch: str, state: str = "open", base: Optional[str] = None
     ) -> Optional[Dict]:
-        head_query = f"{self.owner}:{branch}"
+        head_user = self.fork_owner if self.fork_owner else self.owner
+        head_query = f"{head_user}:{branch}"
         try:
             params = urllib.parse.urlencode({"head": head_query, "state": state})
             data = self._request("GET", f"pulls?{params}")
@@ -155,9 +157,14 @@ class GitHubPlatform(BasePlatform):
         body: str,
     ) -> Optional[Dict]:
         print(f"Creating PR for {branch} (base: {base})...")
+
+        head_ref = branch
+        if self.fork_owner and self.fork_owner != self.owner:
+            head_ref = f"{self.fork_owner}:{branch}"
+
         data = {
             "title": title,
-            "head": branch,
+            "head": head_ref,
             "base": base,
             "body": body,
             "draft": draft,
@@ -250,8 +257,8 @@ class GiteaPlatform(BasePlatform):
     Explicit implementation to avoid GitHub subclassing issues.
     """
 
-    def __init__(self, info: RemoteInfo) -> None:
-        super().__init__(info)
+    def __init__(self, info: RemoteInfo, fork_owner: Optional[str] = None) -> None:
+        super().__init__(info, fork_owner)
         self.repo = info.project_path
         self.owner = info.owner
         self.host = info.host
@@ -343,9 +350,14 @@ class GiteaPlatform(BasePlatform):
         body: str,
     ) -> Optional[Dict]:
         print(f"Creating PR for {branch} (base: {base})...")
+
+        head_ref = branch
+        if self.fork_owner and self.fork_owner != self.owner:
+            head_ref = f"{self.fork_owner}:{branch}"
+
         data = {
             "title": title,
-            "head": branch,
+            "head": head_ref,
             "base": base,
             "body": body,
         }
@@ -835,47 +847,72 @@ class AzurePlatform(BasePlatform):
             print(f"Failed to update description: {e}")
 
 
-def get_remote_url() -> str:
+def get_target_remote_url() -> str:
+    """Get the URL of the upstream (target) remote."""
+    # 1. Try upstream
+    url = run_git(["config", "--get", "remote.upstream.url"], check=False)
+    if url:
+        return url
+    # 2. Fallback to origin
     url = run_git(["config", "--get", "remote.origin.url"], check=False)
     if url:
         return url
+
+    # 3. Fallback to first remote
     remotes = run_git(["remote"], check=False).splitlines()
     if remotes:
         return run_git(["config", "--get", f"remote.{remotes[0]}.url"], check=False)
     return ""
 
 
+def get_fork_remote_url() -> str:
+    """Get the URL of the fork (origin) remote."""
+    # Always try origin first
+    url = run_git(["config", "--get", "remote.origin.url"], check=False)
+    if url:
+        return url
+    return ""
+
+
 def get_platform() -> Optional[PlatformInterface]:
-    url = get_remote_url()
-    if not url:
+    target_url = get_target_remote_url()
+    if not target_url:
         return None
 
-    info = parse_remote_url(url)
-    if not info:
+    target_info = parse_remote_url(target_url)
+    if not target_info:
         return None
 
-    if info.is_gitlab:
-        pt = GitLabPlatform(info)
+    # Resolve fork owner to help cross-repo PRs
+    fork_owner = None
+    fork_url = get_fork_remote_url()
+    if fork_url:
+        fork_info = parse_remote_url(fork_url)
+        if fork_info:
+            fork_owner = fork_info.owner
+
+    if target_info.is_gitlab:
+        pt = GitLabPlatform(target_info)
         if pt.check_auth():
             return pt
 
-    if info.is_gitea or info.is_codeberg:
-        pt = GiteaPlatform(info)
+    if target_info.is_gitea or target_info.is_codeberg:
+        pt = GiteaPlatform(target_info, fork_owner)
         if pt.check_auth():
             return pt
 
-    if info.is_bitbucket:
-        pt = BitbucketPlatform(info)
+    if target_info.is_bitbucket:
+        pt = BitbucketPlatform(target_info)
         if pt.check_auth():
             return pt
 
-    if info.service == info.service.AZURE:
-        pt = AzurePlatform(info)
+    if target_info.service == target_info.service.AZURE:
+        pt = AzurePlatform(target_info)
         if pt.check_auth():
             return pt
 
     # Default to GitHub
-    pt = GitHubPlatform(info)
+    pt = GitHubPlatform(target_info, fork_owner)
     if pt.check_auth():
         return pt
 

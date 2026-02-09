@@ -53,6 +53,18 @@ def get_git_dir() -> str:
     return run_git(["rev-parse", "--git-dir"])
 
 
+def get_remote_names() -> List[str]:
+    """Get list of configured remotes."""
+    out = run_git(["remote"], check=False)
+    return [r.strip() for r in out.splitlines() if r.strip()]
+
+
+def get_upstream_remote_name() -> str:
+    """Get the name of the upstream remote (upstream if exists, else origin)."""
+    remotes = get_remote_names()
+    return "upstream" if "upstream" in remotes else "origin"
+
+
 def resolve_base_branch(provided_base: Optional[str] = None) -> str:
     """Resolve the base branch, defaulting to main/master if not provided."""
     if provided_base:
@@ -63,29 +75,40 @@ def resolve_base_branch(provided_base: Optional[str] = None) -> str:
     if cfg_base:
         return cfg_base
 
-    remote_prefix = "refs/remotes/origin/"
+    # Prefer upstream -> origin
+    remote_name = get_upstream_remote_name()
+    remote_prefix = f"refs/remotes/{remote_name}/"
 
     # 1. Check local tracking info (fastest)
-    # 1.1 Verify if 'refs/remotes/origin/HEAD' is missing, try to detect it once?
+    # 1.1 Verify if 'refs/remotes/<remote>/HEAD' is missing, try to detect it once?
     # This invokes network and is slow, so we only implicitly trust if cached.
-    # Alternatively, users should run `git remote set-head origin -a`
+    # Alternatively, users should run `git remote set-head <remote> -a`
     base_branch = run_git(["symbolic-ref", f"{remote_prefix}HEAD"], check=False)
     if base_branch != "":
         return base_branch.removeprefix(remote_prefix)
 
     # 2. Guess common names
     for candidate in ("main", "master", "trunk", "development"):
-        base_branch = run_git(
+        # Check remote ref
+        if run_git(
             ["show-ref", "--verify", "--quiet", f"{remote_prefix}{candidate}"],
             check=False,
-        )
-        if base_branch != "":
-            return base_branch
-        base_branch = run_git(
-            ["show-ref", "--verify", "--quiet", f"refs/heads/{candidate}"], check=False
-        )
-        if base_branch != "":
-            return base_branch
+        ):
+            # If show-ref --quiet outputs nothing but succeeds (exit 0), run_git returns "".
+            # If it fails (exit 1), run_git returns "".
+            # We can't distinguish with current run_git wrapper checking only output.
+            # So we must NOT use --quiet and rely on output presence.
+            pass
+
+        # We rely on output being non-empty if found. remove --quiet.
+        if run_git(
+            ["show-ref", "--verify", f"{remote_prefix}{candidate}"],
+            check=False,
+        ):
+            return candidate
+
+        if run_git(["show-ref", "--verify", f"refs/heads/{candidate}"], check=False):
+            return candidate
 
     # 3. Fallback
     return "master"

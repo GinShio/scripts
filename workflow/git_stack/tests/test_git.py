@@ -46,7 +46,7 @@ class TestGit(unittest.TestCase):
     def test_resolve_base_branch_auto_main(self, mock_run_git):
         # Mock run_git to return sha for main
         mock_run_git.side_effect = (
-            lambda args, check=True: "sha" if "main" in args else ""
+            lambda args, check=True: "sha" if any("main" in a for a in args) else ""
         )
         self.assertEqual(git.resolve_base_branch(None), "main")
 
@@ -68,6 +68,46 @@ class TestGit(unittest.TestCase):
         mock_run_git.return_value = "main 12345\nfeature 67890"
         refs = git.get_refs_map()
         self.assertEqual(refs, {"main": "12345", "feature": "67890"})
+
+    @patch("git_stack.src.git.get_upstream_remote_name")
+    @patch("git_stack.src.git.run_git")
+    def test_resolve_base_branch_check_upstream(self, mock_run_git, mock_get_remote):
+        # Scenario: upstream exists, has main
+        mock_get_remote.return_value = "upstream"
+
+        # Mock run command chain
+        # 1. symbolic-ref refs/remotes/upstream/HEAD
+        # 2. show-ref ... upstream/main
+
+        def side_effect(args, check=True):
+            cmd = " ".join(args)
+            if "symbolic-ref" in cmd and "upstream/HEAD" in cmd:
+                return ""
+            if "show-ref" in cmd and "upstream/main" in cmd:
+                return "sha"
+            return ""
+
+        mock_run_git.side_effect = side_effect
+
+        base = git.resolve_base_branch()
+        self.assertEqual(base, "main")
+
+    @patch("git_stack.src.git.get_upstream_remote_name")
+    @patch("git_stack.src.git.run_git")
+    def test_resolve_base_branch_fallback_origin(self, mock_run_git, mock_get_remote):
+        # Scenario: upstream remote name returned as 'origin' (default)
+        mock_get_remote.return_value = "origin"
+
+        def side_effect(args, check=True):
+            cmd = " ".join(args)
+            if "symbolic-ref" in cmd and "origin/HEAD" in cmd:
+                return "refs/remotes/origin/master"
+            return ""
+
+        mock_run_git.side_effect = side_effect
+
+        base = git.resolve_base_branch()
+        self.assertEqual(base, "master")
 
     @patch("git_stack.src.git.run_git")
     def test_get_config(self, mock_run_git):

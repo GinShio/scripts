@@ -9,15 +9,18 @@ from git_stack.src import platform
 
 
 class TestPlatform(unittest.TestCase):
-    @patch("git_stack.src.platform.get_remote_url")
-    def test_get_platform_github(self, mock_url):
-        mock_url.return_value = "https://github.com/owner/repo.git"
+    @patch("git_stack.src.platform.get_fork_remote_url")
+    @patch("git_stack.src.platform.get_target_remote_url")
+    def test_get_platform_github(self, mock_target_url, mock_fork_url):
+        mock_target_url.return_value = "https://github.com/owner/repo.git"
+        mock_fork_url.return_value = "https://github.com/myuser/repo.git"
         with patch.object(platform.GitHubPlatform, "check_auth", return_value=True):
             plat = platform.get_platform()
             self.assertIsInstance(plat, platform.GitHubPlatform)
             self.assertEqual(plat.repo, "owner/repo")
+            self.assertEqual(plat.fork_owner, "myuser")
 
-    @patch("git_stack.src.platform.get_remote_url")
+    @patch("git_stack.src.platform.get_target_remote_url")
     def test_get_platform_gitlab_detect(self, mock_url):
         mock_url.return_value = "https://gitlab.com/owner/repo.git"
         # Since GitLab is implemented
@@ -27,19 +30,18 @@ class TestPlatform(unittest.TestCase):
 
     @patch("git_stack.src.platform.GitHubPlatform._request")
     @patch("git_stack.src.platform.GitHubPlatform.check_auth", return_value=True)
-    def test_sync_mr_create(self, mock_check, mock_request):
-        # Setup: No existing PR
+    def test_sync_mr_create_cross_repo(self, mock_check, mock_request):
+        # Setup: No existing PR, cross repo
         mock_request.side_effect = [
             [],  # get_mr (open)
-            [],  # get_mr (all/merged) -> None (safe to create)
+            [],  # get_mr (all/merged)
             {"number": 123, "html_url": "http://url"},  # create_mr response
         ]
 
         info = RemoteInfo(
-            host="github.com", owner="u", repo="r", service=GitService.GITHUB
+            host="github.com", owner="upstream_org", repo="r", service=GitService.GITHUB
         )
-        plat = platform.GitHubPlatform(info)
-        # Mock token to skip logic
+        plat = platform.GitHubPlatform(info, fork_owner="myuser")
         plat.token = "abc"
 
         plat.sync_mr(
@@ -50,15 +52,12 @@ class TestPlatform(unittest.TestCase):
             body="Stack PR managed by git-stack.",
         )
 
-        # Verify calls
-        # 1. GET requests pulls (open)
-        # 2. GET requests pulls (all) -- NEW SAFETY CHECK
-        # 3. POST create
-        # GitHub uses open + all + create => 3 requests
-        self.assertEqual(mock_request.call_count, 3)
+        # Verify creation uses user:branch
         create_call = mock_request.call_args_list[2]
         self.assertEqual(create_call[0][0], "POST")
-        self.assertEqual(create_call[0][2]["base"], "main")
+        payload = create_call[0][2]
+        self.assertEqual(payload["head"], "myuser:feat")
+        self.assertEqual(payload["base"], "main")
 
     @patch("git_stack.src.platform.GitHubPlatform._request")
     @patch("git_stack.src.platform.GitHubPlatform.check_auth", return_value=True)
@@ -155,21 +154,21 @@ class TestPlatform(unittest.TestCase):
         # NO Create
         self.assertEqual(mock_request.call_count, 2)
 
-    @patch("git_stack.src.platform.get_remote_url")
+    @patch("git_stack.src.platform.get_target_remote_url")
     def test_get_platform_gitea(self, mock_url):
         mock_url.return_value = "https://gitea.example.com/owner/repo.git"
         with patch.object(platform.GiteaPlatform, "check_auth", return_value=True):
             plat = platform.get_platform()
             self.assertIsInstance(plat, platform.GiteaPlatform)
 
-    @patch("git_stack.src.platform.get_remote_url")
+    @patch("git_stack.src.platform.get_target_remote_url")
     def test_get_platform_bitbucket(self, mock_url):
         mock_url.return_value = "https://bitbucket.org/workspace/repo.git"
         with patch.object(platform.BitbucketPlatform, "check_auth", return_value=True):
             plat = platform.get_platform()
             self.assertIsInstance(plat, platform.BitbucketPlatform)
 
-    @patch("git_stack.src.platform.get_remote_url")
+    @patch("git_stack.src.platform.get_target_remote_url")
     def test_get_platform_azure(self, mock_url):
         mock_url.return_value = "https://dev.azure.com/org/project/_git/repo"
         with patch.object(platform.AzurePlatform, "check_auth", return_value=True):
