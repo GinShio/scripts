@@ -165,3 +165,86 @@ if __name__ == "__main__":
         info = parse_remote_url(sys.argv[1])
         if info:
             print(f"{info.host} {info.owner} {info.repo}")
+
+
+def get_git_config(key: str) -> Optional[str]:
+    """Read a git config value."""
+    try:
+        # Use subprocess directly to avoid dependencies on other modules in core
+        res = subprocess.run(
+            ["git", "config", "--get", key], capture_output=True, text=True
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
+def get_platform_host(service_name: str) -> str:
+    """Get configured host for a platform, with fallback to built-ins."""
+    # 1. Try config
+    host = get_git_config(f"platform.{service_name}.host")
+    if host:
+        return host
+
+    # 2. Fallback
+    defaults = {
+        "github": "github.com",
+        "gitlab": "gitlab.com",
+        "gitea": "gitea.com",
+        "codeberg": "codeberg.org",
+        "bitbucket": "bitbucket.org",
+        "azure": "dev.azure.com",
+    }
+    return defaults.get(service_name, "")
+
+
+def get_platform_user(service_name: str) -> Optional[str]:
+    """Get current username for a specific platform."""
+    user = get_git_config(f"platform.{service_name}.user")
+    if not user:
+        user = get_git_config("user.name")
+    return user
+
+
+def get_platform_page_suffix(service_name: str) -> str:
+    """Get platform page suffix (for .io/.page repos)."""
+    suffix = get_git_config(f"platform.{service_name}.page-suffix")
+    if suffix:
+        return suffix
+
+    defaults = {
+        "github": "github.io",
+        "gitlab": "gitlab.io",
+        "gitea": "gitea.io",
+        "codeberg": "codeberg.page",
+        "bitbucket": "bitbucket.io",
+    }
+    return defaults.get(service_name, "")
+
+
+def construct_remote_url(service_name: str, user: str, repo: str) -> Optional[str]:
+    """Construct a remote URL for a given platform."""
+    # 1. Check for custom URL format override
+    custom_url = get_git_config(f"platform.{service_name}.url")
+    if custom_url:
+        return custom_url.replace("{user}", user).replace("{repo}", repo)
+
+    # 2. Resolve Host
+    host = get_platform_host(service_name)
+    if not host:
+        # If looks like a domain, use it
+        if "." in service_name:
+            host = service_name
+        else:
+            return None
+
+    # 3. Check for SSH Alias override
+    ssh_alias = get_git_config(f"platform.{service_name}.ssh-alias")
+
+    # 4. Standard Construction
+    if ssh_alias:
+        return f"{ssh_alias}:{user}/{repo}.git"
+
+    return f"git@{host}:{user}/{repo}.git"
