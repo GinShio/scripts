@@ -36,7 +36,6 @@ from .utils import (
     get_git_dir,
     get_git_root,
     get_relative_path,
-    runner,
     set_git_config,
     unset_git_config,
 )

@@ -6,9 +6,9 @@ Configures git remotes for mirroring or contributing.
 
 import argparse
 import os
-import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Add workflow root to path to verify imports if run standalone
 current_dir = Path(__file__).parent
@@ -16,50 +16,105 @@ workflow_root = current_dir.parent
 if str(workflow_root) not in sys.path:
     sys.path.insert(0, str(workflow_root))
 
-try:
-    from core.git_remotes import (
-        RemoteInfo,
-        construct_remote_url,
-        get_git_config,
-        get_platform_page_suffix,
-        get_platform_user,
-        parse_remote_url,
-        resolve_ssh_alias,
-    )
-except ImportError:
-    # Fallback if running fro scripts/workflow
-    sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-    from core.git_remotes import (
-        RemoteInfo,
-        construct_remote_url,
-        get_git_config,
-        get_platform_page_suffix,
-        get_platform_user,
-        parse_remote_url,
-        resolve_ssh_alias,
-    )
+from core.git_api import GitRepository, parse_remote_url, resolve_ssh_alias
+
+# ---------------------------------------------------------------------------
+# Platform helpers (config keys under ``workflow.platform.<service>.*``)
+# ---------------------------------------------------------------------------
 
 
-def run_git(args, check=True):
-    result = subprocess.run(["git"] + args, capture_output=True, text=True, check=check)
-    return result.stdout.strip()
+def _get_repo() -> GitRepository:
+    """Return a :class:`GitRepository` for the CWD repository."""
+    return GitRepository(Path.cwd())
+
+
+def _get_platform_host(service_name: str) -> str:
+    """Get configured host for a platform, with fallback to built-ins."""
+    repo = _get_repo()
+    host = repo.get_config(f"workflow.platform.{service_name}.host")
+    if host:
+        return host
+
+    defaults = {
+        "github": "github.com",
+        "gitlab": "gitlab.com",
+        "gitea": "gitea.com",
+        "codeberg": "codeberg.org",
+        "bitbucket": "bitbucket.org",
+        "azure": "dev.azure.com",
+    }
+    return defaults.get(service_name, "")
+
+
+def _get_platform_user(service_name: str) -> Optional[str]:
+    """Get current username for a specific platform."""
+    repo = _get_repo()
+    user = repo.get_config(f"workflow.platform.{service_name}.user")
+    if not user:
+        user = repo.get_config("user.name")
+    return user
+
+
+def _get_platform_page_suffix(service_name: str) -> str:
+    """Get platform page suffix (for .io/.page repos)."""
+    repo = _get_repo()
+    suffix = repo.get_config(f"workflow.platform.{service_name}.page-suffix")
+    if suffix:
+        return suffix
+
+    defaults = {
+        "github": "github.io",
+        "gitlab": "gitlab.io",
+        "gitea": "gitea.io",
+        "codeberg": "codeberg.page",
+        "bitbucket": "bitbucket.io",
+    }
+    return defaults.get(service_name, "")
+
+
+def _construct_remote_url(
+    service_name: str, user: str, repo_name: str
+) -> Optional[str]:
+    """Construct a remote URL for a given platform."""
+    repo = _get_repo()
+
+    # 1. Check for custom URL format override
+    custom_url = repo.get_config(f"workflow.platform.{service_name}.url")
+    if custom_url:
+        return custom_url.replace("{user}", user).replace("{repo}", repo_name)
+
+    # 2. Resolve Host
+    host = _get_platform_host(service_name)
+    if not host:
+        if "." in service_name:
+            host = service_name
+        else:
+            return None
+
+    # 3. Check for SSH Alias override
+    ssh_alias = repo.get_config(f"workflow.platform.{service_name}.ssh-alias")
+
+    # 4. Standard Construction
+    if ssh_alias:
+        return f"{ssh_alias}:{user}/{repo_name}.git"
+
+    return f"git@{host}:{user}/{repo_name}.git"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def get_first_remote_url(remote_name):
-    # git remote get-url fails if there are multiple URLs (push URLs).
-    # We want the distinct single fetch URL usually, or just the first one.
-    # --all returns all lines.
-    res = run_git(["remote", "get-url", "--all", remote_name], check=False)
-    if res:
-        return res.splitlines()[0]
-    return ""
+    repo = _get_repo()
+    url = repo.get_remote_url(remote_name)
+    return url or ""
 
 
 def get_all_push_urls(remote_name):
-    res = run_git(["remote", "get-url", "--all", "--push", remote_name], check=False)
-    if res:
-        return [u.strip() for u in res.splitlines()]
-    return []
+    repo = _get_repo()
+    return repo.get_remote_urls(remote_name, push=True)
 
 
 def get_repo_name():
@@ -72,7 +127,7 @@ def get_repo_name():
 def get_page_base_name(repo_name):
     # Check against known suffixes
     for p in ["github", "gitlab", "gitea", "codeberg", "bitbucket"]:
-        suffix = get_platform_page_suffix(p)
+        suffix = _get_platform_page_suffix(p)
         if not suffix:
             continue
         if repo_name.endswith(f".{suffix}"):
@@ -93,11 +148,18 @@ def identify_platform_by_host(host):
     return defaults.get(host, host)
 
 
+# ---------------------------------------------------------------------------
+# Modes
+# ---------------------------------------------------------------------------
+
+
 def setup_mirroring():
+    repo = _get_repo()
     current_repo = get_repo_name()
 
     mirrors = (
-        get_git_config("ginshio.remotes.mirrors") or "github,gitlab,codeberg,bitbucket"
+        repo.get_config("workflow.platform.mirrors")
+        or "github,gitlab,codeberg,bitbucket"
     )
     mirror_list = [m.strip() for m in mirrors.split(",") if m.strip()]
 
@@ -116,18 +178,17 @@ def setup_mirroring():
     mirror_urls = []
 
     for platform in mirror_list:
-        user = get_platform_user(platform)
+        user = _get_platform_user(platform)
         if not user:
-            # Silent skip is better than noise
             continue
 
         target_repo = current_repo
         if page_base:
-            suffix = get_platform_page_suffix(platform)
+            suffix = _get_platform_page_suffix(platform)
             if suffix:
                 target_repo = f"{page_base}.{suffix}"
 
-        url = construct_remote_url(platform, user, target_repo)
+        url = _construct_remote_url(platform, user, target_repo)
         if not url:
             continue
 
@@ -140,8 +201,6 @@ def setup_mirroring():
 
         mirror_urls.append(url)
 
-    # Logic:
-    # If we have mirror URLs valid, we want to enforce them as push URLs.
     if not mirror_urls:
         return
 
@@ -151,11 +210,8 @@ def setup_mirroring():
 
     first_url = True
     if not origin_covered and origin_url:
-        # Keep original origin as first push URL if not covered
-        # Only update if it's different to avoid output noise or redudant writes
         if not existing_push_urls or existing_push_urls[0] != origin_url:
-            run_git(["remote", "set-url", "--push", "origin", origin_url])
-            # Update local list to track state
+            repo.set_remote_url("origin", origin_url, push=True)
             if not existing_push_urls:
                 existing_push_urls = [origin_url]
             else:
@@ -167,14 +223,13 @@ def setup_mirroring():
         if first_url:
             if not existing_push_urls or existing_push_urls[0] != url:
                 print(f"  + Primary: {url}")
-                run_git(["remote", "set-url", "--push", "origin", url])
+                repo.set_remote_url("origin", url, push=True)
                 if not existing_push_urls:
                     existing_push_urls = [url]
                 else:
                     existing_push_urls[0] = url
             first_url = False
         else:
-            # Check duplicates (logic form before)
             info = parse_remote_url(url)
             if info:
                 url_real = resolve_ssh_alias(info.host)
@@ -185,15 +240,15 @@ def setup_mirroring():
                 ):
                     continue
 
-            # Check if strictly already exists in config
             if url in existing_push_urls:
                 continue
 
             print(f"  + Mirror:  {url}")
-            run_git(["remote", "set-url", "--add", "--push", "origin", url])
+            repo.set_remote_url("origin", url, push=True, add=True)
 
 
 def setup_contributor():
+    repo = _get_repo()
     print("Configuring contributor mode...")
 
     origin_url = get_first_remote_url("origin")
@@ -207,24 +262,22 @@ def setup_contributor():
         sys.exit(1)
 
     origin_host = info.host
-    origin_path = f"{info.owner}/{info.repo}"
 
     # 2. Determine Platform & User
     platform = identify_platform_by_host(origin_host)
     if not platform:
         platform = origin_host
 
-    user = get_platform_user(platform)
+    user = _get_platform_user(platform)
     if not user:
         print(
-            f"Could not determine user for platform '{platform}'. Please configure 'platform.{platform}.user'.",
+            f"Could not determine user for platform '{platform}'. "
+            f"Please configure 'workflow.platform.{platform}.user'.",
             file=sys.stderr,
         )
         sys.exit(1)
 
     # 3. Check if Origin is owned by User (Fork Detection)
-    # Origin path is owner/repo.
-    # Check if owner == user
     is_origin_fork = info.owner == user
 
     if is_origin_fork:
@@ -232,46 +285,38 @@ def setup_contributor():
 
         upstream_url = get_first_remote_url("upstream")
         if upstream_url:
-            # Already set, quiet success
             pass
         else:
             print("WARNING: 'upstream' remote is missing.")
             print("Please run: git remote add upstream <original-repo-url>")
 
         target_repo = info.repo
-        new_origin_url = construct_remote_url(platform, user, target_repo)
+        new_origin_url = _construct_remote_url(platform, user, target_repo)
 
         if origin_url != new_origin_url:
             print(f"Updating 'origin' to: {new_origin_url}")
-            run_git(["remote", "set-url", "origin", new_origin_url])
+            repo.set_remote_url("origin", new_origin_url)
 
     else:
         # Origin is Upstream
         print(f"Detected 'origin' likely belongs to upstream.")
 
         target_repo = info.repo
-        new_origin_url = construct_remote_url(platform, user, target_repo)
-
-        # Check idempotency:
-        # Have we already swapped them?
-        # i.e., is 'upstream' == current 'origin_url'?
+        new_origin_url = _construct_remote_url(platform, user, target_repo)
 
         existing_upstream = get_first_remote_url("upstream")
         if existing_upstream == origin_url:
             print("  - 'upstream' is already configured correctly.")
-            # Check if origin is set to fork
             existing_origin = get_first_remote_url("origin")
             if existing_origin == new_origin_url:
                 print("  - 'origin' (fork) is already configured correctly.")
                 return
-            # If origin is upstream, and upstream is upstream... wait, that's impossible if we assume git logic.
-            # But if origin == upstream_url and upstream == upstream_url.
 
         if existing_upstream:
             print("'upstream' already exists.")
         else:
             print("Renaming 'origin' to 'upstream'...")
-            run_git(["remote", "rename", "origin", "upstream"])
+            repo.rename_remote("origin", "upstream")
 
         # After rename, 'origin' is gone. We need to create it.
         origin_exists = get_first_remote_url("origin")
@@ -280,11 +325,12 @@ def setup_contributor():
                 pass  # Idempotent
             else:
                 print(
-                    "'origin' exists but points to something else. Skipping fork creation."
+                    "'origin' exists but points to something else. "
+                    "Skipping fork creation."
                 )
         else:
             print(f"Adding 'origin' (fork): {new_origin_url}")
-            run_git(["remote", "add", "origin", new_origin_url])
+            repo.add_remote("origin", new_origin_url)
 
 
 def main():

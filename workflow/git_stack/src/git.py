@@ -1,62 +1,75 @@
-"""Git CLI wrapper module."""
+"""Git operations wrapper module using GitRepository API.
+
+Design: Functions in this module are convenience wrappers around
+:class:`core.git_api.GitRepository`.  They operate on the repository
+that contains the current working directory (``Path.cwd()``).
+
+- READ operations are routed through *pygit2* for speed.
+- WRITE / arbitrary commands still go through ``run_git`` (CLI).
+"""
 
 from __future__ import annotations
 
 import re
 import sys
+from pathlib import Path
 from typing import Dict, List, Optional
 
-from core.command_runner import CommandError, SubprocessCommandRunner
+from core.git_api import GitRepository
 
-_RUNNER = SubprocessCommandRunner()
+
+def _get_repo() -> GitRepository:
+    """Return a :class:`GitRepository` rooted at the CWD repository."""
+    return GitRepository(Path.cwd())
 
 
 def run_git(args: List[str], check: bool = True, trim: bool = True) -> str:
     """
     Run a git command and return its stdout.
 
+    This is the escape hatch for commands not yet covered by
+    :class:`GitRepository` (e.g. ``git log``, ``git branch -f``).
+
     Args:
-        args: List of git arguments.
+        args: List of git sub-command arguments (without leading ``git``).
         check: Whether to raise/exit on error.
         trim: Whether to strip whitespace from stdout.
     """
     try:
-        result = _RUNNER.run(["git"] + args, check=check)
+        repo = _get_repo()
+        result = repo.run_git_cmd(args, check=check)
         output = result.stdout
         return output.strip() if trim else output
-    except CommandError as e:
-        if check:
-            # Propagate error message to stderr but keep it clean for CLI tools
-            print(f"Git execution failed: {' '.join(args)}", file=sys.stderr)
-            print(e, file=sys.stderr)
-            sys.exit(1)
-        return ""
+    except SystemExit:
+        raise
     except Exception as e:
         if check:
-            print(f"Unexpected git error: {e}", file=sys.stderr)
+            print(f"Git execution failed: {' '.join(args)}", file=sys.stderr)
+            print(e, file=sys.stderr)
             sys.exit(1)
         return ""
 
 
 def get_current_branch() -> str:
-    """Get the current checked out branch name."""
-    return run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+    """Get the current checked-out branch name (pygit2)."""
+    repo = _get_repo()
+    branch = repo.get_head_branch()
+    return branch if branch else "HEAD"
 
 
 def get_current_commit() -> str:
-    """Get the current HEAD commit hash."""
-    return run_git(["rev-parse", "HEAD"])
+    """Get the current HEAD commit hash (pygit2)."""
+    return _get_repo().get_head_commit()
 
 
 def get_git_dir() -> str:
-    """Correctly locate .git directory."""
-    return run_git(["rev-parse", "--git-dir"])
+    """Return the ``.git`` directory path (pygit2)."""
+    return str(_get_repo().git_dir)
 
 
 def get_remote_names() -> List[str]:
-    """Get list of configured remotes."""
-    out = run_git(["remote"], check=False)
-    return [r.strip() for r in out.splitlines() if r.strip()]
+    """List configured remote names (pygit2)."""
+    return _get_repo().list_remotes()
 
 
 def get_upstream_remote_name() -> str:
@@ -75,64 +88,19 @@ def resolve_base_branch(provided_base: Optional[str] = None) -> str:
     if cfg_base:
         return cfg_base
 
-    # Prefer upstream -> origin
+    # 2. Prefer upstream -> origin, then delegate to pygit2 heuristic
     remote_name = get_upstream_remote_name()
-    remote_prefix = f"refs/remotes/{remote_name}/"
-
-    # 1. Check local tracking info (fastest)
-    # 1.1 Verify if 'refs/remotes/<remote>/HEAD' is missing, try to detect it once?
-    # This invokes network and is slow, so we only implicitly trust if cached.
-    # Alternatively, users should run `git remote set-head <remote> -a`
-    base_branch = run_git(["symbolic-ref", f"{remote_prefix}HEAD"], check=False)
-    if base_branch != "":
-        return base_branch.removeprefix(remote_prefix)
-
-    # 2. Guess common names
-    for candidate in ("main", "master", "trunk", "development"):
-        # Check remote ref
-        if run_git(
-            ["show-ref", "--verify", "--quiet", f"{remote_prefix}{candidate}"],
-            check=False,
-        ):
-            # If show-ref --quiet outputs nothing but succeeds (exit 0), run_git returns "".
-            # If it fails (exit 1), run_git returns "".
-            # We can't distinguish with current run_git wrapper checking only output.
-            # So we must NOT use --quiet and rely on output presence.
-            pass
-
-        # We rely on output being non-empty if found. remove --quiet.
-        if run_git(
-            ["show-ref", "--verify", f"{remote_prefix}{candidate}"],
-            check=False,
-        ):
-            return candidate
-
-        if run_git(["show-ref", "--verify", f"refs/heads/{candidate}"], check=False):
-            return candidate
-
-    # 3. Fallback
-    return "master"
+    return _get_repo().resolve_default_branch(remote=remote_name)
 
 
 def get_refs_map() -> Dict[str, str]:
-    """Get a map of local branch names to their commit hashes."""
-    # format: <refname:short> <objectname>
-    out = run_git(
-        ["for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/"]
-    )
-    refs = {}
-    for line in out.splitlines():
-        if not line:
-            continue
-        parts = line.split(" ")
-        if len(parts) == 2:
-            refs[parts[0]] = parts[1]
-    return refs
+    """Map of local branch names → commit hashes (pygit2)."""
+    return dict(_get_repo().get_branches())
 
 
 def get_config(key: str, default: str = "") -> str:
-    """Read a git config value."""
-    val = run_git(["config", "--get", key], check=False)
+    """Read a git config value (CLI, for format-safety)."""
+    val = _get_repo().get_config(key)
     return val if val else default
 
 
@@ -146,12 +114,10 @@ def slugify(text: str) -> str:
 
 def get_stack_prefix() -> str:
     """Get the configured stack prefix (default: stack/)."""
-    # 1. Check stack.prefix
-    prefix = get_config("stack.prefix")
+    prefix = get_config("workflow.branch-prefix")
     if prefix:
         return prefix
 
-    # 2. Check user.name for default prefix
     user_name = get_config("user.name")
     if user_name:
         slug = slugify(user_name)
@@ -163,4 +129,4 @@ def get_stack_prefix() -> str:
 
 def get_stack_base() -> str:
     """Get the configured stack base branch."""
-    return get_config("stack.base")
+    return get_config("workflow.base-branch")

@@ -12,9 +12,9 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Protocol
 
-from core.git_remotes import RemoteInfo, parse_remote_url
+from core.git_api import RemoteInfo, parse_remote_url
 
-from .git import get_config, run_git
+from .git import get_config, get_remote_names
 
 
 class PlatformInterface(Protocol):
@@ -96,9 +96,9 @@ class GitHubPlatform(BasePlatform):
         self.repo = info.project_path
         self.owner = info.owner
         self.token = (
-            get_config(f"stack.{info.host}.token")
-            or get_config("stack.github.token")
-            or get_config("stack.token")
+            get_config(f"workflow.platform.{info.host}.token")
+            or get_config("workflow.platform.github.token")
+            or get_config("workflow.platform.token")
             or os.environ.get("GITHUB_TOKEN")
         )
 
@@ -122,7 +122,7 @@ class GitHubPlatform(BasePlatform):
             api_base = "https://api.github.com"
         else:
             # GitHub Enterprise (GHE)
-            api_base = get_config(f"stack.{self.info.host}.api-url")
+            api_base = get_config(f"workflow.platform.{self.info.host}.api-url")
             if not api_base:
                 api_base = f"https://{self.info.host}/api/v3"
 
@@ -263,9 +263,10 @@ class GiteaPlatform(BasePlatform):
         self.owner = info.owner
         self.host = info.host
         self.token = (
-            get_config("stack.gitea.token")
-            or get_config("stack.codeberg.token")
-            or get_config("stack.token")
+            get_config(f"workflow.platform.{info.host}.token")
+            or get_config("workflow.platform.gitea.token")
+            or get_config("workflow.platform.codeberg.token")
+            or get_config("workflow.platform.token")
             or os.environ.get("GITEA_TOKEN")
             or os.environ.get("CODEBERG_TOKEN")
         )
@@ -450,8 +451,9 @@ class GitLabPlatform(BasePlatform):
         self.project_path = info.project_path
         self.project_id = urllib.parse.quote(self.project_path, safe="")
         self.token = (
-            get_config("stack.gitlab.token")
-            or get_config("stack.token")
+            get_config(f"workflow.platform.{info.host}.token")
+            or get_config("workflow.platform.gitlab.token")
+            or get_config("workflow.platform.token")
             or os.environ.get("GITLAB_TOKEN")
         )
 
@@ -591,12 +593,12 @@ class BitbucketPlatform(BasePlatform):
         self.workspace = info.owner
         self.repo_slug = info.repo
         self.token = (
-            get_config("stack.bitbucket.token")
-            or get_config("stack.token")
+            get_config("workflow.platform.bitbucket.token")
+            or get_config("workflow.platform.token")
             or os.environ.get("BITBUCKET_TOKEN")
         )
         self.username = (
-            get_config("stack.bitbucket.user")
+            get_config("workflow.platform.bitbucket.user")
             or get_config("user.name")
             or os.environ.get("BITBUCKET_USER")
         )
@@ -726,8 +728,8 @@ class AzurePlatform(BasePlatform):
         self.project = info.owner
         self.repo = info.repo
         self.token = (
-            get_config("stack.azure.token")
-            or get_config("stack.token")
+            get_config("workflow.platform.azure.token")
+            or get_config("workflow.platform.token")
             or os.environ.get("AZURE_DEVOPS_TOKEN")
         )
 
@@ -850,28 +852,23 @@ class AzurePlatform(BasePlatform):
 def get_target_remote_url() -> str:
     """Get the URL of the upstream (target) remote."""
     # 1. Try upstream
-    url = run_git(["config", "--get", "remote.upstream.url"], check=False)
+    url = get_config("remote.upstream.url")
     if url:
         return url
     # 2. Fallback to origin
-    url = run_git(["config", "--get", "remote.origin.url"], check=False)
+    url = get_config("remote.origin.url")
     if url:
         return url
-
     # 3. Fallback to first remote
-    remotes = run_git(["remote"], check=False).splitlines()
+    remotes = get_remote_names()
     if remotes:
-        return run_git(["config", "--get", f"remote.{remotes[0]}.url"], check=False)
+        return get_config(f"remote.{remotes[0]}.url")
     return ""
 
 
 def get_fork_remote_url() -> str:
     """Get the URL of the fork (origin) remote."""
-    # Always try origin first
-    url = run_git(["config", "--get", "remote.origin.url"], check=False)
-    if url:
-        return url
-    return ""
+    return get_config("remote.origin.url")
 
 
 def get_platform() -> Optional[PlatformInterface]:

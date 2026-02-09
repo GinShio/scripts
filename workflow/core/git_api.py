@@ -79,6 +79,30 @@ class RemoteInfo:
         """Return 'owner/repo' string."""
         return f"{self.owner}/{self.repo}"
 
+    @property
+    def is_github(self) -> bool:
+        return self.service == GitService.GITHUB
+
+    @property
+    def is_gitlab(self) -> bool:
+        return self.service == GitService.GITLAB
+
+    @property
+    def is_gitea(self) -> bool:
+        return self.service == GitService.GITEA
+
+    @property
+    def is_codeberg(self) -> bool:
+        return self.service == GitService.CODEBERG
+
+    @property
+    def is_bitbucket(self) -> bool:
+        return self.service == GitService.BITBUCKET
+
+    @property
+    def is_azure(self) -> bool:
+        return self.service == GitService.AZURE
+
 
 # --- Standalone Utilities ---
 
@@ -367,9 +391,7 @@ class GitRepository:
         Heuristic to resolve the default branch (main/master).
         """
         # 1. Configured base
-        cfg_base = self.get_config("workflow.base-branch") or self.get_config(
-            "stack.base"
-        )
+        cfg_base = self.get_config("workflow.base-branch")
         if cfg_base:
             return cfg_base
 

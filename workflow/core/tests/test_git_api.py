@@ -539,10 +539,10 @@ class TestGitRepositoryAdvanced(BaseGitTest):
                 ["push", "--force-with-lease", "origin", "main"]
             )
 
-    def test_default_branch_stack_config(self):
-        """Test stack.base config priority."""
+    def test_default_branch_base_config(self):
+        """Test workflow.base-branch config priority."""
         api = self._setup_repo()
-        api.set_config("stack.base", "trunk")
+        api.set_config("workflow.base-branch", "trunk")
         self.assertEqual(api.resolve_default_branch(), "trunk")
 
 

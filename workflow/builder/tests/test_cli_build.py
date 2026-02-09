@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from builder import cli
 from builder.git_manager import GitWorkState
+from builder.tests.test_git_manager import FakeGitRepository
 
 
 class ConfigDirectoryResolutionTests(unittest.TestCase):
@@ -336,6 +337,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
         self.assertIn("No build steps for project 'meta'", output)
         self.assertNotIn("[dry-run]", output)
 
+    @patch("builder.git_manager.GitRepository", FakeGitRepository)
     def test_build_dry_run_records_git_operations_when_repository_exists(self) -> None:
         source_dir = self.workspace / "examples" / "demo"
         (source_dir / ".git").mkdir(parents=True, exist_ok=True)
@@ -370,7 +372,7 @@ class BuildCommandDryRunTests(unittest.TestCase):
         dry_run_lines = [
             line for line in output.splitlines() if line.startswith("[dry-run]")
         ]
-        self.assertTrue(any("git switch" in line for line in dry_run_lines))
+        self.assertTrue(any("git checkout" in line for line in dry_run_lines))
         self.assertTrue(
             any("git submodule update --recursive" in line for line in dry_run_lines)
         )

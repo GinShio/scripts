@@ -5,13 +5,15 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from core.command_runner import CommandResult
 
 from builder.git_manager import GitManager
+from builder.tests.test_git_manager import FakeGitRepository
 
 
+@patch("builder.git_manager.GitRepository", FakeGitRepository)
 class TestSubmodulesList(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

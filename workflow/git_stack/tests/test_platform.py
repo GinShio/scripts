@@ -3,7 +3,7 @@ import urllib.error
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
-from core.git_remotes import GitService, RemoteInfo
+from core.git_api import GitService, RemoteInfo
 
 from git_stack.src import platform
 

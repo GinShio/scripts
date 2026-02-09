@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import ANY, MagicMock, patch
 
-from core.git_remotes import GitService, RemoteInfo
+from core.git_api import GitService, RemoteInfo
 
 from git_stack.src import machete, platform, sync
 

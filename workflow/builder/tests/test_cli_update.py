@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from builder import cli
+from builder.tests.test_git_manager import FakeGitRepository
 
 
 class UpdateCommandTests(unittest.TestCase):
@@ -83,6 +84,7 @@ class UpdateCommandTests(unittest.TestCase):
         self.assertIn("git fetch", output)
         self.assertIn(str(self.workspace / "repos" / "demo"), output)
 
+    @patch("builder.git_manager.GitRepository", FakeGitRepository)
     def test_update_dry_run_existing_repo_pulls_main_branch(self) -> None:
         repo_path = self.workspace / "repos" / "demo"
         (repo_path / ".git").mkdir(parents=True)

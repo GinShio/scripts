@@ -8,85 +8,88 @@ from unittest.mock import MagicMock, patch
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../.."))
 sys.path.append(os.path.join(os.path.dirname(__file__), "../../"))
 
-from workflow.core.command_runner import CommandResult
 from workflow.transcrypt.src import utils
 
 
 class TestUtils(unittest.TestCase):
-    @patch("workflow.transcrypt.src.utils.runner")
-    def test_get_git_root_success(self, mock_runner):
-        mock_runner.run.return_value = CommandResult([], 0, "/path/to/repo\n", "")
+    @patch("workflow.transcrypt.src.utils._get_repo")
+    def test_get_git_root_success(self, mock_get_repo):
+        mock_repo = MagicMock()
+        mock_repo.root_dir = Path("/path/to/repo")
+        mock_get_repo.return_value = mock_repo
         root = utils.get_git_root()
         self.assertEqual(root, Path("/path/to/repo"))
-        mock_runner.run.assert_called_with(
-            ["git", "rev-parse", "--show-toplevel"], check=True
-        )
 
-    @patch("workflow.transcrypt.src.utils.runner")
-    def test_get_git_root_failure(self, mock_runner):
-        # Mock run to raise Exception
-        mock_runner.run.side_effect = Exception("git error")
+    @patch("workflow.transcrypt.src.utils._get_repo")
+    def test_get_git_root_failure(self, mock_get_repo):
+        mock_get_repo.side_effect = Exception("git error")
         with self.assertRaises(SystemExit) as cm:
             utils.get_git_root()
         self.assertEqual(cm.exception.code, 1)
 
-    @patch("workflow.transcrypt.src.utils.runner")
-    def test_get_git_config_found(self, mock_runner):
-        mock_runner.run.return_value = CommandResult([], 0, "some_value\n", "")
+    @patch("workflow.transcrypt.src.utils._get_repo")
+    def test_get_git_config_found(self, mock_get_repo):
+        mock_repo = MagicMock()
+        mock_repo.get_config.return_value = "some_value"
+        mock_get_repo.return_value = mock_repo
         val = utils.get_git_config("some.key")
         self.assertEqual(val, "some_value")
-        mock_runner.run.assert_called_with(
-            ["git", "config", "--get", "some.key"], check=False
-        )
+        mock_repo.get_config.assert_called_with("some.key")
 
-    @patch("workflow.transcrypt.src.utils.runner")
-    def test_get_git_config_not_found(self, mock_runner):
-        mock_runner.run.return_value = CommandResult([], 1, "", "")
+    @patch("workflow.transcrypt.src.utils._get_repo")
+    def test_get_git_config_not_found(self, mock_get_repo):
+        mock_repo = MagicMock()
+        mock_repo.get_config.return_value = None
+        mock_get_repo.return_value = mock_repo
         val = utils.get_git_config("some.key")
         self.assertIsNone(val)
 
-    @patch("workflow.transcrypt.src.utils.runner")
-    def test_set_git_config(self, mock_runner):
-        mock_runner.run.return_value = CommandResult([], 0, "", "")
+    @patch("workflow.transcrypt.src.utils._get_repo")
+    def test_set_git_config(self, mock_get_repo):
+        mock_repo = MagicMock()
+        mock_get_repo.return_value = mock_repo
         utils.set_git_config("some.key", "value")
-        mock_runner.run.assert_called_with(
-            ["git", "config", "--local", "some.key", "value"], check=True
-        )
+        mock_repo.set_config.assert_called_with("some.key", "value", scope="local")
 
-    @patch("workflow.transcrypt.src.utils.runner")
-    def test_unset_git_config(self, mock_runner):
-        mock_runner.run.return_value = CommandResult([], 0, "", "")
+    @patch("workflow.transcrypt.src.utils._get_repo")
+    def test_unset_git_config(self, mock_get_repo):
+        mock_repo = MagicMock()
+        mock_get_repo.return_value = mock_repo
         utils.unset_git_config("some.key")
-        mock_runner.run.assert_called_with(
-            ["git", "config", "--local", "--unset", "some.key"], check=False
-        )
+        mock_repo.unset_config.assert_called_with("some.key", scope="local")
 
-    @patch("workflow.transcrypt.src.utils.runner")
-    def test_get_git_dir(self, mock_runner):
-        mock_runner.run.return_value = CommandResult([], 0, "/path/to/repo/.git\n", "")
+    @patch("workflow.transcrypt.src.utils._get_repo")
+    def test_get_git_dir(self, mock_get_repo):
+        mock_repo = MagicMock()
+        mock_repo.git_dir = Path("/path/to/repo/.git")
+        mock_get_repo.return_value = mock_repo
         res = utils.get_git_dir()
         self.assertEqual(res, Path("/path/to/repo/.git"))
 
-    @patch("workflow.transcrypt.src.utils.runner")
-    def test_is_git_repo(self, mock_runner):
-        mock_runner.run.return_value = CommandResult([], 0, "true\n", "")
+    @patch("workflow.transcrypt.src.utils._get_repo")
+    def test_is_git_repo(self, mock_get_repo):
+        mock_repo = MagicMock()
+        mock_repo.is_valid = True
+        mock_get_repo.return_value = mock_repo
         self.assertTrue(utils.is_git_repo())
 
-        mock_runner.run.return_value = CommandResult([], 128, "", "")
+        mock_repo.is_valid = False
         self.assertFalse(utils.is_git_repo())
 
-    @patch("workflow.transcrypt.src.utils.get_git_root")
-    def test_get_relative_path(self, mock_get_root):
-        mock_get_root.return_value = Path("/repo")
+    @patch("workflow.transcrypt.src.utils._get_repo")
+    def test_get_relative_path(self, mock_get_repo):
+        mock_repo = MagicMock()
         # Case 1: Inside repo
+        mock_repo.relpath.return_value = Path("subdir/file.txt")
+        mock_get_repo.return_value = mock_repo
         p = Path("/repo/subdir/file.txt")
         rel = utils.get_relative_path(p)
         self.assertEqual(rel, Path("subdir/file.txt"))
 
-        # Case 2: Outside repo (or not relative)
+        # Case 2: Outside repo (relpath returns absolute)
+        mock_repo.relpath.return_value = Path("/other/file.txt")
         p2 = Path("/other/file.txt")
         rel2 = utils.get_relative_path(p2)
-        # Should return absolute
         self.assertEqual(rel2, Path("/other/file.txt"))
 
 

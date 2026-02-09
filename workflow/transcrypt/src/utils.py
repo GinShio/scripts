@@ -25,56 +25,48 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from core.command_runner import CommandResult, SubprocessCommandRunner
+from core.git_api import GitRepository
 
-runner = SubprocessCommandRunner()
+
+def _get_repo() -> GitRepository:
+    """Return a :class:`GitRepository` for the CWD repository."""
+    return GitRepository(Path.cwd())
 
 
 def get_git_root() -> Path:
     """Get the root directory of the current git repository."""
     try:
-        res = runner.run(["git", "rev-parse", "--show-toplevel"], check=True)
-        return Path(res.stdout.strip())
+        return _get_repo().root_dir
     except Exception:
-        # Fallback to current directory or exit if not in git
         print("Error: Not a git repository", file=sys.stderr)
         sys.exit(1)
 
 
 def get_git_config(key: str) -> Optional[str]:
     """Get a git config value, returning None if not set."""
-    res = runner.run(["git", "config", "--get", key], check=False)
-    if res.returncode != 0:
-        return None
-    return res.stdout.strip()
+    return _get_repo().get_config(key)
 
 
 def set_git_config(key: str, value: str):
     """Set a local git config value."""
-    runner.run(["git", "config", "--local", key, value], check=True)
+    _get_repo().set_config(key, value, scope="local")
 
 
 def unset_git_config(key: str):
     """Unset a local git config value."""
-    runner.run(["git", "config", "--local", "--unset", key], check=False)
+    _get_repo().unset_config(key, scope="local")
 
 
 def get_git_dir() -> Path:
     """Get the .git directory path."""
-    res = runner.run(["git", "rev-parse", "--git-dir"], check=True)
-    return Path(res.stdout.strip())
+    return _get_repo().git_dir
 
 
 def is_git_repo() -> bool:
-    res = runner.run(["git", "rev-parse", "--is-inside-work-tree"], check=False)
-    return res.returncode == 0
+    """Check if the current directory is inside a git repository."""
+    return _get_repo().is_valid
 
 
 def get_relative_path(path: Path) -> Path:
     """Get path relative to git root."""
-    root = get_git_root()
-    try:
-        return path.absolute().relative_to(root.absolute())
-    except ValueError:
-        # Not inside git root
-        return path.absolute()
+    return _get_repo().relpath(path)

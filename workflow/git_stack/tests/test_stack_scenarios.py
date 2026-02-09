@@ -7,7 +7,7 @@ from unittest.mock import ANY, MagicMock, call, patch
 # Ensure 'workflow' is in path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from core.git_remotes import GitService, RemoteInfo
+from core.git_api import GitService, RemoteInfo
 
 from git_stack.src.anno import annotate_stack
 from git_stack.src.machete import MacheteNode, format_stack_markdown
