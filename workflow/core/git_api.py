@@ -377,12 +377,30 @@ class GitRepository:
     def is_dirty(self, untracked: bool = False) -> bool:
         """
         Checks if working directory has uncommitted changes.
-        Uses pygit2 for speed.
+        Uses pygit2 for speed. Submodule and skip-worktree (sparse checkout)
+        entries are excluded.
         """
+        _SKIP_WORKTREE = 1 << 14  # GIT_INDEX_ENTRY_SKIP_WORKTREE in flags_extended
         try:
             mode = "normal" if untracked else "no"
             status = self.repo.status(untracked_files=mode)
-            return len(status) > 0
+            if not status:
+                return False
+            submodules = set(self.repo.listall_submodules())
+            index = self.repo.index
+            index.read()
+            for path in status:
+                if path in submodules:
+                    continue
+                # Exclude entries with skip-worktree bit (sparse checkout)
+                try:
+                    entry = index[path, 0]
+                    if entry.flags_extended & _SKIP_WORKTREE:
+                        continue
+                except (KeyError, ValueError):
+                    pass
+                return True
+            return False
         except Exception:
             return False
 
