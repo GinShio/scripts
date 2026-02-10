@@ -90,9 +90,16 @@ class TestRunner(unittest.TestCase):
     @patch("gputest.src.runner.get_gpu_id_from_vulkan")
     @patch("gputest.src.runner.generate_testlist")
     def test_run_tests_with_archive(
-        self, mock_gen_testlist, mock_get_vk, mock_archive_manager, mock_os_replace, mock_shutil, mock_cpu, mock_gpu
+        self,
+        mock_gen_testlist,
+        mock_get_vk,
+        mock_archive_manager,
+        mock_os_replace,
+        mock_shutil,
+        mock_cpu,
+        mock_gpu,
     ):
-        mock_get_vk.return_value = "1002:73bf"
+        mock_get_vk.return_value = "1002-73bf"
         # Update config to trigger archiving (needs runner_bin to be
         # deqp-runner or piglit)
         self.ctx.config["suites"]["suite1"]["runner"] = "deqp-runner"
@@ -103,8 +110,10 @@ class TestRunner(unittest.TestCase):
         call_args = mock_archive_manager.return_value.create_archive.call_args
         target_path = call_args.kwargs["target_path"]
         # Archive should be created inside the testing output directory first
-        self.assertTrue(str(target_path).startswith(str(self.ctx.runner_root / "testing")))
-        self.assertIn("suite1_1002:73bf", target_path.name)
+        self.assertTrue(
+            str(target_path).startswith(str(self.ctx.runner_root / "testing"))
+        )
+        self.assertIn("suite1_1002-73bf", target_path.name)
 
         # Verify the runner logged that it will preserve the temporary archive
         self.ctx.console.info.assert_any_call(
@@ -120,8 +129,12 @@ class TestRunner(unittest.TestCase):
         # os.replace should have been used to move the temp file into place
         mock_os_replace.assert_called()
         replace_src, replace_dest = mock_os_replace.call_args[0]
-        self.assertTrue(str(replace_src).startswith(str(self.ctx.result_dir / "driver1")))
-        self.assertTrue(str(replace_dest).startswith(str(self.ctx.result_dir / "driver1")))
+        self.assertTrue(
+            str(replace_src).startswith(str(self.ctx.result_dir / "driver1"))
+        )
+        self.assertTrue(
+            str(replace_dest).startswith(str(self.ctx.result_dir / "driver1"))
+        )
 
     @patch("gputest.src.runner.get_gpu_device_id", return_value="gpu1")
     @patch("gputest.src.runner.os.cpu_count", return_value=4)
@@ -138,7 +151,7 @@ class TestRunner(unittest.TestCase):
         mock_cpu,
         mock_gpu,
     ):
-        mock_get_vk.return_value = "1002:73bf"
+        mock_get_vk.return_value = "1002-73bf"
         # Update config for hooks
         self.ctx.config["suites"]["suite1"]["runner"] = "deqp-runner"
         self.ctx.config["suites"]["suite1"]["pre_run_hooks"] = ["pre_hook"]
@@ -190,7 +203,7 @@ class TestRunner(unittest.TestCase):
         mock_cpu,
         mock_gpu,
     ):
-        mock_get_vk.return_value = "1002:73bf"
+        mock_get_vk.return_value = "1002-73bf"
         # Update config for excludes
         self.ctx.config["suites"]["suite1"]["type"] = "deqp"
         self.ctx.config["suites"]["suite1"]["runner"] = "deqp-runner"
@@ -240,7 +253,7 @@ class TestRunner(unittest.TestCase):
         deviceID          = 0x150e
 """
         gpu_id = get_gpu_id_from_vulkan()
-        self.assertEqual(gpu_id, "1002:150e")
+        self.assertEqual(gpu_id, "1002-150e")
 
     @patch("gputest.src.runner.shutil.which")
     @patch("gputest.src.runner.SubprocessCommandRunner")
@@ -256,7 +269,7 @@ class TestRunner(unittest.TestCase):
     Device: AMD Radeon 890M Graphics (radeonsi, gfx1150, LLVM 21.1.6, DRM 3.64, 6.18.0-2-default) (0x150e)
 """
         gpu_id = get_gpu_id_from_gl()
-        self.assertEqual(gpu_id, "1002:150e")
+        self.assertEqual(gpu_id, "1002-150e")
 
     @patch("gputest.src.runner.ArchiveManager")
     @patch("gputest.src.runner.get_gpu_device_id")
@@ -318,7 +331,7 @@ class TestRunner(unittest.TestCase):
         mock_cpu,
         mock_gpu,
     ):
-        mock_get_vk.return_value = "1002:73bf"
+        mock_get_vk.return_value = "1002-73bf"
         # Update config
         self.ctx.config["suites"]["suite1"]["runner"] = "deqp-runner"
         self.ctx.config["suites"]["suite1"]["archive_files"] = ["*.txt"]

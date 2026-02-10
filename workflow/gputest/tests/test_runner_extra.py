@@ -59,7 +59,7 @@ GPU0:
         )
 
         gpu_id = get_gpu_id_from_vulkan()
-        self.assertEqual(gpu_id, "1002:73bf")
+        self.assertEqual(gpu_id, "1002-73bf")
 
     @patch("gputest.src.runner.shutil.which")
     @patch("gputest.src.runner.SubprocessCommandRunner")
@@ -90,7 +90,7 @@ Extended renderer info (GLX_MESA_query_renderer):
         )
 
         gpu_id = get_gpu_id_from_gl()
-        self.assertEqual(gpu_id, "1002:73bf")
+        self.assertEqual(gpu_id, "1002-73bf")
 
     def test_generate_testlist(self):
         with tempfile.TemporaryDirectory() as tmpdir:

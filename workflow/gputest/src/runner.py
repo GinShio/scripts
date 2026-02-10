@@ -40,7 +40,7 @@ def get_gpu_id_from_vulkan(env: Optional[Dict[str, str]] = None) -> Optional[str
         if vendor_match and device_match:
             vendor = vendor_match.group(1).replace("0x", "")
             device = device_match.group(1).replace("0x", "")
-            return f"{vendor}:{device}"
+            return f"{vendor}-{device}"
 
     except Exception:
         pass
@@ -66,7 +66,7 @@ def get_gpu_id_from_gl(env: Optional[Dict[str, str]] = None) -> Optional[str]:
         if vendor_match and device_match:
             vendor = vendor_match.group(1).replace("0x", "")
             device = device_match.group(1).replace("0x", "")
-            return f"{vendor}:{device}"
+            return f"{vendor}-{device}"
 
     except Exception:
         pass
@@ -473,7 +473,7 @@ def run_tests(ctx: Context, test_names: List[str]):
                             cwd=output_dir,
                             env=merged_env,
                             check=True,
-                            stream=True
+                            stream=True,
                         )
                     except Exception as e:
                         ctx.console.error(
@@ -566,7 +566,9 @@ def run_tests(ctx: Context, test_names: List[str]):
                             os.replace(str(final_tmp), str(final_archive_path))
 
                             # Preserve the temporary archive in testing dir for local verification
-                            ctx.console.info(f"Preserving temporary archive at {tmp_archive_path} for debugging")
+                            ctx.console.info(
+                                f"Preserving temporary archive at {tmp_archive_path} for debugging"
+                            )
 
                             ctx.console.info(f"Moved archive to {final_archive_path}")
                         except Exception:
