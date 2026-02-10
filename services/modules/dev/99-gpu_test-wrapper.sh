@@ -26,7 +26,7 @@ get_power_AC || exit 0
 
 python3 "$PROJECTS_SCRIPT_DIR/gputest.py" cleanup
 
-drivers_tuple="radv,vk amdvlk,vk"
+drivers_tuple="radv,vk lvp,vk amdvlk,vk"
 
 check_driver() {
     output=$(python3 "$PROJECTS_SCRIPT_DIR/gputest.py" list driver "$driver")

@@ -3,8 +3,6 @@ set -eu
 
 # shellcheck disable=SC1091
 . "$XDG_CONFIG_HOME/workflow/.env"
-# shellcheck disable=SC1091
-. "$PROJECTS_SCRIPT_DIR/common/proxy.sh"
 
 cleanup() {
     # shellcheck disable=SC1091
@@ -40,6 +38,9 @@ build_projects() {
 if [ "khronos3d" = "${DOTFILES_CURRENT_PROFILE}" ]; then
     build_projects "--install" "amdvlk"
 fi
+
+# shellcheck disable=SC1091
+. "$PROJECTS_SCRIPT_DIR/common/proxy.sh"
 
 build_projects "--install-dir $HOME/.local --install" "mesa spirv-headers spirv-tools slang"
 build_projects "" "llvm"
