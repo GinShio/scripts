@@ -1,8 +1,9 @@
 #!/bin/sh
+#@tags: domain:dev, type:nightly, dep:git
 set -eu
 
 # shellcheck disable=SC1091
-. "$XDG_CONFIG_HOME/workflow/.env"
+. "${XDG_CONFIG_HOME:-$HOME/.config}/workflow/.env"
 
 cleanup() {
     # shellcheck disable=SC1091
