@@ -12,7 +12,7 @@ if [ -n "$GIT_TOPLEVEL" ]; then
 fi
 export GIT_DIR GIT_COMMON_DIR GIT_TOPLEVEL
 export CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-export NULL_SHA="0000000000000000000000000000000000000000"
+export NULL_SHA=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
 
 # Logic for protected branch.
 # Matches master, dev, release-*, patch-*
