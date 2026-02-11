@@ -5,6 +5,26 @@ get_os() {
     uname -s | tr '[:upper:]' '[:lower:]'
 }
 
+# Check if the system is a laptop
+is_laptop() {
+    # Method 1: Check for battery in /sys/class/power_supply/
+    for bat in /sys/class/power_supply/BAT* /sys/class/power_supply/battery; do
+        if [ -e "$bat/type" ] && grep -qi "battery" "$bat/type" 2>/dev/null; then
+            return 0
+        fi
+    done
+
+    # Method 2: Check DMI chassis type (portable/laptop types: 8, 9, 10, 14)
+    if [ -r /sys/class/dmi/id/chassis_type ]; then
+        chassis_type=$(cat /sys/class/dmi/id/chassis_type 2>/dev/null)
+        case "$chassis_type" in
+            8|9|10|14) return 0 ;;
+        esac
+    fi
+
+    return 1
+}
+
 detect_arch() {
     _arch=$(uname -m | tr '[:upper:]' '[:lower:]')
     case "$_arch" in
@@ -140,7 +160,11 @@ detect_platform() {
 detect_distro() {
     if [ -f /etc/os-release ]; then
         . /etc/os-release
-        echo "$ID"
+        # Normalize opensuse variants (leap, tumbleweed) to just "opensuse"
+        case "$ID" in
+            opensuse*) echo "opensuse" ;;
+            *) echo "$ID" ;;
+        esac
     else
         echo "unknown"
     fi
@@ -216,22 +240,57 @@ detect_hostname() {
 detect_desktop() {
     # Check common environment variables
     _de="${XDG_CURRENT_DESKTOP:-${DESKTOP_SESSION}}"
-    if [ -z "$_de" ]; then
-        # Try to infer from processes if env vars are missing (common in some setups)
-        if pgrep -x "kwin_wayland" >/dev/null || pgrep -x "kwin_x11" >/dev/null; then
-            echo "kde"
-        elif pgrep -x "gnome-shell" >/dev/null; then
-             echo "gnome"
-        elif pgrep -x "sway" >/dev/null; then
-             echo "sway"
-        elif pgrep -x "hyprland" >/dev/null; then
-             echo "hyprland"
-        else
-             echo "headless"
-        fi
-    else
-        echo "$_de" | tr '[:upper:]' '[:lower:]'
+    _de=$(echo "$_de" | tr '[:upper:]' '[:lower:]')
+
+    if [ -n "$_de" ]; then
+        # Normalize some common values
+        case "$_de" in
+            *gnome*) echo "gnome" ;;
+            *kde*|*plasma*) echo "kde" ;;
+            *xfce*) echo "xfce" ;;
+            *mate*) echo "mate" ;;
+            *cinnamon*) echo "cinnamon" ;;
+            *lxqt*) echo "lxqt" ;;
+            *sway*) echo "sway" ;;
+            *hyprland*) echo "hyprland" ;;
+            *i3*) echo "i3" ;;
+            *pantheon*) echo "pantheon" ;;
+            *budgie*) echo "budgie" ;;
+            *) echo "$_de" ;;
+        esac
+        return 0
     fi
+
+    # Fallback: Inference from processes
+    if pgrep -x "kwin_wayland" >/dev/null || pgrep -x "kwin_x11" >/dev/null || pgrep -x "plasmashell" >/dev/null; then
+        echo "kde"
+    elif pgrep -x "gnome-shell" >/dev/null; then
+        echo "gnome"
+    elif pgrep -x "xfce4-session" >/dev/null; then
+        echo "xfce"
+    elif pgrep -x "lxqt-session" >/dev/null; then
+        echo "lxqt"
+    elif pgrep -x "mate-session" >/dev/null; then
+        echo "mate"
+    elif pgrep -x "cinnamon-session" >/dev/null; then
+        echo "cinnamon"
+    elif pgrep -x "sway" >/dev/null; then
+        echo "sway"
+    elif pgrep -x "hyprland" >/dev/null; then
+        echo "hyprland"
+    elif pgrep -x "i3" >/dev/null; then
+        echo "i3"
+    elif pgrep -x "bspwm" >/dev/null; then
+        echo "bspwm"
+    elif pgrep -x "awesome" >/dev/null; then
+        echo "awesome"
+    else
+        echo "headless"
+    fi
+}
+
+is_desktop() {
+    [ "$(detect_desktop)" != "headless" ]
 }
 
 detect_display_server() {
@@ -265,6 +324,7 @@ if [ "$#" -gt 0 ]; then
         mem|memory_mb) detect_memory_mb ;;
         host|hostname) detect_hostname ;;
         de|desktop) detect_desktop ;;
+        is_desktop) is_desktop && echo "true" || echo "false" ;;
         ds|display_server) detect_display_server ;;
         platform) detect_platform ;;
         distro) detect_distro ;;
