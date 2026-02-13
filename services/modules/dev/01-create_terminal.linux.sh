@@ -1,9 +1,12 @@
 #!/bin/sh
-#@tags: domain:desktop, type:autostart, dep:tmux, dep:systemd
+#@tags: domain:dev, type:autostart, os:linux, dep:tmux, dep:systemd-run
 set -eu
 
-tmux new-session -d -s runner -c "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/runner" \
-  systemd-run --user --scope \
+_work_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/runner"
+mkdir -p "$_work_dir"
+
+tmux new-session -d -s runner -c "$_work_dir" \
+    systemd-run --user --scope \
     -p MemoryMax=32G \
     -p MemorySwapMax=0 \
     -p TasksMax=512 \

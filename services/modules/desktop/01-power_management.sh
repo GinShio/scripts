@@ -1,5 +1,5 @@
 #!/bin/sh
-#@tags: domain:desktop, type:autostart, hw:laptop
+#@tags: domain:desktop, type:autostart, hw:laptop, dep:powerprofilesctl
 set -eu
 
 # Only configure power profiles on laptops
