@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
+#@tags: usage:dev, scope:system
 # System: User Groups
 
 echo "Adding user to groups..."
-sudo -AE usermod -aG kvm,libvirt,render,video "$(whoami)" || echo "Warning: Failed to add user to some groups."
+sudo -A usermod -aG kvm,libvirt,render,video "$(whoami)" || echo "Warning: Failed to add user to some groups."

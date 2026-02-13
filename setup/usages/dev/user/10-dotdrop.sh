@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
+#@tags: usage:dev, scope:user
 # User: Dotdrop & Secrets
 
 # Ensure ~/.local/bin is in PATH for this session (where pipx puts binaries)
 export PATH="$HOME/.local/bin:$PATH"
 
-DOTFILES_ROOT_PATH="${DOTFILES_ROOT_PATH:-$SCRIPT_DIR/../dotfiles}"
+DOTFILES_ROOT_PATH="${DOTFILES_ROOT_PATH:-$PROJECTS_SCRIPT_DIR/../dotfiles}"
 if [ ! -d "$DOTFILES_ROOT_PATH" ]; then
     echo "Error: Missing dotfiles directory at ${DOTFILES_ROOT_PATH}"
     exit 1
@@ -21,7 +22,7 @@ if [ -n "${!TRANSCRYPT_VAR_NAME:-}" ]; then
     (
         cd "$DOTFILES_ROOT_PATH" || exit
         # Install filters for the specific profile context
-        python3 "$SCRIPT_DIR/transcrypt.py" -c "$SETUP_PROFILE" install
+        python3 "$PROJECTS_SCRIPT_DIR/workflow/transcrypt.py" -c "$SETUP_PROFILE" install
 
         # Force a hard reset to re-checkout files through the newly installed smudge filter
         # This ensures 'secret.yaml' and others are decrypted on disk

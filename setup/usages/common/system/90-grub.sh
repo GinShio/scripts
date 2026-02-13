@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-# System: GRUB Configuration
+#!/bin/sh
+#@tags: usage:common, scope:system, dep:grub
 
 GRUB_MARKER="# DOTFILES_BRINGUP_GRUB_CONFIG"
 if [ -f /etc/default/grub ]; then

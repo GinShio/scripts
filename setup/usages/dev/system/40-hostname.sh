@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#@tags: usage:dev, scope:system
 # System: Hostname
 
 if [[ -n "$SETUP_HOSTNAME" ]] && [[ "$(hostname)" != "$SETUP_HOSTNAME" ]]; then

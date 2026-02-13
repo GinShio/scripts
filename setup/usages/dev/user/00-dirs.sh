@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#@tags: usage:dev, scope:user
 # User: Directories
 
 echo "Creating directory structure..."

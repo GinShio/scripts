@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#@tags: usage:dev, scope:services, dev:systemctl
 # Services: System Services
 
 sudo -A systemctl daemon-reload
