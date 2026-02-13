@@ -7,9 +7,9 @@ mkdir -p $BEAUTIFY_DIR/{font,grub,icon,theme,plugin,sddm}
 cd $BEAUTIFY_DIR/font
 ### opensource Fonts
 curl -o $HOME/.local/share/fonts/SourceHanMono.ttc -sSL https://github.com/adobe-fonts/source-han-mono/releases/download/1.002/SourceHanMono.ttc
-curl -o JuliaMono.tar.gz -sSL https://github.com/cormullion/juliamono/releases/download/v0.058/JuliaMono.tar.gz
+curl -o JuliaMono.tar.gz -sSL https://github.com/cormullion/juliamono/releases/download/v0.062/JuliaMono.tar.gz
 mkdir -p $HOME/.local/share/fonts/Julia-Mono && tar -xzf JuliaMono.tar.gz -C $_
-curl -o Hasklig.tar.xz -sSL https://github.com/ryanoasis/nerd-fonts/releases/download/v3.3.0/Hasklig.tar.xz
+curl -o Hasklig.tar.xz -sSL https://github.com/ryanoasis/nerd-fonts/releases/download/v3.4.0/Hasklig.tar.xz
 mkdir -p $HOME/.local/share/fonts/Hasklig-Nerd && tar -Jxf Hasklig.tar.xz -C $_
 curl -o SourceCodeVar.zip -sSL https://github.com/adobe-fonts/source-code-pro/releases/download/2.042R-u%2F1.062R-i%2F1.026R-vf/VF-source-code-VF-1.026R.zip
 unzip SourceCodeVar -d $HOME/.local/share/fonts/Source-Code-Variable
