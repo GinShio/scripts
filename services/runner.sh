@@ -13,6 +13,8 @@ set -u
 # ==============================================================================
 
 . "${XDG_CONFIG_HOME:-$HOME/.config}/workflow/.env"
+export PROJECTS_ROOT_DIR PROJECTS_SCRIPT_DIR
+export DOTFILES_ROOT_DIR DOTFILES_CURRENT_PROFILE
 
 # Load Libraries
 # shellcheck source=../common/tags.sh

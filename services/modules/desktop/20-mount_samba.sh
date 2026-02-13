@@ -2,8 +2,6 @@
 #@tags: domain:desktop, type:autostart, net:samba, dep:sudo, dep:mount
 set -eu
 
-# shellcheck disable=SC1091
-. "${XDG_CONFIG_HOME:-$HOME/.config}/workflow/.env"
 trap "sudo -k" EXIT
 
 # POSIX compliant network wait

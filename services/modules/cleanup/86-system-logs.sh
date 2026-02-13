@@ -2,8 +2,6 @@
 #@tags: domain:cleanup, type:nightly
 set -u
 
-. "${XDG_CONFIG_HOME:-$HOME/.config}/workflow/.env"
-
 if command -v journalctl >/dev/null 2>&1; then
     sudo -A -- journalctl --vacuum-time=2weeks >/dev/null 2>&1
 fi

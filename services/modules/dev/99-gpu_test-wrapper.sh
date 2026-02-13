@@ -1,8 +1,6 @@
 #!/bin/sh
 #@tags: domain:dev, type:nightly, gpu:any, dep:python3
 
-# shellcheck disable=SC1091
-. "${XDG_CONFIG_HOME:-$HOME/.config}/workflow/.env"
 now_timestamps=${1:-${NIGHTLY_CURRENT_TIMESTAMP:-$(date +%s)}}
 
 # Testing every 3 days

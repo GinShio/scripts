@@ -3,8 +3,6 @@
 set -eu
 
 # shellcheck disable=SC1091
-. "${XDG_CONFIG_HOME:-$HOME/.config}/workflow/.env"
-# shellcheck disable=SC1091
 . "$PROJECTS_SCRIPT_DIR/common/proxy.sh"
 
 cleanup() {

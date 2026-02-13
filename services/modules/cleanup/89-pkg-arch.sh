@@ -2,8 +2,6 @@
 #@tags: domain:cleanup, type:nightly, os:arch
 set -u
 
-. "${XDG_CONFIG_HOME:-$HOME/.config}/workflow/.env"
-
 # 1. Cache
 if command -v paccache >/dev/null 2>&1; then
     sudo -A -- paccache -rk2 >/dev/null 2>&1
