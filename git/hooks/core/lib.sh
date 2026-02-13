@@ -130,11 +130,32 @@ run_sed_i() {
     fi
 }
 
+# Validate file explicitly (Shebang check)
+# Returns:
+#   0 = Run
+#   1 = Skip (Not a script/Encrypted)
+check_script_header() {
+    _script="$1"
+
+    # Read first 2 bytes safely
+    # dd is part of POSIX and handles binary data better than head/sh loops
+    _magic_bytes=$(dd if="$_script" bs=9 count=1 2>/dev/null)
+
+    # 1. Shebang Check for Encrypted/Binary handling
+    if [ "$_magic_bytes" = "#!/bin/sh" ]; then
+        return 0
+    fi
+    
+    # Not a script (likely encrypted blob or binary without shebang)
+    return 1
+}
+
 # Run all executable scripts in a directory
 run_hook_dir() {
     dir_path="$1"
     hook_name="$2"
-    shift 2
+    stdin_source="$3"
+    shift 3
 
     if [ ! -d "$dir_path" ]; then return 0; fi
 
@@ -143,7 +164,20 @@ run_hook_dir() {
         if [ -f "$script" ] && [ -x "$script" ]; then
             script_base=$(basename "$script")
             if is_enabled "$hook_name" "$script_base"; then
-                "$script" "$@"
+                
+                # Check Header (Shebang)
+                check_script_header "$script"
+                _chk_status=$?
+                if [ $_chk_status -eq 1 ]; then
+                    log_debug "Skipping '$script_base': No shebang detected (possibly encrypted)."
+                    continue
+                fi
+
+                if [ -n "$stdin_source" ] && [ -f "$stdin_source" ]; then
+                    "$script" "$@" < "$stdin_source"
+                else
+                    "$script" "$@"
+                fi
                 exit_code=$?
                 if [ $exit_code -ne 0 ]; then
                     log_error "Hook script '$script_base' failed with exit code $exit_code"
@@ -154,16 +188,46 @@ run_hook_dir() {
     done
 }
 
+# Run hooks from base directory and any domain-* overlay directories
+# Usage: run_hook_overlays <hooks_root_dir> <hook_name> <stdin_source> [args...]
+run_hook_overlays() {
+    _base_root="$1"
+    _hook_name="$2"
+    _stdin_source="$3"
+    shift 3
+
+    # 1. Base Layer (e.g. git/hooks/pre-commit.d)
+    run_hook_dir "${_base_root}/${_hook_name}.d" "$_hook_name" "$_stdin_source" "$@"
+
+    # 2. Domain Layers 
+    # We scan for any directory starting with 'secret-'
+    for _domain_root in "$_base_root"/secret-*; do
+        if [ -d "$_domain_root" ]; then
+            _layer_dir="${_domain_root}/${_hook_name}.d"
+            if [ -d "$_layer_dir" ]; then
+                _domain_name=$(basename "$_domain_root")
+                log_debug "Executing overlay layer: $_domain_name"
+                run_hook_dir "$_layer_dir" "$_hook_name" "$_stdin_source" "$@"
+            fi
+        fi
+    done
+}
+
 # Run legacy/local hooks located in the repository's .git/hooks directory
 run_local_hook() {
     hook_name="$1"
-    shift 1
+    stdin_source="$2"
+    shift 2
     local_hooks_dir="$GIT_DIR/hooks"
     local_hook_script="$local_hooks_dir/$hook_name"
 
     if [ -f "$local_hook_script" ] && [ -x "$local_hook_script" ]; then
         if is_enabled "$hook_name" "local"; then
-            "$local_hook_script" "$@"
+            if [ -n "$stdin_source" ] && [ -f "$stdin_source" ]; then
+                "$local_hook_script" "$@" < "$stdin_source"
+            else
+                "$local_hook_script" "$@"
+            fi
             exit_code=$?
             if [ $exit_code -ne 0 ]; then
                 log_error "Local hook '$hook_name' failed"
@@ -273,4 +337,10 @@ get_main_branch() {
 
     # 3. Fallback
     echo "master"
+}
+
+# Retrieve file content from the staging area
+# Usage: git_cat_file_staged <file_path>
+git_cat_file_staged() {
+    git show ":$1"
 }

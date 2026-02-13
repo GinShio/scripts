@@ -17,7 +17,7 @@ for file in $files; do
     if [ -f "$file" ]; then
         # Check if file is text (ignore binary)
         if file "$file" | grep -q "text"; then
-            if grep -E "^<<<<<<< |^=======$|^>>>>>>> " "$file" >/dev/null 2>&1; then
+            if git_cat_file_staged "$file" | grep -E "^<<<<<<< |^=======$|^>>>>>>> " >/dev/null 2>&1; then
                 log_error "Merge conflict markers found in $file"
                 found_conflicts=1
             fi
