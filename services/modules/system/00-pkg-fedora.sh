@@ -1,5 +1,5 @@
 #!/bin/sh
-#@tags: domain:system, type:nightly, os:fedora
+#@tags: domain:system, type:nightly, os:fedora, schedule:5d
 set -eu
 
 # shellcheck disable=SC1091

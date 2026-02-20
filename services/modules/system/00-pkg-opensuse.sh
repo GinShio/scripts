@@ -1,5 +1,5 @@
 #!/bin/sh
-#@tags: domain:system, type:nightly, os:opensuse, dep:zypper
+#@tags: domain:system, type:nightly, os:opensuse, dep:zypper, schedule:5d
 set -eu
 
 # shellcheck disable=SC1091

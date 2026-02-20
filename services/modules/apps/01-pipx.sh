@@ -1,5 +1,5 @@
 #!/bin/sh
-#@tags: domain:user, type:nightly, dep:pipx
+#@tags: domain:user, type:nightly, dep:pipx, schedule:14d
 set -eu
 
 echo "Updating Pipx packages..."

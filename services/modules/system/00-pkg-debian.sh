@@ -1,5 +1,5 @@
 #!/bin/sh
-#@tags: domain:system, type:nightly, os:debian
+#@tags: domain:system, type:nightly, os:debian, schedule:5d
 set -eu
 
 # shellcheck disable=SC1091

@@ -1,12 +1,7 @@
 #!/bin/sh
-#@tags: domain:dev, type:nightly, gpu:any, dep:python3, power:ac
+#@tags: domain:dev, type:nightly, gpu:any, dep:python3, power:ac, schedule:3d
 
 now_timestamps=${1:-${NIGHTLY_CURRENT_TIMESTAMP:-$(date +%s)}}
-
-# Testing every 3 days
-if [ "$(date +%j | awk '{print $1 % 3}')" -ne 0 ]; then
-    exit 0
-fi
 
 python3 "$PROJECTS_SCRIPT_DIR/gputest.py" cleanup
 

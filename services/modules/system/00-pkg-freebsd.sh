@@ -1,5 +1,5 @@
 #!/bin/sh
-#@tags: domain:system, type:nightly, os:freebsd
+#@tags: domain:system, type:nightly, os:freebsd, schedule:5d
 set -eu
 
 # shellcheck disable=SC1091

@@ -1,5 +1,5 @@
 #!/bin/sh
-#@tags: domain:system, type:nightly, os:darwin
+#@tags: domain:system, type:nightly, os:darwin, schedule:5d
 set -eu
 
 # shellcheck disable=SC1091
