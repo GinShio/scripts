@@ -1,5 +1,5 @@
 #!/bin/sh
-#@tags: domain:dev, type:nightly, dep:git
+#@tags: domain:dev, type:nightly, dep:git, power:ac
 set -eu
 
 cleanup() {

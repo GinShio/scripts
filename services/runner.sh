@@ -53,6 +53,9 @@ CPU_VENDOR=$(detect_cpu_vendor)
 IS_LAPTOP=0
 if is_laptop; then IS_LAPTOP=1; fi
 
+IS_ON_AC=0
+if is_on_ac; then IS_ON_AC=1; fi
+
 # ==============================================================================
 # 3. Filtering Logic
 # ==============================================================================
@@ -72,6 +75,20 @@ check_tag_constraint() {
             if [ "$CURRENT_OS" = "linux" ] && [ "$_req_os" = "$CURRENT_DISTRO" ]; then return 0; fi
             return 1
             ;;
+    esac
+
+    # Prefix: power:* (Power Source)
+    case "$_tag" in
+        power:ac)
+            # Require AC Power
+            if [ "$IS_ON_AC" -eq 1 ]; then return 0; fi
+            return 1 ;;
+        power:battery)
+            # Require Battery Power (Not AC)
+            if [ "$IS_ON_AC" -eq 0 ]; then return 0; fi
+            return 1 ;;
+        power:any)
+            return 0 ;;
     esac
 
     # Prefix: gpu:* (GPU Vendor/Presence)
@@ -109,14 +126,6 @@ check_tag_constraint() {
             return 1 ;;
     esac
 
-    # Prefix: chassis:* (Future proofing example, alias to hw usually)
-    case "$_tag" in
-        chassis:laptop)
-            [ "$IS_LAPTOP" -eq 1 ] && return 0
-            return 1 ;;
-        # chassis:desktop not strictly implemented yet but structure allows it
-    esac
-
     # Prefix: dep:* (Dependency Check)
     case "$_tag" in
         dep:*)
@@ -141,7 +150,7 @@ should_run_script() {
         # Identify constraint tags
         # We explicitly list all prefixes that impose an execution constraint
         case "$_t" in
-            os:*|hw:*|dep:*|gpu:*|cpu:*|chassis:*|de:*)
+            os:*|hw:*|dep:*|gpu:*|cpu:*|de:*|power:*)
                 if ! check_tag_constraint "$_t"; then
                     # Constraint failed -> Skip execution
                     return 1

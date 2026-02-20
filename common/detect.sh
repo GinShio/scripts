@@ -6,23 +6,117 @@ get_os() {
 }
 
 # Check if the system is a laptop
+# Behavior:
+#   Detects if the current system is a portable device (Laptop, Notebook, etc.)
+# Returns:
+#   0 (True)  - If the system is identified as a laptop/portable.
+#   1 (False) - If the system is a desktop, server, or type could not be determined.
+# Usage:
+#   if is_laptop; then echo "It's a laptop"; fi
 is_laptop() {
-    # Method 1: Check for battery in /sys/class/power_supply/
-    for bat in /sys/class/power_supply/BAT* /sys/class/power_supply/battery; do
-        if [ -e "$bat/type" ] && grep -qi "battery" "$bat/type" 2>/dev/null; then
-            return 0
-        fi
-    done
+    _os=$(get_os)
 
-    # Method 2: Check DMI chassis type (portable/laptop types: 8, 9, 10, 14)
-    if [ -r /sys/class/dmi/id/chassis_type ]; then
-        chassis_type=$(cat /sys/class/dmi/id/chassis_type 2>/dev/null)
-        case "$chassis_type" in
-            8|9|10|14) return 0 ;;
+    if [ "$_os" = "linux" ]; then
+        # Method 1: Check for battery in /sys/class/power_supply/
+        for bat in /sys/class/power_supply/BAT* /sys/class/power_supply/battery; do
+            if [ -e "$bat/type" ] && grep -qi "battery" "$bat/type" 2>/dev/null; then
+                return 0
+            fi
+        done
+
+        # Method 2: Check DMI chassis type (portable/laptop types: 8, 9, 10, 14, 30, 31, 32)
+        # 8=Portable, 9=Laptop, 10=Notebook, 14=Sub Notebook, 30=Tablet, 31=Convertible, 32=Detachable
+        if [ -r /sys/class/dmi/id/chassis_type ]; then
+            chassis_type=$(cat /sys/class/dmi/id/chassis_type 2>/dev/null)
+            case "$chassis_type" in
+                8|9|10|14|30|31|32) return 0 ;;
+            esac
+        fi
+        
+    elif [ "$_os" = "darwin" ]; then
+        # macOS: sysctl hw.model
+        # MacBook*
+        _model=$(sysctl -n hw.model 2>/dev/null)
+        case "$_model" in
+            MacBook*) return 0 ;;
         esac
+
+    elif [ "$_os" = "freebsd" ] || [ "$_os" = "openbsd" ]; then
+        # FreeBSD/OpenBSD: sysctl hw.machine_arch or hw.model to guess?
+        # Better: use apm to check for battery presence
+        if command -v apm >/dev/null 2>&1; then
+             # apm -b: battery status. If not 255 (unknown/no battery), likely a laptop
+             # Or check output for "Battery"
+             _batt=$(apm -b 2>/dev/null)
+             if [ "$_batt" != "255" ] && [ -n "$_batt" ]; then
+                return 0
+             fi
+        fi
     fi
 
     return 1
+}
+
+# Check if the system is currently running on AC power (Mains)
+# Behavior:
+#   Detects if the system is plugged into a power source.
+#   Desktops/Servers generally satisfy this by default.
+# Returns:
+#   0 (True)  - System is on AC power (or is a Desktop).
+#   1 (False) - System is running on Battery.
+# Usage:
+#   if is_on_ac; then echo "High power mode"; fi
+is_on_ac() {
+    _os=$(get_os)
+    
+    # If not a laptop, assume always on AC (Desktop/Server)
+    # Note: is_laptop check might need OS specific implementation too, 
+    # but for now we trust it or add minimal checks below
+    if ! is_laptop; then return 0; fi
+
+    if [ "$_os" = "linux" ]; then
+        # Check for AC adapter online status
+        # Linux kernel usually exposes this via /sys/class/power_supply
+        for supply in /sys/class/power_supply/*; do
+            if [ -r "$supply/type" ] && grep -qi "Mains" "$supply/type"; then
+                if [ -r "$supply/online" ] && grep -q "1" "$supply/online"; then
+                    return 0
+                fi
+            # Some USB-C power supplies might show up as USB
+            elif [ -r "$supply/type" ] && grep -qi "USB" "$supply/type"; then
+                 if [ -r "$supply/online" ] && grep -q "1" "$supply/online"; then
+                    # Additional check: make sure it's delivering power, not just data
+                    # But typically 'online=1' for a power_supply means power.
+                    return 0
+                fi
+            fi
+        done
+        # If no online AC adapter found, we are on battery
+        return 1
+
+    elif [ "$_os" = "darwin" ]; then
+        # macOS: pmset -g batt
+        # Output example: " -InternalBattery-0 (id=...)"... "AC Power" or "Battery Power"
+        if pmset -g batt | grep -q 'AC Power'; then
+            return 0
+        fi
+        return 1
+
+    elif [ "$_os" = "freebsd" ] || [ "$_os" = "openbsd" ]; then
+        # FreeBSD/OpenBSD: apm command
+        # apm -a: 0=offline, 1=online. Returns 1 if AC is on.
+        if command -v apm >/dev/null 2>&1; then
+            _status=$(apm -a 2>/dev/null)
+            if [ "$_status" -eq 1 ]; then
+                return 0
+            fi
+        fi
+        return 1
+    fi
+
+    # Fallback for unknown OS: assumed AC to be safe, or Battery?
+    # Assume AC to avoid blocking scripts unnecessarily
+    return 0
 }
 
 detect_arch() {

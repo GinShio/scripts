@@ -1,5 +1,5 @@
 #!/bin/sh
-#@tags: domain:dev, type:nightly, gpu:any, dep:python3
+#@tags: domain:dev, type:nightly, gpu:any, dep:python3, power:ac
 
 now_timestamps=${1:-${NIGHTLY_CURRENT_TIMESTAMP:-$(date +%s)}}
 
@@ -7,21 +7,6 @@ now_timestamps=${1:-${NIGHTLY_CURRENT_TIMESTAMP:-$(date +%s)}}
 if [ "$(date +%j | awk '{print $1 % 3}')" -ne 0 ]; then
     exit 0
 fi
-
-get_power_AC() {
-    power_path=$(upower -d | awk '/power_AC/ {print $NF}' | head -n 1)
-    if [ -n "$power_path" ]; then
-        online=$(upower -i "$power_path" | awk '/online:/ {print $NF}' | head -n 1)
-    else
-        online=""
-    fi
-    if [ -z "$online" ] || [ "$online" = "yes" ]; then
-        return 0
-    else
-        return 1
-    fi
-}
-get_power_AC || exit 0
 
 python3 "$PROJECTS_SCRIPT_DIR/gputest.py" cleanup
 
