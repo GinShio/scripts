@@ -28,7 +28,7 @@ REPO_NAME=$(basename "$GIT_TOPLEVEL")
 
 # Read references update from stdin
 # Format: <old-sha> <new-sha> <ref-name>
-while read old_sha new_sha ref_name; do
+while read -r old_sha new_sha ref_name; do
     # Check for branch deletion
     # SHA $NULL_SHA indicates deletion
     if [ "$new_sha" = "$NULL_SHA" ] && \

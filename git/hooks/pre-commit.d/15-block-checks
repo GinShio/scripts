@@ -15,7 +15,7 @@ found_issues=0
 # --cached: staged area
 if git grep --cached -E -q "($blocking_terms)" -- $files; then
    log_error "Blocking terms found in staged files:"
-   git grep --cached -E -n "($blocking_terms)" -- $files | while read line; do
+   git grep --cached -E -n "($blocking_terms)" -- $files | while read -r line; do
        log_error "  $line"
    done
    exit 1

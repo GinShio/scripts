@@ -8,7 +8,7 @@ if ! is_truthy "${ENABLE:-false}"; then exit 0; fi
 REMOTE_NAME="$1"
 REMOTE_URL="$2"
 
-while read local_ref local_sha remote_ref remote_sha; do
+while read -r local_ref local_sha remote_ref remote_sha; do
     if [ "$local_sha" = "$NULL_SHA" ]; then
         continue
     fi

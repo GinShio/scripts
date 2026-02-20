@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #@tags: usage:dev, scope:system
 # System: User Groups
 

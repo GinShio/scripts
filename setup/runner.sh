@@ -66,7 +66,7 @@ EOF
     # Convention: setup/usages/<usage>/HELP.md or similar
     # For now, we look for a common help text if available.
     if [ -d "$PROJECT_ROOT/setup/usages" ]; then
-        echo -e "\nRegistered Usage Modules:"
+        printf "\nRegistered Usage Modules:\n"
         for usage_dir in "$PROJECT_ROOT/setup/usages"/*; do
             [ -d "$usage_dir" ] || continue
             usage_name=$(basename "$usage_dir")

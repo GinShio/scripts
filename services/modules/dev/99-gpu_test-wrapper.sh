@@ -60,7 +60,7 @@ check_driver() {
         item=${clean_info%%:*}
         value=${clean_info#*:}
         if [ "$item" = "Library" ] && [ -e "$value" ]; then
-            # POSIX compatible: use -nt (newer than) test operator
+            # Non-POSIX standard extension (supported by bash/ksh/zsh/dash): -nt (newer than)
             # This checks if file modification time > now_timestamps
             if [ "$value" -nt "$ref_file" ]; then
                 found=1

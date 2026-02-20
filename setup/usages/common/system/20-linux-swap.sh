@@ -18,7 +18,7 @@ else
     echo "Setting up swapfile ($SETUP_SWAPSIZE GiB) at /swapfile..."
 
     # Using 4MiB block size
-    sudo -A dd if=/dev/zero of=/swapfile bs=4MiB count=$(echo "$SETUP_SWAPSIZE * 256" | bc) status=progress
+    sudo -A dd if=/dev/zero of=/swapfile bs=4MiB count=$(( SETUP_SWAPSIZE * 256 )) status=progress
     sudo -A chmod 0600 /swapfile
     sudo -A mkswap /swapfile
     sudo -A swapon /swapfile

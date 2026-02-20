@@ -22,7 +22,7 @@ else
     SWAPFILE="/usr/swap0"
     
     # Create file: 1m block size is standard on BSD
-    sudo -A dd if=/dev/zero of="$SWAPFILE" bs=1m count=$(echo "$SETUP_SWAPSIZE * 1024" | bc) status=progress
+    sudo -A dd if=/dev/zero of="$SWAPFILE" bs=1m count=$(( SETUP_SWAPSIZE * 1024 )) status=progress
     
     # Set permissions (0600)
     sudo -A chmod 0600 "$SWAPFILE"

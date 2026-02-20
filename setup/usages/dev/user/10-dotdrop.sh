@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #@tags: usage:dev, scope:user
 # User: Dotdrop & Secrets
 
@@ -17,7 +17,8 @@ PROFILE_UPPER=$(echo "$SETUP_PROFILE" | tr '[:lower:]' '[:upper:]')
 TRANSCRYPT_VAR_NAME="TRANSCRYPT_${PROFILE_UPPER}_PASSWORD"
 
 # Check if the variable is set (using indirect reference)
-if [ -n "${!TRANSCRYPT_VAR_NAME:-}" ]; then
+eval "_val=\${$TRANSCRYPT_VAR_NAME:-}"
+if [ -n "$_val" ]; then
     echo "Info: Found credentials for profile '$SETUP_PROFILE'. Configuring encryption..."
     (
         cd "$DOTFILES_ROOT_PATH" || exit
@@ -30,13 +31,13 @@ if [ -n "${!TRANSCRYPT_VAR_NAME:-}" ]; then
     )
 fi
 
-if command -v dotdrop &> /dev/null; then
+if command -v dotdrop >/dev/null 2>&1; then
     echo "Running Dotdrop..."
     # User config
     yes | dotdrop install -c "$DOTFILES_ROOT_PATH/dotfiles.yaml" -p "$SETUP_PROFILE"
 
     # Secrets config (if decrypted)
-    if [ -n "${!TRANSCRYPT_VAR_NAME:-}" ] && [ -f "$DOTFILES_ROOT_PATH/secret.yaml" ]; then
+    if [ -n "$_val" ] && [ -f "$DOTFILES_ROOT_PATH/secret.yaml" ]; then
          echo "Installing secrets from secret.yaml..."
          yes | dotdrop install -c "$DOTFILES_ROOT_PATH/secret.yaml" -p "$SETUP_PROFILE"
     fi
