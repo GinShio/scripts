@@ -208,6 +208,9 @@ check_tag_constraint() {
             _req_cpu="${_tag#cpu:}"
             if [ "$_req_cpu" = "$CPU_VENDOR" ]; then return 0; fi
             return 1 ;;
+        de:any)
+            if is_desktop; then return 0; fi
+            return 1 ;;
         de:*)
             _req_de="${_tag#de:}"
             if [ "$_req_de" = "$CURRENT_DE" ]; then return 0; fi

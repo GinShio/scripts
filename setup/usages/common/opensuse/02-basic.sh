@@ -15,13 +15,6 @@ sudo zypper in -y \
 # Network
 sudo zypper in -y \
     cifs-utils curl privoxy proxychains-ng sshpass wget
-# Web
-sudo zypper in -y \
-    MozillaFirefox MozillaThunderbird qbittorrent
-
-# Multimedia
-sudo zypper in -y \
-    inkscape ImageMagick mpv obs-studio
 
 # System Utils
 sudo zypper in -y \

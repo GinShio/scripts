@@ -15,13 +15,6 @@ sudo -E apt install -y \
 # Network
 sudo -E apt install -y \
     cifs-utils curl privoxy proxychains4 sshpass wget
-# Web
-sudo -E apt install -y \
-    firefox-esr thunderbird qbittorrent
-
-# Multimedia
-sudo -E apt install -y \
-    inkscape imagemagick-6-common mpv obs-studio osdlyrics
 
 # System Utils
 sudo -E apt install -y \
