@@ -75,7 +75,7 @@ sudo zypper in -y \
 
 # Java
 sudo zypper in -y \
-    java-{17,21}-openjdk{,-devel}
+    java-{21,25}-openjdk{,-devel}
 
 # Node.js
 sudo zypper in -y \

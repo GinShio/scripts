@@ -68,7 +68,7 @@ sudo -E apt install -y zig
 
 # Java
 sudo -E apt install -y \
-    openjdk-17-jdk openjdk-17-jre openjdk-17-source
+    openjdk-21-jdk openjdk-21-jre openjdk-21-source
 
 # Node.js
 sudo -E apt install -y \

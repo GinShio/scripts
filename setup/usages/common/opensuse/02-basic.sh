@@ -14,7 +14,7 @@ sudo zypper in -y \
 
 # Network
 sudo zypper in -y \
-    cifs-utils curl privoxy proxychains-ng sshpass wget
+    aria2 aria2-lang cifs-utils curl privoxy proxychains-ng qbittorrent-nox sshpass wget
 
 # System Utils
 sudo zypper in -y \
