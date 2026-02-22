@@ -218,6 +218,14 @@ check_tag_constraint() {
         hw:laptop)
             [ "$IS_LAPTOP" -eq 1 ] && return 0
             return 1 ;;
+        vps:*)
+            _req_vps="${_tag#vps:}"
+            if [ -z "${CURRENT_VPS:-}" ]; then
+                . "$PROJECT_ROOT/common/detect_vps.sh"
+                CURRENT_VPS=$(detect_vps)
+            fi
+            if [ "$_req_vps" = "$CURRENT_VPS" ]; then return 0; fi
+            return 1 ;;
     esac
 
     # -- Dependency Constraint --
@@ -237,7 +245,7 @@ should_run_script() {
     
     for _t in $_file_tags; do
          case "$_t" in
-            usage:*|os:*|gpu:*|cpu:*|de:*|hw:*|dep:*)
+            usage:*|os:*|gpu:*|cpu:*|de:*|hw:*|dep:*|vps:*)
                 if ! check_tag_constraint "$_t"; then
                     return 1
                 fi
