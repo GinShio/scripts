@@ -1,10 +1,8 @@
 #!/bin/sh
-#@tags: usage:vps, scope:apps, os:debian, os:ubuntu
-# Apps: Enable and start VPS services
+#@tags: usage:vps, scope:services, os:debian, os:ubuntu
+# Services: Enable and start VPS login services
 
 set -e
-
-echo "Enabling and starting VPS services..."
 
 # Nginx
 if systemctl list-unit-files | grep -q nginx.service; then
@@ -26,5 +24,3 @@ elif systemctl is-active --quiet ssh.service || systemctl is-enabled --quiet ssh
     echo "Restarting SSH..."
     systemctl restart ssh.service
 fi
-
-echo "VPS services enabled and started."
