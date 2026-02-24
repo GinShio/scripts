@@ -4,8 +4,19 @@
 
 set -e
 
+systemctl daemon-reload
+
 # Nginx
 if systemctl list-unit-files | grep -q nginx.service; then
     echo "Enabling Nginx..."
     systemctl enable --now nginx.service
+fi
+
+# Miniflux
+if systemctl list-unit-files | grep -q miniflux.service; then
+    echo "Enabling Miniflux..."
+    if systemctl is-active --quiet miniflux; then
+        systemctl restart miniflux
+    fi
+    systemctl enable --now miniflux.service
 fi
