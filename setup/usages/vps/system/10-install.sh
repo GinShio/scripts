@@ -7,7 +7,7 @@ set -e
 echo "Installing base packages (socat, wget, curl, certbot, nginx, fail2ban, git)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y socat wget curl certbot nginx git fail2ban
+apt-get install -y socat wget curl certbot nginx git fail2ban podman podman-compose uidmap dbus-user-session
 
 if [ -n "${DNS_PROVIDER:-}" ]; then
     echo "DNS provider ($DNS_PROVIDER) configured. Installing corresponding Certbot DNS plugin..."
