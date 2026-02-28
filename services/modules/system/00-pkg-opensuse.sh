@@ -4,16 +4,13 @@ set -eu
 
 # shellcheck disable=SC1091
 . "$PROJECTS_SCRIPT_DIR/common/proxy.sh"
-
-cleanup() {
-    sudo -k
-    # shellcheck disable=SC1091
-    . "$PROJECTS_SCRIPT_DIR/common/unproxy.sh"
-}
-trap cleanup EXIT
+trap "sudo -k" EXIT
 
 sudo -AE -- zypper ref
 # Update specific openSUSE repositories if they exist
 zypper lr | awk 'NR > 4 && $3~/openSUSE:/ {print $3}' | xargs -r -I@ sudo -AE -- zypper up -y --repo @
+# shellcheck disable=SC1091
+. "$PROJECTS_SCRIPT_DIR/common/unproxy.sh"
+
 sudo -A -- zypper up -y --allow-vendor-change
 sudo -A -- zypper dup -y --allow-vendor-change
