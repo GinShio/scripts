@@ -354,7 +354,7 @@ if should_run_script "$script"; then
     # Run in subshell to protect runner's environment
     (
         # Pass the trigger type as argument just in case
-        sh "$script" "$1"
+        sh "$script"
     ) 
     _status=$?
     

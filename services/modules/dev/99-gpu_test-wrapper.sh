@@ -1,7 +1,10 @@
 #!/bin/sh
-#@tags: domain:dev, type:nightly, gpu:any, dep:python3, power:ac, schedule:3d
+#@tags: domain:dev, type:nightly, gpu:any, dep:python3, power:ac
 
-now_timestamps=${1:-${NIGHTLY_CURRENT_TIMESTAMP:-$(date +%s)}}
+case "${1:-}" in
+    ""|*[!0-9]*) now_timestamps=${NIGHTLY_CURRENT_TIMESTAMP:-$(date +%s)} ;;
+    *) now_timestamps="$1" ;;
+esac
 
 python3 "$PROJECTS_SCRIPT_DIR/gputest.py" cleanup
 
