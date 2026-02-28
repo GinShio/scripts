@@ -8,6 +8,8 @@ USER_SERVICES="
     emacs.service
     develop-autostart.service
     podman.service
+    aria2.service
+    qbittorrent-nox.service
 "
 
 for svc in $USER_SERVICES; do
