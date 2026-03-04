@@ -485,7 +485,12 @@ def run_tests(ctx: Context, test_names: List[str]):
             run_hooks(pre_hooks, "pre-run")
 
             # Run the test
-            ctx.runner.run(cmd, cwd=cwd, env=merged_env, check=True, stream=True)
+            test_error: Optional[CommandError] = None
+            try:
+                ctx.runner.run(cmd, cwd=cwd, env=merged_env, check=True, stream=True)
+            except CommandError as e:
+                test_error = e
+                ctx.console.error(f"Test run failed: {e}")
 
             # Run post-run hooks
             post_hooks = suite.get("post_run_hooks", []) + test_def.get("post_run", [])
@@ -605,8 +610,11 @@ def run_tests(ctx: Context, test_names: List[str]):
                 ):
                     shutil.rmtree(source_dir_for_archive, ignore_errors=True)
 
+            # Surface test failure after post-hooks and archiving have completed
+            if test_error is not None:
+                ctx.console.error(
+                    f"Test '{test_name}' completed with failures (see above)."
+                )
+
         except CommandError as e:
             ctx.console.error(f"Test failed: {e}")
-            # If dry run, we don't care about failure
-            if not ctx.console.dry_run:
-                pass  # Or exit? Usually we want to continue to next test.
