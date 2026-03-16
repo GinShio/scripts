@@ -2,6 +2,14 @@
 
 . "$HOOKS_DIR/core/lib.sh"
 
+# reference-transaction is invoked three times per transaction:
+#   prepared  – refs are locked, not yet written
+#   committed – refs have been written (the only state we care about)
+#   aborted   – transaction was rolled back
+# Acting on any state other than 'committed' would corrupt the machete file
+# whenever a rebase/restack is interrupted, aborted, or conflicts arise.
+[ "$1" = "committed" ] || exit 0
+
 MACHETE_FILE="$GIT_COMMON_DIR/machete"
 if [ ! -f "$MACHETE_FILE" ]; then
     exit 0
