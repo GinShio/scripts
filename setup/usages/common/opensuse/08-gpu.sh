@@ -56,14 +56,15 @@ sudo zypper in -y \
 
 # Graphics Utils
 sudo zypper in -y \
-    SDL2-devel SDL2-devel-32bit \
+    SDL3-devel \
     cairo-devel cairo-devel-32bit \
     freeglut-devel freeglut-devel-32bit \
+    imgui-devel \
     libICE-devel libICE-devel-32bit \
     libLLVMSPIRVLib-devel \
     libSM-devel libSM-devel-32bit \
     libfontenc-devel libfontenc-devel-32bit \
-    libglfw3-wayland \
+    libglfw3 libglfw-devel \
     libglvnd-devel libglvnd-devel-32bit \
     libva-devel libva-devel-32bit \
     libvdpau-devel libvdpau-devel-32bit \
