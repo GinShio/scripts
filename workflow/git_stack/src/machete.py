@@ -121,6 +121,94 @@ def write_machete(nodes: Union[Iterable[MacheteNode], Dict[str, MacheteNode]]) -
         f.write("\n".join(lines) + "\n")
 
 
+def get_ancestors(node: MacheteNode) -> List[MacheteNode]:
+    """
+    Return the ancestor chain of *node* ordered root-first.
+    The node itself is NOT included.
+    """
+    ancestors: List[MacheteNode] = []
+    p = node.parent
+    while p:
+        ancestors.append(p)
+        p = p.parent
+    ancestors.reverse()
+    return ancestors
+
+
+def get_subtree_nodes(node: MacheteNode) -> List[MacheteNode]:
+    """
+    Return every node in the subtree rooted at *node* (inclusive) in DFS
+    pre-order.  Used by sync to collect the full set of branches to push
+    when the current branch is a fork-point.
+    """
+    result: List[MacheteNode] = []
+
+    def _dfs(n: MacheteNode) -> None:
+        result.append(n)
+        for child in n.children:
+            _dfs(child)
+
+    _dfs(node)
+    return result
+
+
+def _path_to_next_fork_or_leaf(node: MacheteNode) -> List[MacheteNode]:
+    """
+    Walk linearly starting from *node*:
+    - Single-child nodes are traversed transparently.
+    - Stop (inclusive) when a fork-point (children >= 2) or a leaf is reached.
+
+    Examples
+    --------
+    A(1 child) -> B(2 children)  =>  [A, B]   # B is fork-point, stop
+    A(1 child) -> B(1 child) -> C(0 children)  =>  [A, B, C]
+    A(2 children)                              =>  [A]  # A itself is fork-point
+    """
+    result: List[MacheteNode] = []
+    current: Optional[MacheteNode] = node
+    while current is not None:
+        result.append(current)
+        if len(current.children) != 1:  # leaf (0) or fork-point (>=2): stop
+            break
+        current = current.children[0]
+    return result
+
+
+def get_anno_blocks(node: MacheteNode) -> List[List[MacheteNode]]:
+    """
+    Return the list of annotation blocks that should appear in the PR
+    description for *node*.  Each block is a flat List[MacheteNode]
+    representing one "Stack List" section.
+
+    Rules
+    -----
+    Let ``prefix = ancestors(node) + [node]``.
+
+    Non-fork-point (children <= 1):
+        One block:  prefix + _path_to_next_fork_or_leaf(first_child)
+                    If node is a leaf, the block is just prefix.
+
+    Fork-point (children >= 2):
+        One block *per direct child*:
+            prefix + _path_to_next_fork_or_leaf(child_i)
+        This produces N separate Stack List sections in the description,
+        one for each branch of the fork, all sharing the same ancestor
+        prefix up to and including the fork-point itself.
+
+    Why stop at the next fork-point?
+        A nested fork-point will generate its own multi-block description;
+        repeating its entire subtree here would be redundant and confusing.
+    """
+    prefix = get_ancestors(node) + [node]
+
+    if len(node.children) >= 2:  # fork-point
+        return [prefix + _path_to_next_fork_or_leaf(child) for child in node.children]
+    elif len(node.children) == 1:  # single-child
+        return [prefix + _path_to_next_fork_or_leaf(node.children[0])]
+    else:  # leaf
+        return [prefix]
+
+
 def get_linear_stack(
     current_branch: str, nodes: Dict[str, MacheteNode]
 ) -> List[MacheteNode]:
@@ -171,15 +259,37 @@ def format_stack_markdown(
     current_focused_branch: str,
     item_label: str = "PR",
     item_char: str = "#",
+    include_wrapper: bool = True,
 ) -> str:
+    """
+    Render one "### Stack List" section.
+
+    Parameters
+    ----------
+    stack:
+        List of StackItem dicts (keys: "node", "pr_num").
+    current_focused_branch:
+        Name of the branch whose PR description this table will appear in;
+        used to mark the current item with the ⬅️ indicator.
+    include_wrapper:
+        When True (default) the output is wrapped in STACK_HEADER /
+        STACK_FOOTER markers.  Set to False when building multi-block
+        descriptions so that multiple sections share a single wrapper
+        (see ``annotate_stack``).
+    """
     """
     Generate ASCII nested list for the stack.
     stack items: {'node': MacheteNode, 'pr_num': str}
     """
-    lines = [STACK_HEADER, "", "### Stack List", ""]
+    lines: List[str] = []
+    if include_wrapper:
+        lines += [STACK_HEADER, ""]
+    lines += ["### Stack List", ""]
 
     if not stack:
-        return ""
+        if include_wrapper:
+            lines.append(STACK_FOOTER)
+        return "\n".join(lines) if include_wrapper else ""
 
     # Filter out root entries (those typically represented with pr_num == '-')
     # from the numbered list while still showing parent/flow information.
@@ -208,7 +318,8 @@ def format_stack_markdown(
         lines.append(line_pr)
         lines.append(line_flow)
 
-    lines.append(STACK_FOOTER)
+    if include_wrapper:
+        lines.append(STACK_FOOTER)
     return "\n".join(lines)
 
 

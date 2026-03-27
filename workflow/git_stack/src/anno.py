@@ -12,7 +12,10 @@ from .machete import (
     STACK_HEADER,
     MacheteNode,
     format_stack_markdown,
+    get_ancestors,
+    get_anno_blocks,
     get_linear_stack,
+    get_subtree_nodes,
     parse_machete,
     strip_existing_stack_block,
     write_machete,
@@ -55,8 +58,20 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
             print(f"Branch '{limit_to_branch}' not found. Cannot limit scope.")
             sys.exit(1)
 
-        targets = get_linear_stack(limit_to_branch, nodes)
-        print(f"Limiting annotation to linear stack: {[n.name for n in targets]}")
+        current_node = nodes[limit_to_branch]
+        if len(current_node.children) >= 2:
+            # Fork-point: annotate the entire subtree so every child PR
+            # receives an accurate description.
+            ancestors = get_ancestors(current_node)
+            subtree = get_subtree_nodes(current_node)
+            targets = ancestors + subtree
+            print(
+                f"Fork-point detected: annotating subtree rooted at '{limit_to_branch}' "
+                f"({len(subtree)} branches)"
+            )
+        else:
+            targets = get_linear_stack(limit_to_branch, nodes)
+            print(f"Limiting annotation to linear stack: {[n.name for n in targets]}")
 
     # 2. Collect PR info and update local annotations
     # We iterate all nodes that are not roots (roots usually don't have PRs in this context)
@@ -105,7 +120,6 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
     # 3a. Parallel fetch of current descriptions for all PRs we found.
     desc_futures = {}
     curr_desc_map: Dict[str, str] = {}
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         for node_name, data in pr_cache.items():
@@ -129,6 +143,13 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
                 curr_desc_map[pr_num] = ""
 
     # 3b. Build new descriptions for each PR (using cached pr info and fetched descriptions)
+    def _pr_num_for(sn: MacheteNode) -> str:
+        """Resolve the display PR-number string for a node from the cache."""
+        if sn.name in pr_cache:
+            p_data = pr_cache[sn.name]
+            return str(p_data.get("number") or p_data.get("iid"))
+        return "-" if sn.parent is None else "?"
+
     updates: Dict[str, str] = {}
     for node in all_nodes:
         if node.name not in pr_cache:
@@ -137,25 +158,33 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
         pr_data = pr_cache[node.name]
         pr_num = str(pr_data.get("number") or pr_data.get("iid"))
 
-        # Build stack context
-        stack_nodes = get_linear_stack(node.name, nodes)
+        # Compute annotation blocks for this node.
+        # Non-fork-point (children <= 1)  →  one block  (linear to next fork/leaf)
+        # Fork-point     (children >= 2)  →  one block per direct child branch
+        anno_blocks = get_anno_blocks(node)
 
-        # Convert to StackItem list
-        stack_items = []
-        for sn in stack_nodes:
-            p_num = "?"
-            if sn.name in pr_cache:
-                p_data = pr_cache[sn.name]
-                p_num = str(p_data.get("number") or p_data.get("iid"))
-            elif sn.parent is None:
-                p_num = "-"
-            else:
-                p_num = "?"
+        # Render each block as a "### Stack List" section without its own wrapper
+        block_tables: List[str] = []
+        for block_nodes in anno_blocks:
+            block_items = [
+                {"node": sn, "pr_num": _pr_num_for(sn)} for sn in block_nodes
+            ]
+            t = format_stack_markdown(
+                block_items,
+                node.name,
+                label_type,
+                label_char,
+                include_wrapper=False,
+            )
+            if t:
+                block_tables.append(t)
 
-            stack_items.append({"node": sn, "pr_num": p_num})
+        if not block_tables:
+            continue
 
-        # Generate Table
-        table = format_stack_markdown(stack_items, node.name, label_type, label_char)
+        # Wrap all blocks in a single generated section (one HEADER/FOOTER pair)
+        inner = "\n\n".join(block_tables)
+        table = f"{STACK_HEADER}\n\n{inner}\n\n{STACK_FOOTER}"
 
         # Use previously fetched current description
         curr_desc = curr_desc_map.get(pr_num, "") or ""
@@ -169,7 +198,8 @@ def annotate_stack(limit_to_branch: Optional[str] = None) -> None:
         if existing_block_match:
             block = existing_block_match.group(0)
             old_names = re.findall(r"`([A-Za-z0-9._/-]+)`", block)
-            current_names = [sn.name for sn in stack_nodes]
+            # Collect all branch names visible across all annotation blocks
+            current_names = list({sn.name for blk in anno_blocks for sn in blk})
             missing = [n for n in old_names if n not in current_names]
             added = [n for n in current_names if n not in old_names]
             if missing and not added:

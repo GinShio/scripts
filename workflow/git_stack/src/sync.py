@@ -15,7 +15,13 @@ from .git import (
     resolve_base_branch,
     run_git,
 )
-from .machete import MacheteNode, get_roots, parse_machete
+from .machete import (
+    MacheteNode,
+    get_ancestors,
+    get_roots,
+    get_subtree_nodes,
+    parse_machete,
+)
 from .platform import PlatformInterface, get_platform
 
 
@@ -74,16 +80,36 @@ class StackSyncer:
                 print(f"Branch '{self.limit_to_branch}' not found in stack definition.")
                 sys.exit(1)
 
-            from .machete import get_linear_stack
+            current_node = self.nodes[self.limit_to_branch]
 
-            linear_stack = get_linear_stack(self.limit_to_branch, self.nodes)
-            if not linear_stack:
-                print("Empty stack found.")
-                return
+            if len(current_node.children) >= 2:
+                # Fork-point: sync the entire subtree (all descendants) so that
+                # every child branch is pushed and has its PR created/updated.
+                # Ancestors are included so the traversal can start from the tree
+                # root and filter naturally.
+                ancestors = get_ancestors(current_node)
+                subtree = get_subtree_nodes(current_node)  # includes current_node
+                targets = ancestors + subtree
+                roots = [targets[0]] if targets else [current_node]
+                print(
+                    f"Fork-point detected: syncing full subtree rooted at "
+                    f"'{self.limit_to_branch}' "
+                    f"({len(subtree)} branches)"
+                )
+            else:
+                # Non-fork-point (leaf or single-child): follow the primary
+                # linear path only.  Sibling branches are intentionally excluded
+                # because the user is working on this specific line of work.
+                from .machete import get_linear_stack
 
-            targets = linear_stack
-            roots = [linear_stack[0]]
-            print(f"Limiting sync to linear stack: {[n.name for n in targets]}")
+                linear_stack = get_linear_stack(self.limit_to_branch, self.nodes)
+                if not linear_stack:
+                    print("Empty stack found.")
+                    return
+
+                targets = linear_stack
+                roots = [linear_stack[0]]
+                print(f"Limiting sync to linear stack: {[n.name for n in targets]}")
 
         target_names = {t.name for t in targets}
 
