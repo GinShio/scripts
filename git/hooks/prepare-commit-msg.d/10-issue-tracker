@@ -1,0 +1,79 @@
+#!/bin/sh
+
+# Auto-fill commit message with Issue ID from branch name
+# Compatible with Ginshio transparent encryption: Needs EXACT shebang #!/bin/sh
+# Usage format: branch "feature/PROJ-123-login", will prepend "[PROJ-123] " to commit msg.
+
+. "$HOOKS_DIR/core/lib.sh"
+
+# Opt-in requirement: Disabled by default to prevent community project pollution
+ENABLE_ISSUE_TRACKER=$(git config --bool hooks.ginshio.prepare-commit-msg.issue-tracker-enabled 2>/dev/null || echo false)
+if ! is_truthy "$ENABLE_ISSUE_TRACKER"; then
+    exit 0
+fi
+
+COMMIT_MSG_FILE="$1"
+COMMIT_SOURCE="$2"
+COMMIT_SHA="$3"
+
+# We only want to auto-fill if the commit is newly created interactively, 
+# from a template, or an empty message.
+# We do NOT touch merges, squashes, or existing messages (unless it's a template or just started)
+case "$COMMIT_SOURCE" in
+    message|merge|squash|commit)
+        # It's an automatic or specified message, skip prepending to avoid duplicating or messing up.
+        exit 0
+        ;;
+esac
+
+# 1. Provide sensible defaults but allow Git config overrides
+# Default regex extracts something like PROJ-123 (Uppercase letters followed by dash and numbers)
+ISSUE_REGEX=$(git config hooks.ginshio.prepare-commit-msg.issue-tracker-regex 2>/dev/null || echo "[A-Z]+-[0-9]+")
+# Default format is "[ISSUE_ID] "
+ISSUE_FORMAT=$(git config hooks.ginshio.prepare-commit-msg.issue-tracker-format 2>/dev/null || echo "[%s] ")
+# Default fallback Issue ID if the branch name does not match the regex
+DEFAULT_ISSUE=$(git config hooks.ginshio.prepare-commit-msg.issue-tracker-default 2>/dev/null)
+
+# 2. Get current branch
+BRANCH_NAME=$(git symbolic-ref --short HEAD 2>/dev/null)
+if [ -z "$BRANCH_NAME" ]; then
+    exit 0
+fi
+
+# 3. Extract the Issue ID
+# Using grep -oE (Extended Regex, outputs only matching part). Works on GNU/BSD grep.
+ISSUE_ID=$(echo "$BRANCH_NAME" | grep -oE "$ISSUE_REGEX" | head -n 1)
+
+# 4. Fallback to default if no issue ID is found in the branch name
+if [ -z "$ISSUE_ID" ] && [ -n "$DEFAULT_ISSUE" ]; then
+    ISSUE_ID="$DEFAULT_ISSUE"
+fi
+
+if [ -n "$ISSUE_ID" ]; then
+    # Construct the formatted prefix
+    # Use printf safely by passing ISSUE_ID as an argument
+    PREFIX=$(printf "$ISSUE_FORMAT" "$ISSUE_ID")
+    
+    # Read the very first line of the commit message (to avoid double prefixing, e.g. on git commit --amend)
+    FIRST_LINE=$(head -n 1 "$COMMIT_MSG_FILE" 2>/dev/null)
+    
+    case "$FIRST_LINE" in
+        "$PREFIX"*) 
+            # Already has the exact prefix at the start, do nothing
+            ;;
+        *)
+            # Standard awk insertion: insert prefix at the start of the first line.
+            # This is safer than sed because it won't mess up multi-line comments.
+            TMP_FILE=$(mktemp)
+            awk -v prefix="$PREFIX" 'NR==1{print prefix $0; next} {print}' "$COMMIT_MSG_FILE" > "$TMP_FILE"
+            
+            if [ -s "$TMP_FILE" ]; then
+                mv "$TMP_FILE" "$COMMIT_MSG_FILE"
+            else
+                rm -f "$TMP_FILE"
+            fi
+            ;;
+    esac
+fi
+
+exit 0

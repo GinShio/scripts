@@ -165,6 +165,36 @@ Enforces text encoding and newline style.
 Wraps `git lfs pre-push` to ensure Large File Storage is synchronized.
 *   **Requirement**: `git-lfs` command line tool must be available.
 
+### Issue Tracker Autocomplete (`issue-tracker`)
+*Hook: prepare-commit-msg*
+
+**[Disabled by Default / Opt-in]** Automatically extracts an Issue ID from your **current branch name** and prepends it to empty or new commit messages. 
+For example, if your branch is named `feature/PROJ-123-login`, the script will automatically extract `PROJ-123` and inject `[PROJ-123] ` at the beginning of your commit message when the editor opens.
+
+*   **Enable (`enabled`)**: To avoid polluting community or personal projects, this hook is strictly opt-in. You must enable it explicitly.
+    ```bash
+    git config --local hooks.ginshio.prepare-commit-msg.issue-tracker-enabled true
+    # Or via Env:
+    export GINSHIO_HOOKS_PREPARE_COMMIT_MSG_ISSUE_TRACKER_ENABLED=true
+    ```
+*   **Regex (`regex`)**: Used to "Search & Extract" the Issue ID from the branch name. 
+    *   *Default*: `[A-Z]+-[0-9]+` (Captures "PROJ-1234").
+    ```bash
+    # Example: If your branches are named "bugfix/1234", capture only the numbers:
+    git config --local hooks.ginshio.prepare-commit-msg.issue-tracker-regex "[0-9]+"
+    ```
+*   **Format (`format`)**: Controls how the extracted ID is formatted and injected into your commit message using `printf` style (where `%s` is replaced by the ID). 
+    *   *Default*: `[%s] ` (which results in `[PROJ-1234] `)
+    ```bash
+    # Example: Format it as "(PROJ-1234): "
+    git config --local hooks.ginshio.prepare-commit-msg.issue-tracker-format "(%s): "
+    ```
+*   **Default Fallback (`default`)**: If the current branch name does *not* match the Regex (e.g., you are on `master` or `dev`), you can configure a fallback Issue ID to be used automatically.
+    ```bash
+    # Example: fallback to a generic placeholder or specific tracking ticket
+    git config --local hooks.ginshio.prepare-commit-msg.issue-tracker-default "GENERAL-001"
+    ```
+
 ## Directory Structure
 
 *   `hooks/core/`: Core library and runner.
