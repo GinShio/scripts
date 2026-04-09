@@ -40,6 +40,7 @@ if [ "$NEEDS_STDIN" -eq 1 ]; then
 fi
 
 run_hook_overlays "$HOOKS_DIR" "$HOOK_NAME" "$STDIN_FILE" "$@"
+run_external_hooks "$HOOK_NAME" "$STDIN_FILE" "$@"
 run_local_hook "$HOOK_NAME" "$STDIN_FILE" "$@"
 
 if [ -n "$STDIN_FILE" ] && [ -f "$STDIN_FILE" ]; then

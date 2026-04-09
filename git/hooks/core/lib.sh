@@ -213,6 +213,115 @@ run_hook_overlays() {
     done
 }
 
+# Run external project specific hooks
+# Usage: run_external_hooks <hook_name> <stdin_source> [args...]
+run_external_hooks() {
+    _ext_hook_name="$1"
+    _ext_stdin_source="$2"
+    shift 2
+
+    # 1. Directory-based external hooks scanning (e.g. .husky, .githooks)
+    # ENV takes precedence over Git Config
+    _ext_dirs="${GINSHIO_HOOKS_EXTERNAL_DIRS:-$(git config hooks.ginshio.external-dirs 2>/dev/null)}"
+    if [ -n "$_ext_dirs" ]; then
+        _old_ifs="$IFS"
+        IFS=":"
+        set -f
+        for _dir in $_ext_dirs; do
+            IFS="$_old_ifs"
+            set +f
+
+            if [ -n "$_dir" ]; then
+                case "$_dir" in
+                    /*) _resolved_dir="$_dir" ;;
+                    *)  _resolved_dir="${GIT_TOPLEVEL}/${_dir}" ;;
+                esac
+
+                if [ -d "$_resolved_dir" ]; then
+                    log_debug "Scanning external hooks directory: $_resolved_dir"
+
+                    # Standard single file hook
+                    _ext_script="$_resolved_dir/$_ext_hook_name"
+                    if [ -f "$_ext_script" ] && [ -x "$_ext_script" ]; then
+                        if is_enabled "$_ext_hook_name" "external"; then
+                            log_info "Running external hook script: $_ext_script"
+                            if [ -n "$_ext_stdin_source" ] && [ -f "$_ext_stdin_source" ]; then
+                                "$_ext_script" "$@" < "$_ext_stdin_source"
+                            else
+                                "$_ext_script" "$@"
+                            fi
+                            _exit_code=$?
+                            if [ $_exit_code -ne 0 ]; then
+                                log_error "External hook '$_ext_script' failed with code $_exit_code"
+                                exit $_exit_code
+                            fi
+                        fi
+                    fi
+
+                    # Directory based overlay format (.d)
+                    _ext_dir_d="$_resolved_dir/${_ext_hook_name}.d"
+                    if [ -d "$_ext_dir_d" ]; then
+                        log_debug "Executing external hook dir: $_ext_dir_d"
+                        run_hook_dir "$_ext_dir_d" "$_ext_hook_name" "$_ext_stdin_source" "$@"
+                    fi
+                fi
+            fi
+
+            IFS=":"
+            set -f
+        done
+        IFS="$_old_ifs"
+        set +f
+    fi
+
+    # 2. Explicit Script-based mapping (e.g. scripts/lint.sh)
+    # Env format requires upper case mapping for hook minus hyphens (PRE_COMMIT)
+    _env_hook_name=$(echo "$_ext_hook_name" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
+    eval _ext_scripts_env="\$GINSHIO_HOOKS_${_env_hook_name}_EXTERNAL_SCRIPTS"
+    _ext_scripts="${_ext_scripts_env:-$(git config "hooks.ginshio.${_ext_hook_name}.external-scripts" 2>/dev/null)}"
+    
+    if [ -n "$_ext_scripts" ]; then
+        _old_ifs="$IFS"
+        IFS=":"
+        set -f
+        for _script in $_ext_scripts; do
+            IFS="$_old_ifs"
+            set +f
+
+            if [ -n "$_script" ]; then
+                case "$_script" in
+                    /*) _resolved_script="$_script" ;;
+                    *)  _resolved_script="${GIT_TOPLEVEL}/${_script}" ;;
+                esac
+
+                if [ -f "$_resolved_script" ] && [ -x "$_resolved_script" ]; then
+                    _script_base=$(basename "$_resolved_script")
+                    if is_enabled "$_ext_hook_name" "$_script_base"; then
+                        log_info "Running explicit external script: $_resolved_script"
+                        if [ -n "$_ext_stdin_source" ] && [ -f "$_ext_stdin_source" ]; then
+                            "$_resolved_script" "$@" < "$_ext_stdin_source"
+                        else
+                            "$_resolved_script" "$@"
+                        fi
+                        _exit_code=$?
+                        if [ $_exit_code -ne 0 ]; then
+                            log_error "Explicit external script '$_resolved_script' failed with code $_exit_code"
+                            exit $_exit_code
+                        fi
+                    fi
+                elif [ ! -e "$_resolved_script" ]; then
+                     log_warn "Explicit external script not found: $_resolved_script"
+                fi
+            fi
+
+            IFS=":"
+            set -f
+        done
+        IFS="$_old_ifs"
+        set +f
+    fi
+}
+
 # Run legacy/local hooks located in the repository's .git/hooks directory
 run_local_hook() {
     hook_name="$1"

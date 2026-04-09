@@ -38,7 +38,43 @@ To disable a specific script within a hook directory (e.g., `code-formatter` in 
     export GINSHIO_HOOKS_PRE_COMMIT_CODE_FORMATTER_DISABLE=true
     ```
 
-### 4. Logging and Debugging
+### 4. External Hooks Integration
+Integrate third-party or project-specific Git hooks into the execution pipeline seamlessly. It supports both automatic directory scanning (for tools like Husky) and explicit script mapping (for custom legacy scripts).
+
+#### 4.1 Directory Scanning (e.g., Husky, .githooks)
+Provide a colon-separated (`:`) list of directories. It supports both single file hooks (`.husky/pre-commit`) and split `.d` directories (`.githooks/pre-commit.d/`). Paths can be absolute, or relative to the repository root.
+
+*   **Git Config**: `hooks.ginshio.external-dirs`
+    ```bash
+    git config --local hooks.ginshio.external-dirs ".husky:.githooks"
+    ```
+*   **Env Var**: `GINSHIO_HOOKS_EXTERNAL_DIRS`
+    ```bash
+    export GINSHIO_HOOKS_EXTERNAL_DIRS=".husky:.githooks:/opt/shared/hooks"
+    ```
+*   **Disable**: Disable all directory-based external hooks.
+    ```bash
+    export GINSHIO_HOOKS_PRE_COMMIT_EXTERNAL_DISABLE=true
+    ```
+
+#### 4.2 Explicit Script Mapping (e.g., scripts/lint.sh)
+If a project uses custom script paths that don't follow the `DIR/HOOK_NAME` structure, you can explicitly map them to run during specific Git hooks using a colon-separated (`:`) list of executable paths.
+
+*   **Git Config**: `hooks.ginshio.<HOOK_NAME>.external-scripts`
+    ```bash
+    # Run two different scripts during the pre-commit phase
+    git config --local hooks.ginshio.pre-commit.external-scripts "scripts/lint.sh:tools/check-format"
+    ```
+*   **Env Var**: `GINSHIO_HOOKS_<HOOK_NAME>_EXTERNAL_SCRIPTS`
+    ```bash
+    export GINSHIO_HOOKS_PRE_PUSH_EXTERNAL_SCRIPTS="scripts/ci-dry-run.py"
+    ```
+*   **Disable**: Explicit scripts participate in the exact same disable hierarchy natively via their script name. (e.g., disabling `scripts/lint.sh` during `pre-commit`):
+    ```bash
+    export GINSHIO_HOOKS_PRE_COMMIT_LINT_SH_DISABLE=true
+    ```
+
+### 5. Logging and Debugging
 Control log verbosity. Levels: `0` (OFF), `1` (ERROR), `2` (WARN, Default), `3` (INFO).
 
 *   **Env Var**: `GINSHIO_HOOKS_LOG_LEVEL`
