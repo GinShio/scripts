@@ -195,6 +195,19 @@ For example, if your branch is named `feature/PROJ-123-login`, the script will a
     git config --local hooks.ginshio.prepare-commit-msg.issue-tracker-default "GENERAL-001"
     ```
 
+### Polyglot Code Linter (`linter`)
+*Hook: pre-commit*
+Analyzes code for bugs exactly like `code-formatter` but purely for finding errors before compiling. Validates currently staged logic without enforcing noisy checks. 
+
+*   **Python**: Fast AST/semantic linting using `ruff` (fallback to `flake8`). Checks against the specific staged files.
+    *   **Enable**: `hooks.ginshio.pre-commit.python-lint-enabled` (boolean). Default: **true**.
+
+*   **Zig**: Utilizes purely native `zig ast-check` for blazingly fast syntactic verification that requires zero dependency resolution.
+    *   **Enable**: `hooks.ginshio.pre-commit.zig-lint-enabled` (boolean). Default: **true**.
+
+*   **Rust**: Automatically triggers a check (`cargo clippy -- -D warnings`). Note: Since Rust is heavily macro & dependency driven, it does require dependencies to be present, but falls back gracefully if rust is disabled or unavailable.
+    *   **Enable**: `hooks.ginshio.pre-commit.rust-lint-enabled` (boolean). Default: **true**.
+
 ## Directory Structure
 
 *   `hooks/core/`: Core library and runner.

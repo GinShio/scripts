@@ -1,0 +1,103 @@
+#!/bin/sh
+
+. "$HOOKS_DIR/core/lib.sh"
+
+# Polyglot Code Linter (Semantic and AST Checks)
+# 
+# Performs fast linting on staged files before commit. 
+# Replaces and combines: ruff/flake8, zig ast-check, cargo clippy.
+# Precision controls match `85-code-formatter` strategy.
+
+ENABLE_PYTHON=$(git config --bool hooks.ginshio.pre-commit.python-lint-enabled 2>/dev/null)
+ENABLE_ZIG=$(git config --bool hooks.ginshio.pre-commit.zig-lint-enabled 2>/dev/null)
+ENABLE_RUST=$(git config --bool hooks.ginshio.pre-commit.rust-lint-enabled 2>/dev/null)
+
+: "${ENABLE_PYTHON:=$([ "$ENABLE_PYTHON" != "false" ] && echo true || echo false)}"
+: "${ENABLE_ZIG:=$([ "$ENABLE_ZIG" != "false" ] && echo true || echo false)}"
+: "${ENABLE_RUST:=$([ "$ENABLE_RUST" != "false" ] && echo true || echo false)}"
+
+TMP_PY=$(mktemp)
+TMP_ZIG=$(mktemp)
+TMP_RUST=$(mktemp)
+
+# Collect staged files and categorize them safely (handles spaces in filenames)
+git diff --cached --name-only --diff-filter=ACM | while IFS= read -r file; do
+    if [ ! -f "$file" ]; then continue; fi
+    case "$file" in
+        *.py|*.pyi) echo "$file" >> "$TMP_PY" ;;
+        *.zig|*.zon) echo "$file" >> "$TMP_ZIG" ;;
+        *.rs) echo "1" >> "$TMP_RUST" ;;
+    esac
+done
+
+exit_code=0
+
+# Python Linter
+if is_truthy "$ENABLE_PYTHON" && [ -s "$TMP_PY" ]; then
+    if command -v ruff >/dev/null 2>&1; then
+        log_info "Linting Python files (ruff)..."
+        _OLD_IFS="$IFS"
+        IFS='
+'
+        set -f
+        # shellcheck disable=SC2046
+        if ! ruff check $(cat "$TMP_PY"); then
+            exit_code=1
+        fi
+        set +f
+        IFS="$_OLD_IFS"
+
+    elif command -v flake8 >/dev/null 2>&1; then
+        log_info "Linting Python files (flake8)..."
+        _OLD_IFS="$IFS"
+        IFS='
+'
+        set -f
+        # shellcheck disable=SC2046
+        if ! flake8 $(cat "$TMP_PY"); then
+            exit_code=1
+        fi
+        set +f
+        IFS="$_OLD_IFS"
+    else
+        log_warn "Python linter enabled but 'ruff' or 'flake8' not found."
+    fi
+fi
+
+# Zig Linter (AST Check)
+if is_truthy "$ENABLE_ZIG" && [ -s "$TMP_ZIG" ]; then
+    if command -v zig >/dev/null 2>&1; then
+        log_info "Linting Zig files (ast-check)..."
+        while IFS= read -r zfile; do
+             if ! zig ast-check "$zfile"; then
+                 exit_code=1
+             fi
+        done < "$TMP_ZIG"
+    else
+        log_warn "Zig linter enabled but 'zig' not found."
+    fi
+fi
+
+# Rust Linter (Cargo Clippy / Check)
+if is_truthy "$ENABLE_RUST" && [ -s "$TMP_RUST" ]; then
+    if command -v cargo >/dev/null 2>&1; then
+        # Note: Rust doesn't have a reliable single-file AST check without unstable flags that doesn't need deps.
+        # cargo check / clippy is the standard, though it checks the whole crate.
+        # To maintain the "fast fail" philosophy, we use `cargo check` or `cargo clippy`.
+        log_info "Linting Rust workspace (cargo clippy)..."
+        if ! cargo clippy -- -D warnings; then
+             exit_code=1
+        fi
+    else
+        log_warn "Rust linter enabled but 'cargo' not found."
+    fi
+fi
+
+rm -f "$TMP_PY" "$TMP_ZIG" "$TMP_RUST"
+
+if [ $exit_code -ne 0 ]; then
+    log_error "Linter checks failed. Please fix the errors before committing."
+    exit $exit_code
+fi
+
+exit 0
