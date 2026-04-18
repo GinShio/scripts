@@ -12,6 +12,15 @@ if systemctl list-unit-files | grep -q nginx.service; then
     systemctl enable --now nginx.service
 fi
 
+# Authentik (rootless podman-compose, system service)
+if systemctl list-unit-files | grep -q authentik.service; then
+    echo "Enabling Authentik..."
+    if systemctl is-active --quiet authentik; then
+        systemctl restart authentik
+    fi
+    systemctl enable --now authentik.service
+fi
+
 # Miniflux
 if systemctl list-unit-files | grep -q miniflux.service; then
     echo "Enabling Miniflux..."
