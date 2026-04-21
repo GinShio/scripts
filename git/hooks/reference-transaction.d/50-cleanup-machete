@@ -10,6 +10,16 @@
 # whenever a rebase/restack is interrupted, aborted, or conflicts arise.
 [ "$1" = "committed" ] || exit 0
 
+# When a rebase is aborted (git rebase --abort), git cleans up any refs that
+# were created during the rebase by issuing a 'committed' reference-transaction
+# with new-value=0000...  Those deletions are indistinguishable from a normal
+# 'git branch -D' at the hook level, so we guard against them here.
+# The rebase-merge/ and rebase-apply/ directories still exist at this point
+# (they are removed only after the abort is fully complete).
+if [ -d "$GIT_DIR/rebase-merge" ] || [ -d "$GIT_DIR/rebase-apply" ]; then
+    exit 0
+fi
+
 MACHETE_FILE="$GIT_COMMON_DIR/machete"
 if [ ! -f "$MACHETE_FILE" ]; then
     exit 0
@@ -27,7 +37,7 @@ while read -r old_val new_val ref_name; do
         case "$ref_name" in
             refs/heads/*)
                 branch_name="${ref_name#refs/heads/}"
-                DELETED_BRANCHES="$DELETED_BRANCHES $branch_name"
+                DELETED_BRANCHES="${DELETED_BRANCHES:+$DELETED_BRANCHES }$branch_name"
                 ;;
         esac
     fi
@@ -49,12 +59,12 @@ fi
 # Determine temp file
 TMP_FILE="${MACHETE_FILE}.tmp"
 
-awk -v deleted_list="$DELETED_BRANCHES " '
+awk -v deleted_list="$DELETED_BRANCHES" '
 BEGIN {
     # Parse deleted list into map
     n = split(deleted_list, d_arr, " ");
     for (i = 1; i <= n; i++) {
-        deleted[d_arr[i]] = 1;
+        if (d_arr[i] != "") deleted[d_arr[i]] = 1;
     }
     line_count = 0;
 }
