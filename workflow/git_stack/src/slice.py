@@ -1,16 +1,22 @@
-"""Interactive stack slicing module."""
+"""Interactive stack slicing via git rebase -i."""
 
 from __future__ import annotations
 
 import os
-import re
-import shlex
 import subprocess
 import sys
 import tempfile
-from typing import Dict, List, Optional, Tuple
+from contextlib import contextmanager
+from typing import Dict, Generator, List, Tuple
 
-from .git import get_config, get_refs_map, get_stack_prefix, run_git, slugify
+from .git import (
+    get_config,
+    get_current_branch,
+    get_refs_map,
+    get_stack_prefix,
+    run_git,
+    slugify,
+)
 from .machete import MacheteNode, parse_machete, write_machete
 
 
@@ -19,9 +25,8 @@ def get_stack_commits(base_branch: str) -> List[Tuple[str, str]]:
     out = run_git(["log", "--reverse", "--pretty=format:%H %s", f"{base_branch}..HEAD"])
     if not out:
         return []
-    lines = out.split("\n")
     commits = []
-    for line in lines:
+    for line in out.split("\n"):
         parts = line.split(" ", 1)
         if len(parts) == 2:
             commits.append((parts[0], parts[1]))
@@ -30,260 +35,308 @@ def get_stack_commits(base_branch: str) -> List[Tuple[str, str]]:
     return commits
 
 
-def launch_interactive_editor(
-    base_branch: str, commits: List[Tuple[str, str]]
-) -> Dict[str, str]:
+def _get_editor() -> str:
+    """Resolve editor following Git's own priority order."""
+    return (
+        os.environ.get("GIT_EDITOR")
+        or get_config("core.editor")
+        or os.environ.get("VISUAL")
+        or os.environ.get("EDITOR")
+        or "vim"
+    )
+
+
+def _build_todo_content(base_branch: str, commits: List[Tuple[str, str]]) -> str:
     """
-    Launch editor. Returns mapping of commit_hash -> branch_name.
+    Build rebase-todo content that matches git rebase -i format as closely as
+    possible.  Suggested branch assignments appear as commented-out update-ref
+    lines so the user only needs to uncomment the ones they want.
     """
     stack_prefix = get_stack_prefix()
+    n = len(commits)
 
-    instructions = f"""
-# Interactive Stack Slice
-#
-# Define branches for your stack ({base_branch}..HEAD).
-# The stack is displayed from oldest (top) to newest (bottom).
-#
-# Syntax:
-#   # <commit-hash> <subject>
-#   branch <name>
-#
-# Commands available:
-#   branch, b <name>  : Create/Update a branch pointing to the commit above
-#
-# Uncomment suggestion lines to quickly create branches.
-"""
-    initial_content = instructions + "\n"
-    for cm, subject in commits:
-        initial_content += f"# {cm} {subject}\n"
-        suggested_name = f"{stack_prefix}{slugify(subject)}"
-        initial_content += f"# branch {suggested_name}\n"
-        initial_content += "\n"
+    commit_lines: List[str] = []
+    for commit_hash, subject in commits:
+        suggested = f"{stack_prefix}{slugify(subject)}"
+        commit_lines.append(f"pick {commit_hash} {subject}")
+        commit_lines.append(f"# update-ref refs/heads/{suggested}")
+        commit_lines.append("")
 
-    # Editor resolution
-    editor = os.environ.get("GIT_EDITOR") or os.environ.get("EDITOR")
-    if not editor:
-        editor = get_config("core.editor", "vim")
+    base_short = run_git(["rev-parse", "--short", base_branch])
+    top_short = commits[-1][0][:11]
+    cmd_word = "command" if n == 1 else "commands"
+    footer = (
+        f"# Rebase {base_short}..{top_short} onto {base_short} ({n} {cmd_word})\n"
+        "#\n"
+        "# Commands:\n"
+        "# p, pick <commit> = use commit\n"
+        "# r, reword <commit> = use commit, but edit the commit message\n"
+        "# e, edit <commit> = use commit, but stop for amending\n"
+        "# s, squash <commit> = use commit, but meld into previous commit\n"
+        '# f, fixup [-C | -c] <commit> = like "squash" but keep only the previous\n'
+        "#                    commit's log message, unless -C is used, in which case\n"
+        "#                    keep only this commit's message; -c is same as -C but\n"
+        "#                    opens the editor\n"
+        "# x, exec <command> = run command (the rest of the line) using shell\n"
+        "# b, break = stop here (continue rebase later with 'git rebase --continue')\n"
+        "# d, drop <commit> = remove commit\n"
+        "# l, label <label> = label current HEAD with a name\n"
+        "# t, reset <label> = reset HEAD to a label\n"
+        "# m, merge [-C <commit> | -c <commit>] <label> [# <oneline>]\n"
+        "#         create a merge commit using the original merge commit's\n"
+        "#         message (or the oneline, if no original merge commit was\n"
+        "#         specified); use -c <commit> to reword the commit message\n"
+        "# u, update-ref <ref> = track a placeholder for the <ref> to be updated\n"
+        "#                       to this position in the new commits. The <ref> is\n"
+        "#                       updated at the end of the rebase\n"
+        "#\n"
+        "# These lines can be re-ordered; they are executed from top to bottom.\n"
+        "#\n"
+        "# If you remove a line here THAT COMMIT WILL BE LOST.\n"
+        "#\n"
+        "# However, if you remove everything, the rebase will be aborted.\n"
+        "#\n"
+        "# Uncomment 'update-ref refs/heads/<name>' lines above to assign branches.\n"
+        "# update-ref is safe for branches used by other worktrees or the current branch.\n"
+    )
 
-    with tempfile.NamedTemporaryFile(
-        suffix=".stack-slice", mode="w+", delete=False
-    ) as tf:
-        tf.write(initial_content)
-        temp_path = tf.name
+    return "\n".join(commit_lines) + "\n" + footer
 
+
+def _make_sequence_editor_script(
+    todo_content: str, editor: str, capture_path: str
+) -> str:
+    """
+    Generate a self-contained Python script for use as GIT_SEQUENCE_EDITOR.
+
+    Git calls it as:  <script> <todo-file-path>
+
+    The script replaces git's default todo with our custom content, then opens
+    the real editor.  After the editor closes, the final todo is copied to
+    ``capture_path`` so that the caller can parse the active ``update-ref``
+    lines without having to rely on ``base..HEAD`` after the rebase (which is
+    unreliable when the current branch appears as an intermediate update-ref
+    target).
+    """
+    return (
+        "#!/usr/bin/env python3\n"
+        "import subprocess, sys, shutil\n"
+        "\n"
+        "TODO_FILE = sys.argv[1]\n"
+        f"EDITOR = {editor!r}\n"
+        f"INITIAL_CONTENT = {todo_content!r}\n"
+        f"CAPTURE_PATH = {capture_path!r}\n"
+        "\n"
+        "with open(TODO_FILE, 'w') as f:\n"
+        "    f.write(INITIAL_CONTENT)\n"
+        "\n"
+        "subprocess.check_call(f'{EDITOR} {TODO_FILE}', shell=True)\n"
+        "\n"
+        "# Save final todo so the caller can read the active update-ref lines.\n"
+        "shutil.copy(TODO_FILE, CAPTURE_PATH)\n"
+    )
+
+
+@contextmanager
+def _temp_path(suffix: str) -> Generator[str, None, None]:
+    """Context manager that creates a temp file and deletes it on exit."""
+    fd, path = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
     try:
-        # Use simple shell execution for editor string (handles args like 'code --wait')
-        subprocess.check_call(f"{editor} {temp_path}", shell=True)
-        with open(temp_path, "r") as f:
-            lines = f.readlines()
+        yield path
     finally:
-        os.remove(temp_path)
-
-    # Parse result
-    commit_branch_map = {}
-    current_commit = None
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # Try to identify commit context line: "# <hash> <subject>"
-        # or just "# <hash> ..."
-        # Git short hash is usually >= 7 chars.
-        # Strict regex for our format: # [0-9a-f]{7,} .*
-
-        match_commit = re.match(r"^#\s+([0-9a-f]{7,40})\b", line)
-        if match_commit:
-            # Verify it's one of our stack commits to avoid parsing random comments
-            found_hash = match_commit.group(1)
-            full_commit = next(
-                (c for c, _ in commits if c.startswith(found_hash)), None
-            )
-            if full_commit:
-                current_commit = full_commit
-            continue
-
-        if line.startswith("#"):
-            continue
-
-        parts = line.split()
-        if not parts:
-            continue
-
-        cmd = parts[0]
-        if cmd in ("branch", "b") and len(parts) > 1:
-            if current_commit:
-                branch_name = parts[1]
-                commit_branch_map[current_commit] = branch_name
-            else:
-                print(
-                    f"Warning: 'branch' command found before any commit context: {line}"
-                )
-
-    return commit_branch_map
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
-def apply_slice(base_branch: str, commit_branch_map: Dict[str, str]) -> None:
+def _parse_todo_branches(todo_path: str) -> List[str]:
     """
-    Creates/Moves branches and updates machete file logic.
+    Parse active (non-commented) ``update-ref refs/heads/<name>`` lines from a
+    saved rebase-todo file and return branch names in the order they appear.
+
+    This is the authoritative source for which branches the user assigned and
+    in what commit order — independent of where HEAD or the current branch
+    ends up after the rebase.
     """
-    if not commit_branch_map:
-        print("No branches defined. Aborting.")
+    branches: List[str] = []
+    prefix = "update-ref refs/heads/"
+    try:
+        with open(todo_path, "r") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith(prefix):
+                    name = stripped[len(prefix) :].strip()
+                    if name:
+                        branches.append(name)
+    except OSError:
+        pass
+    return branches
+
+
+def _collect_stack_branches(base_branch: str) -> List[List[str]]:
+    """
+    After a successful rebase, scan base_branch..HEAD in oldest-first order
+    and collect local branches pointing to each commit.
+
+    Returns a list of groups, one group per commit that has at least one branch.
+    Within each group, non-current branches come first so they serve as the
+    primary chain nodes; the current branch (if present at the same commit)
+    comes last and becomes a sibling in the machete tree.
+
+    .. note::
+        This function is unreliable when the currently checked-out branch is
+        assigned as an intermediate update-ref target, because git may leave
+        HEAD at that branch's position, causing commits after it to fall
+        outside the ``base..HEAD`` scan range.  Prefer ``_parse_todo_branches``
+        when the saved TODO is available.
+    """
+    commits = get_stack_commits(base_branch)
+    if not commits:
+        return []
+
+    current_branch = get_current_branch()
+    refs: Dict[str, str] = get_refs_map()
+
+    # Inverted map: full_hash -> [branch, ...]  (base_branch excluded)
+    hash_to_branches: Dict[str, List[str]] = {}
+    for branch, sha in refs.items():
+        if branch == base_branch:
+            continue
+        hash_to_branches.setdefault(sha, []).append(branch)
+
+    groups: List[List[str]] = []
+    seen: set = set()
+    for commit_hash, _ in commits:
+        raw = [b for b in hash_to_branches.get(commit_hash, []) if b not in seen]
+        if not raw:
+            continue
+        for b in raw:
+            seen.add(b)
+        # Non-current branches first so the first entry drives the chain;
+        # current branch last so it becomes a sibling rather than a parent.
+        raw.sort(key=lambda b: (b == current_branch, b))
+        groups.append(raw)
+
+    return groups
+
+
+def _update_machete(base_branch: str, branch_groups: List[List[str]]) -> None:
+    """
+    Update .git/machete to reflect a stack rooted at base_branch.
+
+    branch_groups is a list of groups (one per commit position).  Within each
+    group every branch becomes a child of the same parent (i.e. siblings), so
+    that branches on the same commit are at the same indentation level.
+    The first branch in each group becomes the parent for the next group,
+    preserving the linear chain of the primary stack branches.
+    """
+    if not branch_groups:
         return
-
-    # 1. Create/Move Git Branches
-    for commit, branch_name in commit_branch_map.items():
-        print(f"Pointing {branch_name} to {commit[:7]}...")
-        run_git(["branch", "-f", branch_name, commit])
-
-    # 2. Update Machete (Smart Merge)
-    # Goal: Replace the subtree starting at 'base_branch' (or append it).
-    # But since we are defining a linear stack on top of base_branch, we want
-    # to find base_branch in the existing tree, remove its EXISTING children
-    # (that are part of the stack? or all?), and insert our new linear chain.
 
     existing_nodes = parse_machete()
-    all_roots = []
 
-    # ---------------------------------------------------------
-    # CLEANUP LOGIC: Identify and remove orphaned branches
-    # ---------------------------------------------------------
-    # We define the "scope" of the stack operation as the commits
-    # currently reachable from base_branch..HEAD (before we moved anything?
-    # No, we already moved branches in step 1. But the commits objects exist.)
-
-    # Actually, we already updated branches in Step 1.
-    # So 'commits' list below will reflect the NEW state if we query now?
-    # get_stack_commits uses `base_branch..HEAD`.
-    # HEAD is likely pointing to the top of the stack.
-    # If we created new branches, they point to these commits.
-    # If we abandoned old branches, they point to the SAME commits (or similar).
-
-    # To find orphans, we need to know which branches *used* to point to these commits
-    # AND were managed (in machete).
-    # Since we moved valid branches in Step 1, the valid ones are fine.
-    # The abandoned ones still point to their old commits (same hashes).
-
-    commits = get_stack_commits(base_branch)
-    scope_hashes = {c[0] for c in commits}
-
-    refs = get_refs_map()
-    candidate_branches = {b for b, sha in refs.items() if sha in scope_hashes}
-
-    # Only consider branches that were already known in Machete (managed branches)
-    # This prevents deleting random local branches user might have that happen to be here.
-    managed_candidates = candidate_branches.intersection(existing_nodes.keys())
-
-    new_active_branches = set(commit_branch_map.values())
-
-    orphans = managed_candidates - new_active_branches
-
-    # Exclude base_branch just in case
-    if base_branch in orphans:
-        orphans.remove(base_branch)
-
-    if orphans:
-        print(f"Cleaning up orphaned branches: {', '.join(orphans)}")
-        for orphan in orphans:
-            run_git(["branch", "-D", orphan], check=False)
-            # Remove from existing_nodes so we don't write it back
-            if orphan in existing_nodes:
-                del existing_nodes[orphan]
-    # ---------------------------------------------------------
-
-    # We need to reconstruct the list of roots to leverage write_machete logic
-    # or manipulate the dict. Manipulating dict is easier if we have links.
-
-    # Helper: Convert dict back to list of roots for safety?
-    # get_roots does that.
-
-    # Find base_branch node
-    base_node = existing_nodes.get(base_branch)
-
-    if not base_node:
-        # Base branch not in file. Create new root.
+    if base_branch not in existing_nodes:
         base_node = MacheteNode(base_branch)
         existing_nodes[base_branch] = base_node
-        # We need to know if this new node is a root. Yes.
-
-    # Identify the new branches we created (ordered)
-    # We must order them by commit age (oldest first) to form the chain
-    commits = get_stack_commits(base_branch)
-    new_chain_names = []
-    for c, s in commits:
-        if c in commit_branch_map:
-            new_chain_names.append(commit_branch_map[c])
-
-    if not new_chain_names:
-        return
-
-    # Remove existing children of base_node that conflict?
-    # Actually, we want to replace the path.
-    # If base_branch had children: A, B.
-    # And we are now saying base_branch -> New1 -> New2.
-    # Should we keep A and B as siblings of New1?
-    # Usually in a stack workflow, we are updating "The Stack".
-    # Assuming 'base_branch' (e.g. main) might have multiple stacks.
-    # But if we are "Slicing THIS stack", we might be replacing the old definition of THIS stack.
-
-    # Heuristic:
-    # 1. Build the new chain as MacheteNodes.
-    # 2. Add the first new node as a child of base_branch.
-    # 3. Warning: If base_branch already has this child, we reuse it?
-    #    If base_branch has OTHER children, we leave them alone (siblings).
-
-    # Let's handle logical updates.
-    # Base -> [OtherStack, OldBranch1 -> OldBranch2]
-    # We want Base -> [OtherStack, NewBranch1 -> NewBranch2]
-    # If NewBranch1 name == OldBranch1 name, we effectively update the subtree.
-
-    # Deduplicate chain names to prevent self-looping (A -> A)
-    # We only care about transitions.
-    # [A, A, B, B, C] -> [A, B, C]
-    unique_chain_names = []
-    if new_chain_names:
-        unique_chain_names.append(new_chain_names[0])
-        for name in new_chain_names[1:]:
-            if name != unique_chain_names[-1]:
-                unique_chain_names.append(name)
-
-    new_chain_names = unique_chain_names
+    base_node = existing_nodes[base_branch]
 
     current_parent = base_node
+    seen: set = set()
 
-    for branch_name in new_chain_names:
-        # Check if node exists anywhere in the tree already
-        existing_node = existing_nodes.get(branch_name)
+    for group in branch_groups:
+        # Drop duplicates while preserving order.
+        group = [b for b in group if b not in seen]
+        seen.update(group)
+        if not group:
+            continue
 
-        if existing_node:
-            node = existing_node
-            # Check if we need to reparent
-            if node.parent != current_parent:
-                # Detach from old parent
-                if node.parent:
-                    # Remove from old parent's children list
-                    if node in node.parent.children:
+        chain_head: MacheteNode | None = None  # first node in group → next parent
+
+        for branch_name in group:
+            existing_node = existing_nodes.get(branch_name)
+            if existing_node:
+                node = existing_node
+                if node.parent != current_parent:
+                    # Detach from old parent.
+                    if node.parent and node in node.parent.children:
                         node.parent.children.remove(node)
-
-                # Attach to new parent (if not already there - though we just checked !=)
+                    # Attach to new parent.
+                    node.parent = current_parent
+                    current_parent.children.append(node)
+            else:
+                node = MacheteNode(branch_name)
                 node.parent = current_parent
                 current_parent.children.append(node)
+                existing_nodes[branch_name] = node
 
-            # If parent is same, verify order? Machete list is ordered.
-            # But simplistic append is fine for now.
-            # If strict ordering is needed, we might need to remove and re-append to end,
-            # but usually slice defines the sequence.
+            if chain_head is None:
+                chain_head = node
 
-        else:
-            # Create new
-            node = MacheteNode(branch_name)
-            node.parent = current_parent
-            current_parent.children.append(node)
-            existing_nodes[branch_name] = node  # Update lookup
+        # The first (primary) branch at this commit is the parent for the
+        # next commit's branches.
+        current_parent = chain_head  # type: ignore[assignment]
 
-        current_parent = node
-
-    # Write back
     write_machete(existing_nodes)
-    print(f"Updated .git/machete.")
+
+
+def do_slice(base_branch: str) -> None:
+    """
+    Slice the current stack into branches using git rebase -i.
+
+    Workflow:
+      1. Scan base_branch..HEAD to build the initial rebase-todo.
+      2. Open the editor (via GIT_SEQUENCE_EDITOR) for the user to edit the
+         todo and uncomment desired ``update-ref refs/heads/<name>`` lines.
+      3. Let git execute the rebase; branch pointers are set by update-ref at
+         the end of the rebase (safe for worktrees and the current branch).
+      4. Scan the rebased commits to discover which branches are present, then
+         update .git/machete accordingly.
+    """
+    commits = get_stack_commits(base_branch)
+    if not commits:
+        print(f"No commits found between {base_branch} and HEAD.")
+        return
+
+    editor = _get_editor()
+    todo_content = _build_todo_content(base_branch, commits)
+
+    # capture_path outlives script_path, so it is the outer context manager.
+    with _temp_path(".slice-capture.todo") as capture_path:
+        script_content = _make_sequence_editor_script(
+            todo_content, editor, capture_path
+        )
+
+        with _temp_path(".slice-editor.py") as script_path:
+            with open(script_path, "w") as f:
+                f.write(script_content)
+            os.chmod(script_path, 0o755)
+
+            env = os.environ.copy()
+            env["GIT_SEQUENCE_EDITOR"] = script_path
+            result = subprocess.run(["git", "rebase", "-i", base_branch], env=env)
+        # script_path deleted here
+
+        if result.returncode != 0:
+            print("Rebase failed or was aborted.")
+            print("Run `git rebase --abort` if the rebase is still in progress.")
+            sys.exit(result.returncode)
+
+        # Use the saved TODO as the authoritative source of branch assignments.
+        # This avoids the ``base..HEAD`` scan which breaks when the current branch
+        # is assigned to an intermediate commit (git ignores update-ref for the
+        # checked-out branch, leaving HEAD at the wrong position).
+        todo_branches = _parse_todo_branches(capture_path)
+    # capture_path deleted here
+
+    if not todo_branches:
+        print("No update-ref lines found in todo — nothing to update in .git/machete.")
+        return
+
+    # Each branch from the todo is its own commit-position group (linear chain).
+    branch_groups = [[b] for b in todo_branches]
+    _update_machete(base_branch, branch_groups)
+    all_branches = todo_branches
+    print(f"Branches: {', '.join(all_branches)}")
+    print("Updated .git/machete.")

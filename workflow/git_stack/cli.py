@@ -5,7 +5,7 @@ import sys
 
 from .src.anno import annotate_stack
 from .src.git import get_current_branch, resolve_base_branch
-from .src.slice import apply_slice, get_stack_commits, launch_interactive_editor
+from .src.slice import do_slice
 from .src.sync import sync_stack
 
 
@@ -71,17 +71,8 @@ def main():
 
     if args.command == "slice":
         try:
-            # Use shared resolution logic (handles config, main/master fallback)
             base = resolve_base_branch(args.base)
-
-            commits = get_stack_commits(base)
-            if not commits:
-                print(f"No commits found between {base} and HEAD.")
-                sys.exit(0)
-
-            mapping = launch_interactive_editor(base, commits)
-            if mapping:
-                apply_slice(base, mapping)
+            do_slice(base)
         except Exception as e:
             print(f"Error: {e}")
             sys.exit(1)
