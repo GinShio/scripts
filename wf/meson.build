@@ -45,6 +45,11 @@ endif
 # ---------------------------------------------------------------------------
 # -fcompiler-rt bundles Zig's compiler-rt (provides __zig_probe_stack etc.)
 # so the final link with the system C driver works in all build modes.
+
+# We use meson subprojects for dependencies.
+zig_toml_dep = subproject('zig-toml')
+zig_toml_src = zig_toml_dep.get_variable('zig_toml_src', meson.current_source_dir() / 'subprojects/zig-toml/src/root.zig')
+
 wf_lib = custom_target('wf-lib',
     input: zig_sources,
     output: 'libwf.a',
@@ -53,10 +58,10 @@ wf_lib = custom_target('wf-lib',
         '-static',
         '-fcompiler-rt',
         zig_opt,
-        '@INPUT0@',
         '--name', 'wf',
-        '--cache-dir', meson.current_build_dir() / 'zig-cache',
-        '--global-cache-dir', meson.current_build_dir() / 'zig-global-cache',
+        '--dep', 'toml',
+        '-Mroot=@INPUT0@',
+        '-Mtoml=' + zig_toml_src,
         '-lc',
     ],
     build_by_default: false,
@@ -88,9 +93,10 @@ wf_exe = custom_target('wf',
 # ---------------------------------------------------------------------------
 test('zig-unit-tests', zig, 
     args: [
-        'test', files('src/main.zig'),
-        '--cache-dir', meson.current_build_dir() / 'zig-cache',
-        '--global-cache-dir', meson.current_build_dir() / 'zig-global-cache',
+        'test',
+        '--dep', 'toml',
+        '-Mroot=' + meson.current_source_dir() / 'src/main.zig',
+        '-Mtoml=' + zig_toml_src,
     ],
     workdir: meson.current_source_dir()
 )
