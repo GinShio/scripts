@@ -50,4 +50,5 @@ comptime {
     _ = @import("core/log.zig");
     _ = @import("core/config.zig");
     _ = @import("core/process.zig");
+    _ = @import("core/git.zig");
 }

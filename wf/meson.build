@@ -16,6 +16,7 @@ zig_sources = files(
     'src/cli.zig',
     'src/core/log.zig',
     'src/core/process.zig',
+    'src/core/git.zig',
     'src/core/config.zig',
     'src/cmd/builder.zig',
     'src/cmd/crypt.zig',
