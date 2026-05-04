@@ -18,6 +18,7 @@ zig_sources = files(
     'src/core/process.zig',
     'src/core/git.zig',
     'src/core/config.zig',
+    'src/core/crypto.zig',
     'src/cmd/builder.zig',
     'src/cmd/crypt.zig',
     'src/cmd/gpu.zig',
