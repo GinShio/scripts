@@ -12,6 +12,10 @@ sudo zypper in -y \
 sudo zypper in -y \
     7zip lz4 unzip zip zstd
 
+# Cryptographic & Hashing
+sudo zypper in -y \
+    b3sum
+
 # Network
 sudo zypper in -y \
     aria2 aria2-lang cifs-utils curl privoxy proxychains-ng qbittorrent-nox sshpass wget
