@@ -70,6 +70,14 @@ pub const Repository = struct {
         res.deinit();
     }
 
+    /// Unsets a git configuration value.
+    pub fn unsetConfig(self: *const Repository, key: []const u8) !void {
+        var c = self.cmd();
+        defer c.deinit();
+        const res = try c.arg("config").arg("--unset").arg(key).execCheck();
+        res.deinit();
+    }
+
     // -------------------------------------------------------------------------
     // Inspection & Status
     // -------------------------------------------------------------------------

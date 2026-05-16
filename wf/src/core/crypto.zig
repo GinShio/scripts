@@ -52,7 +52,7 @@ pub const EncryptOptions = struct {
     cipher: CipherAlgorithm = .aes_256_gcm,
     kdf: KdfAlgorithm = .pbkdf2,
     hash: HashAlgorithm = .sha256,
-    iterations: u32 = 99989, // Default to Python's PBKDF2 default
+    iterations: ?u32 = null,
     siv_mode: SivMode,
 };
 
@@ -60,10 +60,18 @@ pub const DecryptOptions = struct {
     cipher: CipherAlgorithm = .aes_256_gcm,
     kdf: KdfAlgorithm = .pbkdf2,
     hash: HashAlgorithm = .sha256,
-    iterations: u32 = 99989,
+    iterations: ?u32 = null,
     /// If provided, ensures the decrypted content matches this context
     verify_context: ?[]const u8 = null,
 };
+
+/// Returns the default iterations based on the KDF algorithm
+pub fn getDefaultIterations(kdf: KdfAlgorithm) u32 {
+    return switch (kdf) {
+        .pbkdf2 => 99989, // Matches transcrypt Python script default for backward compatibility
+        .argon2id => 4, // Standard secure default for Argon2id
+    };
+}
 
 // OpenSSL-compatible format constants used by the Python implementation
 pub const SALT_HEADER = "Salted__";
@@ -128,10 +136,11 @@ pub fn computeSivParams(
 ) !void {
     // 1. Algo Params (Length prefixed)
     // Format: digest_name:cipher_name:iterations:kdf_name
+    const iters = options.iterations orelse getDefaultIterations(options.kdf);
     const algo_params = try std.fmt.allocPrint(allocator, "{s}:{s}:{d}:{s}", .{
         getHashName(options.hash),
         getCipherName(options.cipher),
-        options.iterations,
+        iters,
         getKdfName(options.kdf),
     });
     defer allocator.free(algo_params);
@@ -210,26 +219,26 @@ pub fn deriveKey(
     const key = try allocator.alloc(u8, key_length);
     errdefer allocator.free(key);
 
+    const iters = options.iterations orelse getDefaultIterations(options.kdf);
+
     switch (options.kdf) {
         .pbkdf2 => {
             switch (options.hash) {
-                .sha256 => try std.crypto.pwhash.pbkdf2(key, password, salt, options.iterations, std.crypto.auth.hmac.sha2.HmacSha256),
-                .sha384 => try std.crypto.pwhash.pbkdf2(key, password, salt, options.iterations, std.crypto.auth.hmac.sha2.HmacSha384),
-                .sha512 => try std.crypto.pwhash.pbkdf2(key, password, salt, options.iterations, std.crypto.auth.hmac.sha2.HmacSha512),
+                .sha256 => try std.crypto.pwhash.pbkdf2(key, password, salt, iters, std.crypto.auth.hmac.sha2.HmacSha256),
+                .sha384 => try std.crypto.pwhash.pbkdf2(key, password, salt, iters, std.crypto.auth.hmac.sha2.HmacSha384),
+                .sha512 => try std.crypto.pwhash.pbkdf2(key, password, salt, iters, std.crypto.auth.hmac.sha2.HmacSha512),
                 // PBKDF2 requires an HMAC type, but zig std doesn't expose HMAC for SHA3 or Blake2 by default in the same namespace.
                 // We'll use standard HMAC builder for them.
-                .sha3_256 => try std.crypto.pwhash.pbkdf2(key, password, salt, options.iterations, std.crypto.auth.hmac.Hmac(std.crypto.hash.sha3.Sha3_256)),
-                .sha3_384 => try std.crypto.pwhash.pbkdf2(key, password, salt, options.iterations, std.crypto.auth.hmac.Hmac(std.crypto.hash.sha3.Sha3_384)),
-                .sha3_512 => try std.crypto.pwhash.pbkdf2(key, password, salt, options.iterations, std.crypto.auth.hmac.Hmac(std.crypto.hash.sha3.Sha3_512)),
-                .blake2b => try std.crypto.pwhash.pbkdf2(key, password, salt, options.iterations, std.crypto.auth.hmac.Hmac(std.crypto.hash.blake2.Blake2b384)),
-                .blake2s => try std.crypto.pwhash.pbkdf2(key, password, salt, options.iterations, std.crypto.auth.hmac.Hmac(std.crypto.hash.blake2.Blake2s256)),
+                .sha3_256 => try std.crypto.pwhash.pbkdf2(key, password, salt, iters, std.crypto.auth.hmac.Hmac(std.crypto.hash.sha3.Sha3_256)),
+                .sha3_384 => try std.crypto.pwhash.pbkdf2(key, password, salt, iters, std.crypto.auth.hmac.Hmac(std.crypto.hash.sha3.Sha3_384)),
+                .sha3_512 => try std.crypto.pwhash.pbkdf2(key, password, salt, iters, std.crypto.auth.hmac.Hmac(std.crypto.hash.sha3.Sha3_512)),
+                .blake2b => try std.crypto.pwhash.pbkdf2(key, password, salt, iters, std.crypto.auth.hmac.Hmac(std.crypto.hash.blake2.Blake2b384)),
+                .blake2s => try std.crypto.pwhash.pbkdf2(key, password, salt, iters, std.crypto.auth.hmac.Hmac(std.crypto.hash.blake2.Blake2s256)),
             }
         },
         .argon2id => {
-            // Map Python's iterations logic. If it is DEFAULT_ITERATIONS, use a sane Argon2 value.
-            // We use std.crypto.pwhash.argon2. Argon2 requires Memory/Lanes.
-            // In python, ARGON2_DEFAULT_ITERATIONS = 4, MEMORY = 131072, LANES = 2
-            const t_cost = if (options.iterations == 99989) 4 else options.iterations;
+            // Use resolved iterations
+            const t_cost = iters;
             const m_cost = 131072;
 
             // Standard zig argon2 has hardcoded lanes? Actually std.crypto.pwhash.argon2 handles it via options
