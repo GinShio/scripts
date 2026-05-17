@@ -1,2 +1,3 @@
-/.wraplock
-/zig-toml/
+*
+!/*.wrap
+!/packagefiles/

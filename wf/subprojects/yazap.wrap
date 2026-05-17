@@ -2,6 +2,7 @@
 url = https://github.com/prajwalch/yazap.git
 revision = v0.6.3
 depth = 1
+patch_directory = yazap
 
 [provide]
 yazap = yazap_dep

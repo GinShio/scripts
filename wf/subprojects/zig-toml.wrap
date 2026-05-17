@@ -2,3 +2,4 @@
 url = https://github.com/sam701/zig-toml.git
 revision = main
 depth = 1
+patch_directory = zig-toml
