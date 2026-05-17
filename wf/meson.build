@@ -51,6 +51,9 @@ endif
 zig_toml_dep = subproject('zig-toml')
 zig_toml_src = zig_toml_dep.get_variable('zig_toml_src', meson.current_source_dir() / 'subprojects/zig-toml/src/root.zig')
 
+yazap_dep = subproject('yazap')
+yazap_src = yazap_dep.get_variable('yazap_src', meson.current_source_dir() / 'subprojects/yazap/src/lib.zig')
+
 wf_lib = custom_target('wf-lib',
     input: zig_sources,
     output: 'libwf.a',
@@ -61,8 +64,10 @@ wf_lib = custom_target('wf-lib',
         zig_opt,
         '--name', 'wf',
         '--dep', 'toml',
+        '--dep', 'yazap',
         '-Mroot=@INPUT0@',
         '-Mtoml=' + zig_toml_src,
+        '-Myazap=' + yazap_src,
         '-lc',
     ],
     build_by_default: false,
@@ -96,8 +101,10 @@ test('zig-unit-tests', zig,
     args: [
         'test',
         '--dep', 'toml',
+        '--dep', 'yazap',
         '-Mroot=' + meson.current_source_dir() / 'src/main.zig',
         '-Mtoml=' + zig_toml_src,
+        '-Myazap=' + yazap_src,
     ],
     workdir: meson.current_source_dir()
 )

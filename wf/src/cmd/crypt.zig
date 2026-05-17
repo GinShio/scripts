@@ -3,6 +3,7 @@ const cli = @import("../cli.zig");
 const git = @import("../core/git.zig");
 const crypto = @import("../core/crypto.zig");
 const resolver = @import("../cli.zig");
+const yazap = @import("yazap");
 
 // Config struct holding the resolved encryption parameters
 const CryptConfig = struct {
@@ -88,90 +89,58 @@ fn resolveConfig(res: *const resolver.Resolver) !?CryptConfig {
     };
 }
 
-fn printCryptHelp() void {
-    const stdout = std.io.getStdOut().writer();
-    stdout.print(
-        \\Usage: wf crypt [options] <command> [args...]
-        \\
-        \\Options:
-        \\  -c, --context <name>   Encryption context (default: 'default')
-        \\
-        \\Commands:
-        \\  status               Show current configuration status
-        \\  clean [file]         (Internal) Encrypt data from stdin
-        \\  smudge [file]        (Internal) Decrypt data from stdin
-        \\  textconv <file>      (Internal) Decrypt file for diff preview
-        \\
-    , .{}) catch {};
+pub fn setup(cmd: *yazap.Command) anyerror!void {
+    var context_opt = yazap.Arg.singleValueOption("context", 'c', "Encryption context (default: 'default')");
+    context_opt.setValuePlaceholder("NAME");
+    try cmd.addArg(context_opt);
+
+    const status_cmd = yazap.Command.init(cmd.allocator, "status", "Show current configuration status");
+    try cmd.addSubcommand(status_cmd);
+
+    var clean_cmd = yazap.Command.init(cmd.allocator, "clean", "(Internal) Encrypt data from stdin");
+    try clean_cmd.addArg(yazap.Arg.positional("FILE", "File path context", null));
+    try cmd.addSubcommand(clean_cmd);
+
+    var smudge_cmd = yazap.Command.init(cmd.allocator, "smudge", "(Internal) Decrypt data from stdin");
+    try smudge_cmd.addArg(yazap.Arg.positional("FILE", "File path context", null));
+    try cmd.addSubcommand(smudge_cmd);
+
+    var textconv_cmd = yazap.Command.init(cmd.allocator, "textconv", "(Internal) Decrypt file for diff preview");
+    try textconv_cmd.addArg(yazap.Arg.positional("FILE", "File path to decrypt", null));
+    try cmd.addSubcommand(textconv_cmd);
 }
 
-pub fn execute(allocator: std.mem.Allocator, globals: cli.GlobalOptions, args: *std.process.ArgIterator) anyerror!void {
+pub fn execute(allocator: std.mem.Allocator, globals: cli.GlobalOptions, matches: yazap.ArgMatches) anyerror!void {
     _ = globals;
 
-    var context_name: []const u8 = "default";
-    var command: ?[]const u8 = null;
-    var file_arg: ?[]const u8 = null;
-
-    // Parse specific arguments
-    while (args.next()) |arg| {
-        if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--context")) {
-            if (args.next()) |ctx| {
-                context_name = ctx;
-            } else {
-                std.log.err("Option '--context' requires an argument.", .{});
-                return error.MissingArgument;
-            }
-        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            printCryptHelp();
-            return;
-        } else if (command == null) {
-            command = arg;
-        } else if (file_arg == null) {
-            file_arg = arg;
-        } else {
-            std.log.err("Unexpected argument: {s}", .{arg});
-            return error.InvalidArgument;
-        }
-    }
-
-    if (command == null) {
-        printCryptHelp();
-        return;
-    }
+    const context_name = matches.getSingleValue("context") orelse "default";
 
     // Try initializing Git Repository.
-    // If not in a git repo, repo_opt will be null.
     var repo_opt: ?git.Repository = null;
-    var cwd_buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
     if (std.fs.cwd().realpath(".", &cwd_buf)) |cwd| {
-        // Quick check if inside a git tree. Just running `git rev-parse --show-toplevel` would be safer,
-        // but for now, initializing git.Repository is fine. We will use it later for configs.
-        // Let's assume we are in git repo.
         repo_opt = git.Repository.init(allocator, cwd);
     } else |_| {}
 
-    // Initialize the Resolver
     var res_obj = resolver.Resolver.init(allocator, if (repo_opt) |*r| r else null, "transcrypt", context_name);
     defer res_obj.deinit();
 
-    const cmd = command.?;
-
-    if (std.mem.eql(u8, cmd, "status")) {
+    if (matches.subcommandMatches("status")) |_| {
         try executeStatus(allocator, &res_obj, context_name);
-    } else if (std.mem.eql(u8, cmd, "clean")) {
-        try executeClean(allocator, &res_obj, file_arg);
-    } else if (std.mem.eql(u8, cmd, "smudge")) {
-        try executeSmudge(allocator, &res_obj, file_arg);
-    } else if (std.mem.eql(u8, cmd, "textconv")) {
-        if (file_arg == null) {
+    } else if (matches.subcommandMatches("clean")) |sub_matches| {
+        try executeClean(allocator, &res_obj, sub_matches.getSingleValue("FILE"));
+    } else if (matches.subcommandMatches("smudge")) |sub_matches| {
+        try executeSmudge(allocator, &res_obj, sub_matches.getSingleValue("FILE"));
+    } else if (matches.subcommandMatches("textconv")) |sub_matches| {
+        if (sub_matches.getSingleValue("FILE")) |file_arg| {
+            try executeTextconv(allocator, &res_obj, file_arg);
+        } else {
             std.log.err("textconv requires a file argument.", .{});
             return error.MissingArgument;
         }
-        try executeTextconv(allocator, &res_obj, file_arg.?);
     } else {
-        std.log.err("Unknown crypt command: {s}", .{cmd});
-        printCryptHelp();
-        return error.UnknownCommand;
+        std.log.err("The 'crypt' command requires a subcommand.", .{});
+        std.process.exit(1);
     }
 }
 
@@ -193,7 +162,7 @@ fn executeStatus(allocator: std.mem.Allocator, res: *const resolver.Resolver, co
             try stdout.print("  Iterations: {d} ({s})\n", .{ iters, @tagName(cfg.iterations_str.source) });
         } else {
             const def_iters = crypto.getDefaultIterations(cfg.kdf);
-            try stdout.print("  Iterations: {d} (Default for {s})\n", .{ def_iters, @tagName(cfg.kdf_str.value) });
+            try stdout.print("  Iterations: {d} (Default for {s})\n", .{ def_iters, cfg.kdf_str.value });
         }
     } else {
         try stdout.print("  Password:   NOT SET\n", .{});

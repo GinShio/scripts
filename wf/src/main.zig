@@ -1,50 +1,63 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const log = @import("core/log.zig");
+const yazap = @import("yazap");
 
 // -----------------------------------------------------------------------------
 // Global Configuration
 // -----------------------------------------------------------------------------
-// We hook Zig's standard logging system to our custom logger.
-// This ensures that `std.log.info`, `std.log.err`, etc., (even from third-party
-// libraries) are correctly formatted and respect our global verbose/dry-run flags.
 pub const std_options: std.Options = .{
     .logFn = log.customLogFn,
-    .log_level = .debug, // Ensure all logs reach customLogFn, we filter them dynamically
+    .log_level = .debug,
 };
 
-/// The main entry point for the Unified Workflow CLI.
 pub fn main() !void {
-    // Initialize the General Purpose Allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Parse command line arguments
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
+    var app = yazap.App.init(allocator, "wf", "Unified Workflow CLI");
+    defer app.deinit();
 
-    // Skip the executable name
-    _ = args.skip();
+    var root = app.rootCommand();
+    root.setProperty(.help_on_empty_args);
 
-    // Parse global options and extract the subcommand
-    var global_opts = cli.GlobalOptions{};
-    const cmd_name = try cli.parseGlobalOptions(&args, &global_opts);
+    try root.addArg(yazap.Arg.booleanOption("verbose", 'v', "Enable verbose/debug logging"));
+    try root.addArg(yazap.Arg.booleanOption("dry-run", 'n', "Show what would be done without executing"));
 
-    // Initialize the logging state based on global options
+    var config_opt = yazap.Arg.singleValueOption("config", 'c', "Path to the TOML configuration file");
+    config_opt.setValuePlaceholder("PATH");
+    try root.addArg(config_opt);
+
+    // Register subcommands
+    for (cli.commands) |cmd_def| {
+        var subcmd = app.createCommand(cmd_def.name, cmd_def.description);
+        subcmd.setProperty(.help_on_empty_args);
+        try cmd_def.setup(&subcmd);
+        try root.addSubcommand(subcmd);
+    }
+
+    const matches = app.parseProcess() catch |err| {
+        std.log.err("Failed to parse arguments: {}", .{err});
+        std.process.exit(1);
+    };
+
+    const global_opts = cli.GlobalOptions{
+        .verbose = matches.containsArg("verbose"),
+        .dry_run = matches.containsArg("dry-run"),
+        .config_path = matches.getSingleValue("config"),
+    };
+
     log.init(global_opts.verbose, global_opts.dry_run);
 
-    // Route to the appropriate subcommand via the CLI registry
-    if (cmd_name) |cmd| {
-        try cli.executeCommand(allocator, cmd, global_opts, &args);
-    } else {
-        // No subcommand provided
-        cli.printHelp();
+    for (cli.commands) |cmd_def| {
+        if (matches.subcommandMatches(cmd_def.name)) |sub_matches| {
+            try cmd_def.execute(allocator, global_opts, sub_matches);
+            return;
+        }
     }
 }
 
-// This block ensures that `zig test src/main.zig` will discover and run
-// tests in all imported modules.
 comptime {
     _ = @import("cli.zig");
     _ = @import("core/log.zig");
