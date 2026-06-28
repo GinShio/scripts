@@ -1,60 +1,48 @@
-//! `wf` — Unified Workflow CLI
+//! `wf` — a single binary that collects personal workflow tools behind one
+//! command tree.
 //!
-//! Single binary wrapping multiple workflow tools previously implemented as
-//! independent Python scripts.  Written in Rust with Meson as the meta build
-//! system and Cargo for dependency management.
+//! The collection grows one subcommand at a time. Keeping everything in one
+//! binary (rather than a pile of scripts) buys a shared core, consistent flags,
+//! and a single thing to build and put on `$PATH`. Today the only inhabitant is
+//! `transcrypt`; the structure here is the whole extension story — add a module
+//! under `cmd/` and a match arm below.
 //!
-//! # Global flags
-//!
-//! | Flag | Effect |
-//! |---|---|
-//! | `-v, --verbose` | Enable `DEBUG`-level log output |
-//! | `-n, --dry-run` | Print what would be executed without running it |
-//! | `-c, --config <PATH>` | Explicit TOML v1.0 configuration file |
-//!
-//! # Subcommands
-//!
-//! | Command | Description |
-//! |---|---|
-//! | `wf build` | Branch-aware build orchestration |
-//! | `wf stack` | Stacked PR management and remote sync |
-//! | `wf gpu` | GPU test automation |
-//! | `wf remote` | Git remotes setup and mirroring |
-//! | `wf crypt` | Transparent file encryption for Git |
+//! There are two equivalent ways to invoke a tool, the way `mount` lets you
+//! write either `mount -t xfs` or `mount.xfs`: the umbrella form `wf foo` and
+//! the direct form `wf-foo` / `wf.foo` (or a bare `foo` symlink). Both run this
+//! one binary — the direct form is just a symlink whose name we read from
+//! `argv[0]` and splice back in as the subcommand. It costs nothing (a symlink,
+//! no second process) and a new command earns its direct form for free, because
+//! the applet names come straight from the subcommand list rather than a table
+//! we'd have to keep in sync.
 
-use clap::{Parser, Subcommand};
+use std::ffi::OsString;
 
-mod cli;
+use clap::{CommandFactory, Parser, Subcommand};
+
 mod cmd;
 mod core;
-
-use cli::GlobalOptions;
-
-// ---------------------------------------------------------------------------
-// CLI definition (clap derive)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Parser)]
 #[command(
     name = "wf",
     version,
-    about = "Unified Workflow CLI",
-    long_about = "High-performance, unified rewrite of the Python-based workflow script collection.",
-    // Show help when invoked without a subcommand.
-    arg_required_else_help = true,
+    about = "Personal workflow tools, collected behind one command.",
+    arg_required_else_help = true
 )]
 struct Cli {
-    /// Enable verbose / debug logging.
+    /// Show the individual git commands as they run.
     #[arg(short = 'v', long, global = true)]
     verbose: bool,
 
-    /// Show what would be done without executing any commands.
+    /// Print mutating commands instead of running them.
+    ///
+    /// Read-only queries still execute so control flow stays correct.
+    /// `transcrypt` itself only ever reads, so this currently has no visible
+    /// effect there; it lives at the top level because it is part of the
+    /// contract every future command inherits from the process layer.
     #[arg(short = 'n', long, global = true)]
     dry_run: bool,
-
-    /// Path to the TOML v1.0 configuration file.
-    #[arg(short = 'c', long, value_name = "PATH", global = true)]
-    config: Option<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -62,39 +50,89 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Branch-aware build orchestration.
-    Build(cmd::builder::BuildArgs),
-    /// Stacked PR management and remote synchronisation.
-    Stack(cmd::stack::StackArgs),
-    /// GPU test automation and environment management.
-    Gpu(cmd::gpu::GpuArgs),
-    /// Git remotes setup and mirroring.
-    Remote(cmd::remote::RemoteArgs),
-    /// Transparent file encryption for Git.
-    Crypt(cmd::crypt::CryptArgs),
+    /// Transparent file encryption driven by git's clean/smudge filters.
+    Transcrypt(cmd::transcrypt::TranscryptArgs),
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-
-    let global = GlobalOptions {
-        verbose: cli.verbose,
-        dry_run: cli.dry_run,
-        config_path: cli.config,
-    };
-
-    // Initialise the global logging and dry-run state.
-    core::log::init(global.verbose, global.dry_run);
+    let cli = parse_args();
+    core::log::init(cli.verbose, cli.dry_run);
 
     match &cli.command {
-        Commands::Build(args) => cmd::builder::run(&global, args),
-        Commands::Stack(args) => cmd::stack::run(&global, args),
-        Commands::Gpu(args) => cmd::gpu::run(&global, args),
-        Commands::Remote(args) => cmd::remote::run(&global, args),
-        Commands::Crypt(args) => cmd::crypt::run(&global, args),
+        Commands::Transcrypt(args) => cmd::transcrypt::run(args),
+    }
+}
+
+/// Parse the command line, honouring busybox-style invocation. When the program
+/// was run under an applet name, the subcommand is taken from `argv[0]` and the
+/// remaining arguments are parsed against it; otherwise this is the plain
+/// `wf <command>` path.
+fn parse_args() -> Cli {
+    let mut argv = std::env::args_os();
+    let prog = argv.next().unwrap_or_default();
+
+    match applet_from_prog(&prog.to_string_lossy()) {
+        Some(applet) => {
+            let spliced = [OsString::from("wf"), OsString::from(applet)]
+                .into_iter()
+                .chain(argv);
+            Cli::parse_from(spliced)
+        }
+        None => Cli::parse(),
+    }
+}
+
+/// Resolve the invoked program name to a subcommand, or `None` for the plain
+/// `wf` umbrella. A leading `wf-` or `wf.` is stripped, so `wf-foo`, `wf.foo`,
+/// and a bare `foo` symlink all resolve to the same applet; an unrecognised name
+/// falls through to the umbrella so it simply reports an unknown command.
+fn applet_from_prog(prog: &str) -> Option<String> {
+    let base = prog.rsplit(['/', '\\']).next().unwrap_or(prog);
+    if base == "wf" {
+        return None;
+    }
+    let stem = base
+        .strip_prefix("wf-")
+        .or_else(|| base.strip_prefix("wf."))
+        .unwrap_or(base);
+    Cli::command()
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_owned())
+        .find(|name| name == stem)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn umbrella_name_is_not_an_applet() {
+        assert_eq!(applet_from_prog("wf"), None);
+        assert_eq!(applet_from_prog("/usr/local/bin/wf"), None);
+    }
+
+    #[test]
+    fn dash_dot_and_bare_forms_all_resolve() {
+        for prog in ["wf-transcrypt", "wf.transcrypt", "transcrypt"] {
+            assert_eq!(
+                applet_from_prog(prog).as_deref(),
+                Some("transcrypt"),
+                "{prog}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_invoked_path_is_reduced_to_its_basename() {
+        assert_eq!(
+            applet_from_prog("/home/me/.local/bin/wf-transcrypt").as_deref(),
+            Some("transcrypt")
+        );
+    }
+
+    #[test]
+    fn unknown_names_fall_through_to_the_umbrella() {
+        assert_eq!(applet_from_prog("wf-bogus"), None);
+        assert_eq!(applet_from_prog("bogus"), None);
     }
 }

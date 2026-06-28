@@ -1,308 +1,63 @@
-# Core Library (`src/core/`)
-
-The `core` crate contains the foundational building-blocks shared by every
-`wf` subcommand.  Each module has a single, well-defined responsibility, and
-subcommands depend on it rather than duplicating logic.
-
----
-
-## Module overview
-
-| Module | Source | Purpose |
-|---|---|---|
-| `log` | `src/core/log.rs` | Global verbose/dry-run flags and custom `log::Log` implementation |
-| `process` | `src/core/process.rs` | Fluent subprocess builder (`Command`) with dry-run interception |
-| `git` | `src/core/git.rs` | Pure-CLI Git repository API |
-| `config` | `src/core/config.rs` | TOML v1.0 config loading with path resolution and deep merge |
-| `crypto` | `src/core/crypto.rs` | AEAD encryption/decryption with SIV and Python-compatible packet format |
-
----
-
-## `core::log`
-
-### Design
-
-A zero-dependency custom `log::Log` implementation backed by two global
-`AtomicBool` values:
-
-| Flag | CLI flag | Default |
-|---|---|---|
-| `VERBOSE` | `-v / --verbose` | `false` |
-| `DRY_RUN` | `-n / --dry-run` | `false` |
-
-Call `log::init(verbose, dry_run)` once in `main()` before any log macros
-fire.  Subsequent calls update the atomics (safe to call in tests).
-
-### Log format
-
-```
-[LEVEL] (scope) message
-```
-
-- `LEVEL` is always uppercase (`DEBUG`, `INFO`, `WARN`, `ERROR`).
-- `scope` is the last path segment of `record.target()`, omitted for the root
-  crate.
-- All output goes to **stderr** except dry-run lines which go to **stdout**
-  (so shell scripts can capture "what would run" cleanly).
-
-### Dry-run output
-
-```rust
-// Anywhere in the codebase:
-wf::core::log::dry_run("git push origin main");
-// stdout: [DRY-RUN] git push origin main
-```
-
----
-
-## `core::process`
-
-### `Command` builder
-
-```rust
-let result = Command::new("git")
-    .arg("rev-parse")
-    .arg("HEAD")
-    .force_run()        // bypass dry-run for read-only queries
-    .exec()?;
-
-println!("{}", result.stdout_trimmed());
-```
-
-| Method | Description |
-|---|---|
-| `arg(s)` / `args(iter)` | Append argument(s) |
-| `current_dir(path)` | Set working directory |
-| `env(k, v)` | Add environment variable override |
-| `force_run()` | Always execute, even during dry-run |
-| `exec()` | Capture stdout + stderr, return `CommandResult` |
-| `exec_check()` | Same as `exec()` but return `Err` on non-zero exit |
-| `stream()` | Inherit terminal stdio (for real-time output) |
-| `stream_check()` | Same as `stream()` but return `Err` on non-zero exit |
-
-### Dry-run behaviour
-
-When `is_dry_run()` is `true` and `force_run()` was _not_ called:
-
-1. The command is formatted and printed: `[DRY-RUN] git push origin main`
-2. A synthetic `CommandResult { exit_code: 0, stdout: "", stderr: "" }` is
-   returned — the real process is **never spawned**.
-
-### Error handling
-
-`ProcessError` has three variants:
-
-| Variant | When |
-|---|---|
-| `Spawn { program, source }` | The OS rejected the `spawn()` syscall |
-| `Failed { cmd, exit_code, stdout, stderr }` | Non-zero exit with `exec_check()` / `stream_check()` |
-| `Io(io::Error)` | Other I/O failures |
-
----
-
-## `core::git`
-
-### `Repository`
-
-```rust
-let repo = Repository::new("/path/to/repo");
-```
-
-All methods delegate to `git` sub-processes via `core::process::Command`.
-
-#### Configuration
-
-```rust
-repo.get_config("transcrypt.password")?   // → Option<String>
-repo.set_config("workflow.key", "value")?
-repo.unset_config("workflow.key")?
-```
-
-#### Status
-
-```rust
-repo.head_branch()?       // → Option<String>  (None in detached HEAD)
-repo.resolve_commit("HEAD")? // → Option<String>  (None for unborn branches)
-repo.is_dirty(true)?      // → bool  (include_untracked = true)
-repo.default_branch("origin")? // → Option<String>
-```
-
-#### Remotes
-
-```rust
-repo.list_remotes()?                                    // → Vec<String>
-repo.remote_url("origin")?                              // → Option<String>
-repo.remote_urls("origin", /* push */ true)?            // → Vec<String>
-repo.add_remote("upstream", "https://…")?
-repo.rename_remote("origin", "upstream")?
-repo.set_remote_url("origin", "https://…", true, true)? // push + add
-```
-
-#### Branches & stash
-
-```rust
-repo.create_branch("feature/foo", None)?
-repo.checkout("feature/foo", /* create */ false)?
-repo.stash(Some("WIP: in-progress"))?  // → bool (was anything stashed?)
-repo.stash_pop()?
-```
-
----
-
-## `core::config`
-
-### Path resolution
-
-`resolve_config_path(cli_path: Option<&str>) -> Option<PathBuf>`
-
-| Priority | Source |
-|---|---|
-| 1 | `cli_path` argument |
-| 2 | `WF_CONFIG` environment variable |
-| 3 | `wf.toml` in CWD |
-| 4 | `.wf.toml` in CWD |
-
-### `ConfigLoader`
-
-```rust
-#[derive(Debug, Default, Deserialize)]
-struct MyConfig {
-    toolchain: Option<String>,
-    max_jobs: Option<u32>,
-}
-
-let loader = ConfigLoader::new();
-let cfg: MyConfig = loader.load(Some("/custom/path.toml"))?;
-// or auto-resolve:
-let cfg: MyConfig = loader.load(None)?;
-```
-
-When the resolved path is a **directory**, all `*.toml` files are parsed in
-alphabetical order and deep-merged.  This enables a split-config pattern where
-users maintain separate files for different concerns:
-
-```
-config/
-  00-defaults.toml
-  10-toolchains.toml
-  20-targets.toml
-```
-
-### Deep merge rules
-
-| Type | Behaviour |
-|---|---|
-| Table/inline-table | Merged key-by-key recursively |
-| Array | Overlay replaces base |
-| Scalar (string, int, bool, …) | Overlay replaces base |
-
----
-
-## `core::crypto`
-
-### Packet format
-
-Every encrypted file is base64-encoded.  The raw binary layout is:
-
-```
-┌─────────────┬──────────┬──────────┬──────────┬──────────────────┬──────────┐
-│ "Salted__"  │  salt    │ "IVed__" │   iv     │   ciphertext     │   tag    │
-│   8 bytes   │  8 bytes │  6 bytes │ 12 bytes │    N bytes       │ 16 bytes │
-└─────────────┴──────────┴──────────┴──────────┴──────────────────┴──────────┘
-```
-
-This format is **byte-for-byte identical** to the Python `transcrypt` and Zig
-`wf crypt` implementations, ensuring existing encrypted repositories remain
-readable without re-encryption.
-
-### Supported algorithms
-
-| Category | Options | Default |
-|---|---|---|
-| Cipher | `aes-256-gcm`, `chacha20-poly1305` | `aes-256-gcm` |
-| KDF | `pbkdf2`, `argon2id` | `pbkdf2` |
-| Hash (for PBKDF2 HMAC and SIV) | `sha256`, `sha384`, `sha512`, `sha3256`, `sha3384`, `sha3512`, `blake2b`, `blake2s` | `sha256` |
-
-### Default iterations
-
-| KDF | Default | Reason |
-|---|---|---|
-| PBKDF2 | **99 989** | Matches legacy Python transcrypt for backward compatibility |
-| Argon2id | **4** (+ 128 MiB memory, 2 lanes) | OWASP-recommended baseline |
-
-### SIV (Synthetic IV) mode
-
-Deterministic encryption is critical for `git clean`/`smudge` filters: the
-same plaintext must always encrypt to the same ciphertext so that unchanged
-files do not produce spurious diffs.
-
-The SIV construction derives both salt and IV from a hash of the content:
-
-```
-algo_params = "{hash}:{cipher}:{iterations}:{kdf}"
-              e.g. "sha256:aes-256-gcm:99989:pbkdf2"
-
-H = Hash(
-      4BE(len(algo_params)) || algo_params || \x00 ||
-      4BE(len(password))    || password    || \x00 ||
-      4BE(len(context))     || context     || \x00 ||
-      plaintext
-    )
-
-iv   = H[0  .. 12]
-salt = H[12 .. 20]
-```
-
-The `context` (typically the file path) is also used as AEAD **Additional
-Data** (AAD).  Decrypting a file with the wrong path therefore fails
-authentication — preventing silent file-swap attacks.
-
-### API
-
-```rust
-use wf::core::crypto::{encrypt, decrypt, EncryptOptions, DecryptOptions, SivMode};
-
-// Encrypt
-let opts = EncryptOptions {
-    siv_mode: SivMode::LocalDeterministic { context: "secrets/key.pem".to_owned() },
-    ..Default::default()
-};
-let ciphertext_b64 = encrypt(plaintext, "my-password", &opts)?;
-
-// Decrypt
-let dec_opts = DecryptOptions {
-    verify_context: Some("secrets/key.pem".to_owned()),
-    ..Default::default()
-};
-let plaintext = decrypt(&ciphertext_b64, "my-password", &dec_opts)?;
-```
-
-### `CryptoError` variants
-
-| Variant | When |
-|---|---|
-| `AuthenticationFailed` | Wrong password, wrong AAD, or tampered ciphertext |
-| `IntegrityCheckFailed` | AEAD passed but SIV IV mismatch (content-level tampering) |
-| `MissingSaltHeader` | Packet does not start with `"Salted__"` |
-| `MissingIVHeader` | Packet missing `"IVed__"` after the salt |
-| `DataTooShort` | Packet too short to contain a valid IV + tag |
-| `DigestTooShort` | Selected hash produces fewer bytes than SIV requires |
-| `Kdf(msg)` | KDF parameter validation error (e.g. invalid Argon2 params) |
-| `Base64(err)` | Input is not valid standard base64 |
-
----
-
-## Dependency graph
-
-```
-main.rs
-  └── cli.rs              (GlobalOptions, Resolver, Commands)
-        ├── core/log.rs   ← no wf deps
-        ├── core/process.rs  ← uses log
-        ├── core/git.rs      ← uses process, log
-        ├── core/config.rs   ← uses log; serde + toml
-        └── core/crypto.rs   ← no wf deps; RustCrypto crates
-
-cmd/crypt.rs  ← uses cli, core/crypto, core/git
-cmd/builder.rs, cmd/stack.rs, cmd/gpu.rs, cmd/remote.rs  ← stubs
-```
+# The shared core
+
+`src/core/` holds the primitives the commands lean on. This document records
+*why* each one exists and the one decision in it that isn't obvious — the kind
+of thing that is invisible in the code and expensive to rediscover. For the
+mechanics, read the module; for the API, read the signatures.
+
+## `process` — running commands, with dry-run baked in
+
+These tools spend most of their time shelling out, and the thing that makes that
+fiddly is dry-run. `-n` should suppress anything that *changes* the world, but
+the read-only queries that decide what to do next must still run — otherwise a
+dry-run collapses into a no-op that reports nothing useful.
+
+That tension is the module's reason to exist. A command is built, and a
+read-only query opts out of the dry-run guard with `force_run`. Everything else
+is printed instead of executed when `-n` is on. The dry-run preview goes to
+stdout while logs go to stderr, so a plan can be captured cleanly.
+
+## `git` — driven through the CLI, deliberately
+
+The tempting alternative is libgit2. We don't, and the reason is fidelity rather
+than weight. A user's real git behaviour is the sum of their `~/.gitconfig`
+includes, conditional includes, credential helpers and SSH setup. libgit2
+reimplements a subset and drifts from the CLI in exactly the corners (includes,
+helpers) that config resolution depends on. Spawning the same `git` the user's
+shell runs means we read precisely what they would, with no second
+implementation to keep honest. A process spawn per query is free next to the
+work these commands actually do.
+
+The surface is intentionally tiny — just config reads, which is all the current
+commands need. It grows when a command needs it to, not before.
+
+## `cli` — layered config resolution
+
+A setting like the encryption password can live in an environment variable or in
+git config, and we want one predictable precedence order with no bootstrap loop
+(the resolver can't itself need config to find config).
+
+The subtle part is context isolation. A repository can hold several independent
+secret sets — `default`, `prod`, and so on. When a non-default context is active
+the resolver refuses to fall back to the bare, context-less key. Falling back
+would silently hand a `prod` operation the `default` password and encrypt data
+under the wrong key; the bare key is only consulted for the default context.
+
+## `crypto` — authenticated encryption shaped by git filters
+
+Two domain constraints drive everything here.
+
+**Compatibility.** Repositories already hold data encrypted by the earlier
+`transcrypt` tool. The packet layout, the algorithm-name spellings, and the
+default PBKDF2 iteration count are therefore a frozen wire format: reproduce them
+exactly or that data becomes unreadable. This is why a few constants look
+arbitrary — they are, and they can't change.
+
+**Determinism.** A clean filter runs on every `git add`. If encrypting unchanged
+content produced fresh randomness, git would see the file as modified forever.
+So the default mode derives salt and IV from the content itself: same input,
+same output, no phantom diffs. The cost is that identical plaintext is
+observably identical once encrypted — fine here, and the price of a filter that
+doesn't fight git. The derivation also folds in the file path as the AEAD's
+additional data, binding a ciphertext to its location so a moved blob fails to
+authenticate instead of silently decrypting.

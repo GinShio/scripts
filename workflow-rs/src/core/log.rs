@@ -1,71 +1,35 @@
-//! Global logging subsystem.
+//! Two process-wide switches and a logger that respects them.
 //!
-//! Provides a lean, zero-dependency custom [`log::Log`] implementation that
-//! surfaces the two global flags driving runtime behaviour across the entire
-//! application:
+//! Verbose and dry-run are flags every subcommand can be invoked with, but
+//! threading them through every call site is noise. They are genuinely global
+//! to a run, so they live in two atomics set once at startup.
 //!
-//! - **verbose** (`-v`) — enables `DEBUG`-level messages (filtered out by default).
-//! - **dry-run** (`-n`) — suppresses real side effects; commands print a
-//!   `[DRY-RUN]` banner to **stdout** instead of executing.
-//!
-//! # Initialisation
-//!
-//! Call [`init`] exactly once at program start (typically inside `main`) before
-//! any log macros or [`Command`][crate::core::process::Command] calls are made.
-//!
-//! ```no_run
-//! wf::core::log::init(/* verbose */ true, /* dry_run */ false);
-//! log::debug!("Debug message, visible because verbose=true");
-//! ```
-//!
-//! # Dry-run output
-//!
-//! Use the free function [`dry_run`] (or its format counterpart [`dry_run_fmt`])
-//! to emit what *would* be done.  Output goes to **stdout** so it can be
-//! captured by shell scripts:
-//!
-//! ```no_run
-//! wf::core::log::dry_run("git push origin main");
-//! // stdout: [DRY-RUN] git push origin main
-//! ```
+//! The split of streams is deliberate: ordinary log lines go to stderr, while
+//! the dry-run preview of a command goes to stdout. That way a script can do
+//! `wf ... -n | sh` (or just capture the plan) without log chatter polluting
+//! the output it cares about.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-
-// ---------------------------------------------------------------------------
-// Global state
-// ---------------------------------------------------------------------------
 
 static VERBOSE: AtomicBool = AtomicBool::new(false);
 static DRY_RUN: AtomicBool = AtomicBool::new(false);
 
-/// Returns `true` if verbose mode is active.
 #[inline]
 pub fn is_verbose() -> bool {
     VERBOSE.load(Ordering::Relaxed)
 }
 
-/// Returns `true` if dry-run mode is active.
 #[inline]
 pub fn is_dry_run() -> bool {
     DRY_RUN.load(Ordering::Relaxed)
 }
 
-// ---------------------------------------------------------------------------
-// Initialisation
-// ---------------------------------------------------------------------------
-
-/// Initialises the logging subsystem.
-///
-/// Sets the global verbose and dry-run flags, registers the custom logger, and
-/// configures the [`log`] crate's maximum level filter accordingly.
-///
-/// Calling this function more than once is safe — subsequent calls update the
-/// flags but are otherwise no-ops (the logger is only registered once).
+/// Wire up the flags and the logger. Safe to call repeatedly (tests do); the
+/// logger only registers once, later calls just re-set the flags.
 pub fn init(verbose: bool, dry_run: bool) {
     VERBOSE.store(verbose, Ordering::Relaxed);
     DRY_RUN.store(dry_run, Ordering::Relaxed);
 
-    // Ignore error: means the logger was already installed (e.g. in tests).
     let _ = log::set_logger(&WF_LOGGER);
     log::set_max_level(if verbose {
         log::LevelFilter::Debug
@@ -74,12 +38,7 @@ pub fn init(verbose: bool, dry_run: bool) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Logger implementation
-// ---------------------------------------------------------------------------
-
 struct WfLogger;
-
 static WF_LOGGER: WfLogger = WfLogger;
 
 impl log::Log for WfLogger {
@@ -95,18 +54,15 @@ impl log::Log for WfLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-
-        // Produce: "[LEVEL] (scope) message" mirroring the Zig format.
-        let level = record.level().as_str().to_uppercase();
-        let target = record.target();
-
-        // Trim the crate path prefix so the scope is short and readable.
-        let scope = target
+        // The module path is more noise than signal here; keep just the final
+        // segment as a short scope tag.
+        let scope = record
+            .target()
             .rsplit("::")
             .next()
             .filter(|s| *s != "wf")
             .unwrap_or("");
-
+        let level = record.level().as_str().to_uppercase();
         if scope.is_empty() {
             eprintln!("[{level}] {}", record.args());
         } else {
@@ -117,35 +73,25 @@ impl log::Log for WfLogger {
     fn flush(&self) {}
 }
 
-// ---------------------------------------------------------------------------
-// Dry-run helpers
-// ---------------------------------------------------------------------------
-
-/// Emits a `[DRY-RUN] <msg>` line to **stdout** when dry-run mode is active.
-///
-/// This is a no-op when dry-run mode is disabled, making it safe to call
-/// unconditionally inside command implementations.
+/// Emit the "would have run" line for a command. No-op unless dry-run is on,
+/// so callers don't have to guard it.
 pub fn dry_run(msg: &str) {
     if is_dry_run() {
         println!("[DRY-RUN] {msg}");
     }
 }
 
-/// Format-string variant of [`dry_run`].
-///
-/// # Example
-/// ```no_run
-/// wf::core::log::dry_run_fmt(format_args!("git commit -m {:?}", "Initial"));
-/// ```
-pub fn dry_run_fmt(args: std::fmt::Arguments<'_>) {
-    if is_dry_run() {
-        println!("[DRY-RUN] {args}");
-    }
+/// The verbose/dry-run flags are process-global, so any test that sets them and
+/// then observes the effect must run alone — otherwise a sibling test flipping
+/// the same flag mid-body makes both flaky. Such tests hold this guard for their
+/// duration. Poisoning is ignored: a panicking test still leaves the flags in a
+/// known state because every guarded test resets them on the way out.
+#[cfg(test)]
+pub(crate) fn test_flag_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -153,12 +99,10 @@ mod tests {
 
     #[test]
     fn init_sets_flags() {
+        let _guard = test_flag_guard();
         init(true, true);
-        assert!(is_verbose());
-        assert!(is_dry_run());
-
+        assert!(is_verbose() && is_dry_run());
         init(false, false);
-        assert!(!is_verbose());
-        assert!(!is_dry_run());
+        assert!(!is_verbose() && !is_dry_run());
     }
 }

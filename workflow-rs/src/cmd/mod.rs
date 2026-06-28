@@ -1,12 +1,8 @@
-//! Subcommand implementations.
+//! Subcommand implementations, one module per `wf <command>`.
 //!
-//! Each module corresponds to one `wf <subcommand>` entry point.  All
-//! subcommands receive [`GlobalOptions`][crate::cli::GlobalOptions] after the
-//! top-level flags have been parsed so they can consult the verbose/dry-run
-//! state.
+//! Right now `transcrypt` is the only command that exists. The umbrella binary
+//! is kept deliberately thin so that a new command is just a new module here
+//! plus one arm in `main`'s dispatch — there is no plugin machinery to learn,
+//! and nothing speculative is carried around for commands that don't exist yet.
 
-pub mod builder;
-pub mod crypt;
-pub mod gpu;
-pub mod remote;
-pub mod stack;
+pub mod transcrypt;

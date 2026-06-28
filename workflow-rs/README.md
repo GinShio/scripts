@@ -1,148 +1,64 @@
-# Unified Workflow CLI (`wf`)
+# `wf`
 
-A high-performance, unified rewrite of the Python-based workflow script
-collection in **Rust**, built with **Meson** + **Cargo**.
+A single binary that collects my personal workflow tools behind one command
+tree. The point of a collection (rather than a directory of loose scripts) is a
+shared core, consistent flags, and one thing to build and put on `$PATH`.
 
-## Subcommands
+The collection grows one subcommand at a time, and this repository only ever
+contains what is actually finished. Today that is:
 
-| Command | Former Python tool | Status |
-|---|---|---|
-| `wf build` | `builder` | Planned |
-| `wf stack` | `git_stack` | Planned |
-| `wf gpu` | `gputest` | Planned |
-| `wf remote` | `setup_remotes` | Planned |
-| `wf crypt` | `transcrypt` | Core complete; CLI wired |
-
-## Architecture
-
-```
-wf/
-├── Cargo.toml           # Rust dependency manifest
-├── meson.build          # Meta build system (invokes cargo)
-├── docs/
-│   ├── core.md          # Core library reference
-│   └── crypt.md         # wf crypt design & usage
-└── src/
-    ├── main.rs          # Binary entry point (clap CLI)
-    ├── cli.rs           # GlobalOptions, Resolver
-    ├── core/            # Shared library modules
-    │   ├── log.rs       # Logging & dry-run flags
-    │   ├── process.rs   # Subprocess builder
-    │   ├── git.rs       # Pure-CLI Git API
-    │   ├── config.rs    # TOML config loader
-    │   └── crypto.rs    # AEAD encrypt/decrypt (SIV)
-    └── cmd/             # Subcommand implementations
-        ├── builder.rs
-        ├── stack.rs
-        ├── gpu.rs
-        ├── remote.rs
-        └── crypt.rs
-```
-
-## Global flags
-
-| Flag | Description |
+| Command | Purpose |
 |---|---|
-| `-v, --verbose` | Enable debug logging |
-| `-n, --dry-run` | Print what would be executed; no side effects |
-| `-c, --config <PATH>` | Explicit TOML v1.0 configuration file |
+| [`wf transcrypt`](docs/transcrypt.md) | Transparent file encryption wired into git's clean/smudge filters |
+
+When the next tool lands it gets a row here and a module under `src/cmd/`; there
+is no plugin system to learn and nothing is carried around for commands that
+don't exist yet.
 
 ## Building
 
-### Prerequisites
-
-- [Rust](https://rustup.rs/) (stable, 1.75+)
-- [Meson](https://mesonbuild.com/) (1.0+)
-- [Ninja](https://ninja-build.org/)
-
-### Quick start
-
-```bash
-# 1. Set up the build directory
-meson setup build
-
-# 2. Compile
-meson compile -C build
-
-# 3. Run
-./build/wf --help
-```
-
-The Meson build delegates all Rust compilation to Cargo; the first build
-fetches crate dependencies from crates.io and may take a minute.
-
-### Development build (debug symbols, no optimisations)
-
-```bash
-meson setup build-debug --buildtype=debug
-meson compile -C build-debug
-```
-
-### Direct Cargo usage (faster iteration)
-
-```bash
-cargo build --release
-./target/release/wf --help
-```
-
-## Testing
-
-Unit tests live alongside their modules in `#[cfg(test)]` blocks.
-
-```bash
-# Via Meson (recommended for CI)
-meson test -C build
-
-# Via Cargo (faster during development)
+```sh
+cargo build --release   # binary at target/release/wf
 cargo test
 ```
 
-## Configuration
+## Invocation forms
 
-`wf` uses **TOML v1.0** exclusively.  The configuration file is resolved in
-this order:
+Any sub-tool `foo` can be called several equivalent ways:
 
-1. `-c <PATH>` CLI flag
-2. `WF_CONFIG` environment variable
-3. `wf.toml` in the current directory
-4. `.wf.toml` in the current directory
-
-When the resolved path is a **directory**, every `*.toml` file inside is
-merged in alphabetical order — later files override earlier ones.
-
-## Core library documentation
-
-See [`docs/core.md`](docs/core.md) for a detailed reference on every module
-in `src/core/`.
-
-## `wf crypt` — transparent file encryption
-
-See [`docs/crypt.md`](docs/crypt.md) for the full design, configuration
-resolution chain, and Git filter integration guide.
-
-### Quick example
-
-```bash
-# Encrypt a file (outputs base64 to stdout)
-echo "TOP SECRET" | wf crypt clean secrets/key.pem
-
-# Decrypt
-cat secrets/key.pem.enc | wf crypt smudge secrets/key.pem
+```sh
+wf foo ...     # umbrella form
+wf-foo ...     # direct form (a symlink to wf)
+wf.foo ...     # same thing with a dot
+foo ...        # or a bare name, your choice
 ```
 
-### Git filter integration
+The direct forms are just a symlink whose name `wf` reads from `argv[0]` and
+treats as the subcommand — so it's the same binary, no second process, no extra
+copy on disk. A leading `wf-` or `wf.` is stripped; pick whichever name you like
+at install time:
 
-```ini
-# .git/config
-[filter "transcrypt"]
-    clean   = wf crypt clean %f
-    smudge  = wf crypt smudge %f
-    required = true
-[diff "transcrypt"]
-    textconv = wf crypt textconv
+```sh
+ln -s wf ~/.local/bin/wf.foo
 ```
 
-```gitattributes
-# .gitattributes
-secrets/**  filter=transcrypt diff=transcrypt merge=transcrypt
-```
+A new command earns its direct forms automatically; nothing to register.
+
+## Global flags
+
+| Flag | Meaning |
+|---|---|
+| `-v`, `--verbose` | Show the underlying git commands as they run |
+| `-n`, `--dry-run` | Print mutating commands instead of running them (read-only queries still run) |
+
+`-n` has no visible effect on `transcrypt`, which only ever reads — it lives at
+the top level because it is part of the contract future, state-changing commands
+inherit from the process layer.
+
+## Design notes
+
+The reasoning behind the shared primitives — why git is driven through the CLI,
+why dry-run is shaped the way it is, why the crypto packet format is frozen —
+lives in [`docs/core.md`](docs/core.md), and in the module headers themselves.
+The comments throughout aim to explain *why* a thing is the way it is; the code
+is left to explain *what* it does.
