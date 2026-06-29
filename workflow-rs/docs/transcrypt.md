@@ -209,6 +209,12 @@ These two cases are treated very differently on purpose:
   the raw ciphertext through anyway — say, to unblock a checkout and investigate
   — set `TRANSCRYPT_ALLOW_RAW_FALLBACK=1`.
 
+A third case is content that isn't a transcrypt packet at all: a file matched by
+`.gitattributes` but committed before encryption was set up, or a binary blob.
+Decryption is never attempted on these — they're passed through untouched — so
+`git diff` and checkout keep working instead of aborting. Only a genuine packet
+under the wrong password trips the loud failure above.
+
 ## Troubleshooting
 
 | Symptom | Cause and fix |

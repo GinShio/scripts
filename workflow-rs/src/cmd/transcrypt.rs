@@ -123,11 +123,16 @@ fn resolve_crypto_config(
 }
 
 fn clean(resolver: &Resolver<'_>, file: Option<&str>) -> anyhow::Result<()> {
-    let (password, cipher, hash, kdf, iterations) = resolve_crypto_config(resolver)?;
-
     let mut plaintext = Vec::new();
     std::io::stdin().read_to_end(&mut plaintext)?;
 
+    // An empty file has nothing to protect; leaving it empty avoids turning it
+    // into a ciphertext blob and keeps us byte-compatible with the reference.
+    if plaintext.is_empty() {
+        return Ok(());
+    }
+
+    let (password, cipher, hash, kdf, iterations) = resolve_crypto_config(resolver)?;
     let opts = EncryptOptions {
         cipher,
         kdf,
@@ -138,24 +143,42 @@ fn clean(resolver: &Resolver<'_>, file: Option<&str>) -> anyhow::Result<()> {
         },
     };
     let ciphertext = crate::core::crypto::encrypt(&plaintext, &password, &opts)?;
-    let mut out = std::io::stdout();
-    out.write_all(ciphertext.as_bytes())?;
-    out.write_all(b"\n")?;
+    std::io::stdout().write_all(ciphertext.as_bytes())?;
+    std::io::stdout().write_all(b"\n")?;
     Ok(())
 }
 
 fn smudge(resolver: &Resolver<'_>, file: Option<&str>) -> anyhow::Result<()> {
-    // No password isn't an error here — it's the teammate-without-the-key case.
-    // Hand back the encrypted bytes verbatim so their checkout still completes.
-    let Ok((password, cipher, hash, kdf, iterations)) = resolve_crypto_config(resolver) else {
-        let mut passthrough = Vec::new();
-        std::io::stdin().read_to_end(&mut passthrough)?;
-        std::io::stdout().write_all(&passthrough)?;
-        return Ok(());
-    };
+    let mut data = Vec::new();
+    std::io::stdin().read_to_end(&mut data)?;
+    let recovered = recover(resolver, file, &data)?;
+    std::io::stdout().write_all(&recovered)?;
+    Ok(())
+}
 
-    let mut ciphertext_b64 = String::new();
-    std::io::stdin().read_to_string(&mut ciphertext_b64)?;
+fn textconv(resolver: &Resolver<'_>, file: &str) -> anyhow::Result<()> {
+    let data = std::fs::read(file)?;
+    let recovered = recover(resolver, Some(file), &data)?;
+    std::io::stdout().write_all(&recovered)?;
+    Ok(())
+}
+
+/// Turn stored bytes back into plaintext for smudge and textconv, which share
+/// exactly this logic. The guiding rule: never abort git over content we simply
+/// can't read. The one case we *do* fail on is a genuine packet under the wrong
+/// password — silently writing garbage there would be worse than stopping.
+fn recover(resolver: &Resolver<'_>, file: Option<&str>, data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    // Plaintext, binary, anything that isn't our packet: hand it back untouched.
+    // This is what lets `git diff` work on a not-yet-encrypted or binary file.
+    if !crate::core::crypto::is_encrypted(data) {
+        return Ok(data.to_vec());
+    }
+
+    // It is a packet, but no configured password is the benign "checkout without
+    // the key" case — leave it encrypted rather than failing the checkout.
+    let Ok((password, cipher, hash, kdf, iterations)) = resolve_crypto_config(resolver) else {
+        return Ok(data.to_vec());
+    };
 
     let opts = DecryptOptions {
         cipher,
@@ -165,35 +188,17 @@ fn smudge(resolver: &Resolver<'_>, file: Option<&str>) -> anyhow::Result<()> {
         verify_context: Some(file.unwrap_or("").to_owned()),
     };
 
-    match crate::core::crypto::decrypt(ciphertext_b64.trim(), &password, &opts) {
-        Ok(plaintext) => std::io::stdout().write_all(&plaintext)?,
+    // `is_encrypted` already proved the payload is valid base64, hence ASCII.
+    let ciphertext = std::str::from_utf8(data).unwrap_or_default().trim();
+    match crate::core::crypto::decrypt(ciphertext, &password, &opts) {
+        Ok(plaintext) => Ok(plaintext),
         Err(e) => {
-            // A wrong password means real data would be silently corrupted, so
-            // we stop — unless the operator has explicitly opted into writing
-            // the raw ciphertext through anyway.
             if std::env::var("TRANSCRYPT_ALLOW_RAW_FALLBACK").is_ok() {
-                log::warn!("decryption failed ({e}); writing raw content");
-                std::io::stdout().write_all(ciphertext_b64.as_bytes())?;
+                log::warn!("decryption failed ({e}); passing raw content through");
+                Ok(data.to_vec())
             } else {
-                return Err(e.into());
+                Err(e.into())
             }
         }
     }
-    Ok(())
-}
-
-fn textconv(resolver: &Resolver<'_>, file: &str) -> anyhow::Result<()> {
-    let (password, cipher, hash, kdf, iterations) = resolve_crypto_config(resolver)?;
-
-    let ciphertext_b64 = std::fs::read_to_string(file)?;
-    let opts = DecryptOptions {
-        cipher,
-        kdf,
-        hash,
-        iterations: Some(iterations),
-        verify_context: Some(file.to_owned()),
-    };
-    let plaintext = crate::core::crypto::decrypt(ciphertext_b64.trim(), &password, &opts)?;
-    std::io::stdout().write_all(&plaintext)?;
-    Ok(())
 }

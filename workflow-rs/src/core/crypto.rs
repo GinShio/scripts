@@ -429,6 +429,21 @@ pub fn decrypt(
     Ok(plaintext)
 }
 
+/// A cheap "is this even one of ours?" check for the git filters.
+///
+/// A file matched by `.gitattributes` is not necessarily encrypted: it may be
+/// plaintext committed before the filter existed, or a binary blob, or anything
+/// else. The filters use this to decide whether to attempt decryption at all,
+/// so that a non-packet is passed through untouched rather than aborting git's
+/// checkout or diff. We only peek at the header — proving it actually decrypts
+/// is decryption's job.
+pub fn is_encrypted(data: &[u8]) -> bool {
+    BASE64
+        .decode(data.trim_ascii())
+        .map(|decoded| decoded.starts_with(SALT_HEADER))
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
 // SIV parameter computation
 // ---------------------------------------------------------------------------
@@ -1110,6 +1125,22 @@ mod tests {
         assert!(matches!(
             HashAlgorithm::from_str("md5"),
             Err(CryptoError::UnsupportedHash(_))
+        ));
+    }
+
+    #[test]
+    fn is_encrypted_recognises_only_our_packets() {
+        // A real packet (trailing newline tolerated, as git may add one).
+        assert!(is_encrypted(REFERENCE_VECTOR.as_bytes()));
+        let mut with_newline = REFERENCE_VECTOR.as_bytes().to_vec();
+        with_newline.push(b'\n');
+        assert!(is_encrypted(&with_newline));
+
+        // Plaintext, binary, and valid-but-unrelated base64 are all "not ours".
+        assert!(!is_encrypted(b"# just a config comment\n"));
+        assert!(!is_encrypted(&[0xff, 0xfe, 0x00, 0x42])); // not UTF-8 / not base64
+        assert!(!is_encrypted(
+            &BASE64.encode(b"some other data").into_bytes()
         ));
     }
 }

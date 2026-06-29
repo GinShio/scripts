@@ -43,6 +43,29 @@ fn run(args: &[&str], env: &[(&str, &str)], unset: &[&str], stdin: &[u8]) -> Run
     }
 }
 
+/// Like [`run`], but for `textconv`, which reads a file off disk instead of
+/// stdin: write `contents` into a throwaway dir and point the command at it.
+fn run_textconv(file_name: &str, contents: &[u8], env: &[(&str, &str)]) -> Run {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(file_name), contents).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_wf"));
+    cmd.args(["transcrypt", "textconv", file_name])
+        .current_dir(dir.path())
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let output = cmd.output().unwrap();
+    Run {
+        success: output.status.success(),
+        stdout: output.stdout,
+    }
+}
+
 const PASSWORD: (&str, &str) = ("TRANSCRYPT_PASSWORD", "test-passphrase");
 
 #[test]
@@ -124,4 +147,55 @@ fn the_escape_hatch_forces_a_wrong_password_through() {
         out.stdout, cleaned.stdout,
         "raw ciphertext should pass through unchanged"
     );
+}
+
+// A file matched by .gitattributes isn't necessarily encrypted — it may be
+// plaintext committed before the filter, or binary. None of these should abort
+// git; they pass through so `git diff` / checkout still work.
+
+#[test]
+fn textconv_passes_plaintext_through() {
+    let contents: &[u8] = b"# a config comment\nkey = value\n";
+    let out = run_textconv("config.ini", contents, &[]);
+    assert!(out.success);
+    assert_eq!(out.stdout.as_slice(), contents);
+}
+
+#[test]
+fn textconv_passes_binary_through() {
+    let contents: &[u8] = &[0x00, 0xff, 0x80, 0x42, 0xfe];
+    let out = run_textconv("blob.bin", contents, &[]);
+    assert!(out.success);
+    assert_eq!(out.stdout.as_slice(), contents);
+}
+
+#[test]
+fn textconv_decrypts_an_encrypted_file() {
+    let plaintext: &[u8] = b"diff me please\n";
+    let cleaned = run(
+        &["transcrypt", "clean", "secret.txt"],
+        &[PASSWORD],
+        &[],
+        plaintext,
+    );
+    assert!(cleaned.success);
+
+    let out = run_textconv("secret.txt", &cleaned.stdout, &[PASSWORD]);
+    assert!(out.success);
+    assert_eq!(out.stdout.as_slice(), plaintext);
+}
+
+#[test]
+fn smudge_passes_binary_non_packet_through() {
+    // Even with a password set, content that isn't a packet (here: non-UTF-8
+    // bytes) is handed back as-is rather than crashing on the read.
+    let blob: &[u8] = &[0x00, 0x01, 0xff, 0xfe, 0x80, b'\n'];
+    let out = run(
+        &["transcrypt", "smudge", "secret.txt"],
+        &[PASSWORD],
+        &[],
+        blob,
+    );
+    assert!(out.success);
+    assert_eq!(out.stdout.as_slice(), blob);
 }
