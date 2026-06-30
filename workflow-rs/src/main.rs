@@ -22,6 +22,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 
 mod cmd;
 mod core;
+mod util;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -35,12 +36,13 @@ struct Cli {
     #[arg(short = 'v', long, global = true)]
     verbose: bool,
 
-    /// Print mutating commands instead of running them.
+    /// Print mutating actions instead of performing them.
     ///
-    /// Read-only queries still execute so control flow stays correct.
-    /// `transcrypt` itself only ever reads, so this currently has no visible
-    /// effect there; it lives at the top level because it is part of the
-    /// contract every future command inherits from the process layer.
+    /// Read-only queries still run, so control flow stays correct: a dry-run
+    /// still asks git and the forge what the world looks like in order to decide
+    /// what it *would* do, then prints the pushes, MR changes, and file writes
+    /// rather than carrying them out. (`transcrypt` only ever reads, so it shows
+    /// no effect; `stack` is where this earns its keep.)
     #[arg(short = 'n', long, global = true)]
     dry_run: bool,
 
@@ -52,6 +54,8 @@ struct Cli {
 enum Commands {
     /// Transparent file encryption driven by git's clean/smudge filters.
     Transcrypt(cmd::transcrypt::TranscryptArgs),
+    /// Manage a stack of branches as a set of merge requests.
+    Stack(cmd::stack::StackArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -60,6 +64,7 @@ fn main() -> anyhow::Result<()> {
 
     match &cli.command {
         Commands::Transcrypt(args) => cmd::transcrypt::run(args),
+        Commands::Stack(args) => cmd::stack::run(args),
     }
 }
 

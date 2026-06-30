@@ -1,0 +1,302 @@
+# `wf stack`
+
+Turn a chain of local branches into a set of merge requests that reviewers can
+actually navigate — and keep them in sync as you reshape the stack. You do the
+local work however you like (`git rebase`, `git-branchless`, plain commits);
+`wf stack` handles the remote half: pushing the branches, opening an MR for each
+against the right base, and writing a navigation block into every MR so a
+reviewer can walk the whole stack.
+
+> Terminology: GitHub calls it a *pull request*, GitLab a *merge request*. This
+> tool calls it an **MR** everywhere; on a GitHub repo the output just says "PR".
+
+## The mental model
+
+Three facts make up the state of a stack on the remote, and there is one verb
+for each. They are independent on purpose — run any one of them on its own, and
+re-run it freely; each only reconciles its own slice of the world.
+
+| Verb | Owns | Touches |
+|---|---|---|
+| `wf stack sync` | branch **content** on the remote | git only (push) |
+| `wf stack submit` | MR **existence** and **base** | the forge API |
+| `wf stack anno` | MR **descriptions** | the forge API |
+
+Plus one local authoring verb, `wf stack slice`, for cutting commits into the
+stack in the first place.
+
+The dependency tree itself lives in `.git/machete` (the same format
+`git-machete` uses): one branch per line, indentation meaning "sits on top of".
+
+```
+main
+    feature-api
+        feature-ui
+    feature-docs
+```
+
+Here `feature-api` and `feature-docs` both build on `main`; `feature-ui` builds
+on `feature-api`. You don't have to hand-write this file — `slice` generates it —
+but it is plain text and safe to edit.
+
+> For the precise rules — how scope is chosen on a fork, how forks render, what
+> happens when you add or remove a branch mid-stack — see the
+> [behaviour reference](stack/behavior.md). This guide stays at the
+> getting-things-done level.
+
+## One-time setup
+
+### A token for your forge
+
+Opening and editing MRs needs an API token. Put it in git config (per host is the
+most precise; a blanket key works too):
+
+```sh
+git config workflow.platform.github.com.token  ghp_xxx
+# or, less specific:
+git config workflow.platform.github.token       ghp_xxx
+git config workflow.platform.token              ghp_xxx
+```
+
+Or supply it through the environment, which always works and is handy on CI:
+
+```sh
+export GITHUB_TOKEN=ghp_xxx     # GITLAB_TOKEN / GITEA_TOKEN / CODEBERG_TOKEN
+```
+
+`sync` needs no token (it only pushes); `submit` and `anno` do.
+
+### Remotes: `origin` and `upstream`
+
+`wf stack` reads two remotes by role:
+
+- **`origin`** — where it pushes, and the source side of every MR. You need push
+  rights here.
+- **`upstream`** — the repository MRs merge *into*. Set this when you work on a
+  fork; leave it unset when you push and merge in the same repo (then `origin`
+  plays both parts).
+
+```sh
+git remote add origin   git@github.com:me/project.git
+git remote add upstream git@github.com:acme/project.git   # only if you forked
+```
+
+The forge (GitHub/GitLab/Gitea/Codeberg) is detected from the **upstream**
+URL — or `origin` when there's no upstream. A self-hosted instance behind a
+custom domain can be named explicitly:
+
+```sh
+git config workflow.platform.git.acme.com.service gitlab
+git config workflow.platform.git.acme.com.api-url https://git.acme.com/api/v4
+```
+
+## Building a stack with `slice`
+
+`slice` cuts the commits sitting on top of your base branch into named branches.
+It opens an interactive rebase todo seeded with your commits and a commented
+branch suggestion under each:
+
+```sh
+wf stack slice              # slices <base>..HEAD
+wf stack slice --base main
+```
+
+```
+pick a1b2c3d Add the API layer
+# update-ref refs/heads/me/add-the-api-layer
+
+pick d4e5f6a Wire up the UI
+# update-ref refs/heads/me/wire-up-the-ui
+```
+
+Uncomment the `update-ref` lines where you want a branch to start, save, and let
+the rebase finish. The branches are created at the end of the rebase (safe even
+for the branch you're on), and `.git/machete` is written to match. Branch-name
+suggestions use `workflow.branch-prefix` if set, otherwise a slug of your
+`user.name`, otherwise `stack/`.
+
+You don't *have* to use `slice` — any branches you create yourself and record in
+`.git/machete` work identically. And a branch that isn't in the file at all is
+treated as a one-branch stack (see [Single branches](#single-branches)).
+
+### Growing or reshaping an existing stack
+
+When you re-run `slice`, branches already in the stack come **pre-filled** in the
+todo (active, under their real names), so re-slicing preserves them — you only
+edit the lines you want to change.
+
+```sh
+# Append: you've added commits on top of a finished stack. Slice from the tip,
+# so only the new commits are in play; uncomment a name for each.
+wf stack slice --base feature-c
+
+# Insert/rebuild: slice from the line's base. The existing branches are already
+# active in order — just uncomment the new middle branch (and reorder commits as
+# needed). The downstream branch is moved under it automatically, no leftovers.
+wf stack slice
+```
+
+## The everyday loop
+
+After reworking your commits:
+
+```sh
+wf stack sync       # push every branch in the stack to origin
+wf stack submit     # open MRs that don't exist; fix bases that moved
+wf stack anno       # refresh the navigation block in each MR description
+```
+
+Run them in that order the first time; afterwards run whichever matches what
+changed. Reordered the stack but didn't touch code? `submit` alone fixes the MR
+bases. Just amended a commit? `sync` alone re-pushes.
+
+### Scope: which branches each verb touches
+
+By default a verb acts on the stack around the branch you're standing on, with
+one rule that's worth knowing:
+
+- **On a linear branch** (zero or one child): it acts on *that line of work* —
+  your ancestors, you, and the primary downstream chain. Sibling branches that
+  fork off elsewhere are left alone.
+- **On a fork-point** (two or more children): it acts on the *whole tree* you're
+  the root of — every branch below you, plus your ancestors.
+
+Pass `--all` to act on every stack recorded in `.git/machete`, regardless of
+where you're standing.
+
+```sh
+wf stack sync --all
+wf stack submit --all
+```
+
+The base branch (`main`/`master`/…) is never pushed and never gets an MR, but it
+does appear in the navigation chains so reviewers see the full lineage.
+
+### Drafts
+
+A mid-stack MR — one whose base is *another* branch, not the base branch — is
+opened as a **draft** by default, because it shouldn't be reviewed or merged
+before the change it sits on. The MR at the bottom of the stack (targeting the
+base branch) is opened ready. To open everything ready for review:
+
+```sh
+wf stack submit --no-draft
+```
+
+### MR title and body
+
+A new MR's title and body come from one of the branch's commits — the newest by
+default. Change which one:
+
+```sh
+wf stack submit --title-source first   # oldest commit instead
+```
+
+(Existing MRs are never re-titled; this only seeds creation.)
+
+## Single branches
+
+Not everything is a tall stack. A branch that isn't recorded in `.git/machete`
+is treated as its own one-node stack sitting on the base branch — so `sync` and
+`submit` work on an ordinary feature branch with zero setup:
+
+```sh
+git switch -c quick-fix
+# ... commit ...
+wf stack sync && wf stack submit
+```
+
+`anno` skips a lone branch: a single MR has no neighbours to navigate to.
+
+## Maintaining the stack structure
+
+`slice` writes the stack; `wf stack tree` is for editing it afterwards. Removing
+a branch never throws away what's stacked above it — its children splice up to
+its parent, and the next `submit` retargets their base.
+
+```sh
+wf stack tree prune              # drop entries whose branch no longer exists
+wf stack tree rm feature-b       # remove one branch (its children move up)
+wf stack tree rm feature-b --delete   # ...and delete the git branch too
+wf stack tree mv feature-c --onto main   # restack a branch (its substack moves with it)
+```
+
+`tree mv` updates the *shape* only; rebase the branch onto its new parent
+yourself for the code to match. It also creates the entry if the branch wasn't in
+the stack yet, so it doubles as "put this branch onto X".
+
+### Automating cleanup
+
+`tree prune` is the one to reach for in automation: it needs no branch names,
+is idempotent, and only drops branches whose ref is actually gone. There is no
+git hook for branch deletion (and `git maintenance` only runs its own built-in
+tasks), so the clean integrations are either to run it at the end of a
+branch-cleanup script:
+
+```sh
+git branch -d old-feature && wf stack tree prune
+```
+
+or on a timer (cron / systemd / launchd) the same way you'd schedule any
+periodic chore. Since it's a no-op when nothing dangles, running it often is
+harmless.
+
+## Previewing with `--dry-run`
+
+`-n`/`--dry-run` is global. It still reads from git and the forge to work out
+what it *would* do, then prints the pushes, MR creations, base changes, and
+description edits instead of performing them:
+
+```sh
+wf stack submit -n
+wf stack sync -n -v        # -v also shows the underlying git commands
+```
+
+## Invocation forms
+
+Like every `wf` tool, `stack` has direct forms via symlink — `wf-stack`,
+`wf.stack`, or a bare `stack` (see the top-level [README](../README.md)).
+
+## Configuration reference
+
+All keys live under git config's `workflow.*` namespace.
+
+| Setting | Key | Notes |
+|---|---|---|
+| Token (per host) | `workflow.platform.<host>.token` | Most specific; `<host>` is e.g. `github.com` |
+| Token (per service) | `workflow.platform.<service>.token` | `<service>` ∈ github, gitlab, gitea, codeberg |
+| Token (blanket) | `workflow.platform.token` | Last config fallback |
+| Token (env) | `GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITEA_TOKEN`, `CODEBERG_TOKEN` | Used when no config key matches |
+| Service override | `workflow.platform.<host>.service` | Name a self-hosted host's type |
+| API base override | `workflow.platform.<host>.api-url` | For self-hosted / enterprise endpoints |
+| Branch prefix | `workflow.branch-prefix` | `slice` name suggestions (default: slug of `user.name`, else `stack/`) |
+
+There is intentionally **no** base-branch config key: the base is resolved from
+the merge target's remote HEAD, then `main`/`master`/`trunk`. (A future
+`wf project` will supply it from project identity.)
+
+Per-run choices — drafts (`--no-draft`), title source (`--title-source`), force
+(`--force`), scope (`--all`) — are flags, not config, because they describe one
+invocation rather than a standing preference.
+
+## How it resolves things
+
+The short version: the **base branch** comes from the merge target's remote HEAD
+(`upstream`, else `origin`), then `main`/`master`/`trunk`; each **MR's base** is
+its parent in `.git/machete` (or the base branch at a root); a **cross-fork** MR
+expresses its head as `origin-owner:branch` (GitHub/Gitea — GitLab cross-project
+is unsupported). The full rules, including fork scope and dynamic edits, are in
+the [behaviour reference](stack/behavior.md).
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `no API token for …` | Set `workflow.platform.<host>.token` or the platform's `*_TOKEN` env var. |
+| `could not detect the forge for host '…'` | Self-hosted behind a custom domain: set `workflow.platform.<host>.service`. |
+| `submit` fails to create an MR ("head not found" or similar) | The branch isn't on `origin` yet — run `wf stack sync` first. |
+| A closed MR isn't reopened | Intended: a closed/merged MR at the current commit is left alone. Pass `--force` to recreate. |
+| `on the base branch '…'` | You're standing on `main`. Check out a stack branch (or use `--all`). |
+| `detached HEAD` | Check out a branch, or use `--all` to act on all recorded stacks. |
+| `could not determine the base branch` | No remote HEAD and no `main`/`master`/`trunk`. Create the branch or set the remote's HEAD (`git remote set-head origin -a`). |
+| `rebase did not complete` (from `slice`) | The interactive rebase was aborted or hit a conflict; finish or `git rebase --abort`, then retry. |

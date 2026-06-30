@@ -17,6 +17,12 @@ read-only query opts out of the dry-run guard with `force_run`. Everything else
 is printed instead of executed when `-n` is on. The dry-run preview goes to
 stdout while logs go to stderr, so a plan can be captured cleanly.
 
+There are two ways to run. The default captures stdout/stderr — the right thing
+for a query whose output we parse. The other inherits the terminal and returns
+only an exit code, for a command that *is* an interaction: anything that opens an
+editor or drives an interactive rebase must own the terminal, so capturing its
+output would break it. Both honour dry-run.
+
 ## `git` — driven through the CLI, deliberately
 
 The tempting alternative is libgit2. We don't, and the reason is fidelity rather
@@ -28,8 +34,18 @@ shell runs means we read precisely what they would, with no second
 implementation to keep honest. A process spawn per query is free next to the
 work these commands actually do.
 
-The surface is intentionally tiny — just config reads, which is all the current
-commands need. It grows when a command needs it to, not before.
+The surface grows strictly with what the commands need, and only ever has. It
+started as config reads; the stack tool added branch and ref reads, a commit-log
+range read (for MR titles), remote-URL reads, and one mutation — a
+force-with-lease push. The lease, not a bare force, is the deliberate bit: a
+stack is rewritten constantly so non-fast-forward pushes are the norm, but the
+lease still refuses to clobber a remote someone else moved.
+
+The larger git-hosting concerns — parsing remote URLs, detecting a forge,
+talking to its MR API — deliberately do *not* live in `core`. They sit in
+`util/` (`util::remote`, `util::forge`), because they carry real domain logic of
+their own and `core` is kept to the floor. See `docs/stack/design.md` for that
+layer's shape.
 
 ## `cli` — layered config resolution
 

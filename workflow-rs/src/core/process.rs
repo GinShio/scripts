@@ -29,6 +29,9 @@ pub enum ProcessError {
 pub struct CommandResult {
     pub exit_code: i32,
     pub stdout: String,
+    /// Captured stderr. Git puts its actual error text here, so keeping it lets
+    /// callers report *why* a push or fetch failed instead of a bare code.
+    pub stderr: String,
 }
 
 impl CommandResult {
@@ -49,6 +52,7 @@ pub struct Command {
     program: String,
     argv: Vec<String>,
     cwd: Option<PathBuf>,
+    env: Vec<(String, String)>,
     force_run: bool,
 }
 
@@ -59,6 +63,7 @@ impl Command {
             argv: vec![program.clone()],
             program,
             cwd: None,
+            env: Vec::new(),
             force_run: false,
         }
     }
@@ -74,6 +79,14 @@ impl Command {
 
     pub fn current_dir(&mut self, path: impl Into<PathBuf>) -> &mut Self {
         self.cwd = Some(path.into());
+        self
+    }
+
+    /// Set an environment variable for the child. Some programs only expose a
+    /// behaviour through the environment, with no equivalent flag to pass on the
+    /// command line, so configuring them at all requires this.
+    pub fn env(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
+        self.env.push((key.into(), value.into()));
         self
     }
 
@@ -108,6 +121,9 @@ impl Command {
         if let Some(cwd) = &self.cwd {
             cmd.current_dir(cwd);
         }
+        for (key, value) in &self.env {
+            cmd.env(key, value);
+        }
         cmd
     }
 
@@ -120,6 +136,7 @@ impl Command {
             return Ok(CommandResult {
                 exit_code: 0,
                 stdout: String::new(),
+                stderr: String::new(),
             });
         }
         if wf_log::is_verbose() {
@@ -139,7 +156,35 @@ impl Command {
         Ok(CommandResult {
             exit_code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8(output.stdout)?,
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
+    }
+
+    /// Run while inheriting the parent's stdio, returning only the exit code.
+    ///
+    /// Some commands *are* an interaction: they hand control to an editor or
+    /// pager and must own the terminal to function. Capturing their stdio (as
+    /// [`exec`](Command::exec) does) would starve that interaction of the
+    /// terminal it needs, so the two run paths stay separate rather than being
+    /// merged behind a flag. Dry-run is still honoured: a mutating interactive
+    /// command is described, not performed.
+    pub fn status(&self) -> Result<i32, ProcessError> {
+        if wf_log::is_dry_run() && !self.force_run {
+            wf_log::dry_run(&self.format_cmd());
+            return Ok(0);
+        }
+        if wf_log::is_verbose() {
+            log::debug!("running: {}", self.format_cmd());
+        }
+
+        let status = self
+            .build_std_command()
+            .status()
+            .map_err(|source| ProcessError::Spawn {
+                program: self.program.clone(),
+                source,
+            })?;
+        Ok(status.code().unwrap_or(-1))
     }
 }
 
