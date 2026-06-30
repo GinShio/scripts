@@ -77,6 +77,38 @@ pub struct NewMr {
     pub draft: bool,
 }
 
+/// Attributes layered onto an existing MR by `decorate`. Applied *additively*:
+/// the platform adds what's listed and never removes anything, so a project's own
+/// label/reviewer automation is never fought. The literal `@me` resolves to the
+/// authenticated user.
+#[derive(Debug, Clone, Default)]
+pub struct Attributes {
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+    pub reviewers: Vec<String>,
+}
+
+impl Attributes {
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty() && self.assignees.is_empty() && self.reviewers.is_empty()
+    }
+
+    /// A short, human description for dry-run / log lines.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.labels.is_empty() {
+            parts.push(format!("labels={:?}", self.labels));
+        }
+        if !self.assignees.is_empty() {
+            parts.push(format!("assignees={:?}", self.assignees));
+        }
+        if !self.reviewers.is_empty() {
+            parts.push(format!("reviewers={:?}", self.reviewers));
+        }
+        parts.join(" ")
+    }
+}
+
 /// The four primitives every platform must provide. The workflow verbs are
 /// written once against this trait; see the module note for why the surface is
 /// this small.
@@ -94,6 +126,11 @@ pub trait Forge: Send + Sync {
     fn create(&self, req: &NewMr) -> anyhow::Result<MergeRequest>;
     fn set_base(&self, id: &str, base: &str) -> anyhow::Result<()>;
     fn set_body(&self, id: &str, body: &str) -> anyhow::Result<()>;
+
+    /// Add labels/assignees/reviewers to an existing MR, additively and
+    /// best-effort: a sub-item that fails (an unknown label, a self-review the
+    /// platform forbids) is logged and skipped rather than aborting the rest.
+    fn apply_attributes(&self, id: &str, attrs: &Attributes) -> anyhow::Result<()>;
 }
 
 // ----------------------------------------------------------------------------
@@ -144,6 +181,34 @@ pub(crate) fn request(
         }
         Err(e) => Err(anyhow::anyhow!("request to {url} failed: {e}")),
     }
+}
+
+/// The literal a caller passes for "the authenticated user".
+pub(crate) const SELF_REF: &str = "@me";
+
+/// Replace any `@me` in `items` with the resolved name. Used by hosts that take
+/// usernames (GitHub, Gitea); GitLab resolves to a numeric id separately.
+pub(crate) fn resolve_self(items: &[String], me: &str) -> Vec<String> {
+    items
+        .iter()
+        .map(|item| {
+            if item == SELF_REF {
+                me.to_owned()
+            } else {
+                item.clone()
+            }
+        })
+        .collect()
+}
+
+/// Read one string field off `GET {api_base}/user`. The field name differs by
+/// platform (`login` on GitHub/Gitea), so it is passed in.
+pub(crate) fn current_user(api_base: &str, auth: &Auth, field: &str) -> anyhow::Result<String> {
+    let v = request("GET", &format!("{api_base}/user"), auth, None)?;
+    v[field]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("could not read the authenticated user"))
 }
 
 /// Percent-encode one URL component. Branch names carry `/`, cross-fork heads
@@ -224,9 +289,10 @@ pub fn detect(repo: &Repository, remotes: &Remotes) -> anyhow::Result<Box<dyn Fo
         ))),
         Service::GitLab => Ok(Box::new(gitlab::GitLab::new(
             target,
+            remotes.origin.clone(),
             token,
             api_url_override,
-        ))),
+        )?)),
         Service::Bitbucket | Service::Azure => {
             anyhow::bail!("{} support is not implemented yet", service.as_str())
         }
@@ -279,4 +345,28 @@ pub(crate) fn pick<'a>(
         .into_iter()
         .find(|mr| state.accepts(mr.state))
         .cloned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attributes_emptiness_and_summary() {
+        assert!(Attributes::default().is_empty());
+        let a = Attributes {
+            labels: vec!["bug".into()],
+            assignees: vec!["@me".into()],
+            reviewers: vec![],
+        };
+        assert!(!a.is_empty());
+        let s = a.summary();
+        assert!(s.contains("labels") && s.contains("assignees") && !s.contains("reviewers"));
+    }
+
+    #[test]
+    fn resolve_self_replaces_only_the_marker() {
+        let out = resolve_self(&["@me".into(), "alice".into()], "russell");
+        assert_eq!(out, ["russell", "alice"]);
+    }
 }

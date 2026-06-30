@@ -192,6 +192,13 @@ mod tests {
         fn set_body(&self, _id: &str, _body: &str) -> anyhow::Result<()> {
             Ok(())
         }
+        fn apply_attributes(
+            &self,
+            _id: &str,
+            _attrs: &crate::util::forge::Attributes,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     fn mr(base: &str, sha: Option<&str>, state: MrState) -> MergeRequest {

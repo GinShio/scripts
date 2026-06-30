@@ -57,14 +57,19 @@ intents.
 wf stack sync    [scope]   # push branches to origin (git only; no forge)
 wf stack submit  [scope]   # reconcile MRs: create missing, fix drifted bases
 wf stack anno    [scope]   # rewrite MR descriptions with stack navigation
+wf stack decorate [branch] # add labels/assignees/reviewers to an MR (additive)
 wf stack slice  [--base B] # interactively cut HEAD's commits into a stack
 wf stack tree   {prune|rm|mv}  # direct edits to the stack's structure
 ```
 
+`decorate` is single-MR by default (attributes differ per MR; `--all` applies one
+set across the stack) and additive-only, so it never fights a project's own
+label/reviewer automation — see [`behavior.md`](behavior.md) §7.
+
 `tree` is a separate group on purpose: `prune`/`rm`/`mv` change *what the stack
 is* (structure edits to `.git/machete`), as opposed to the four verbs that *act
 on* it. Their behaviour — and the splice-up rule that keeps a removal from
-destroying the line above it — is specified in [`behavior.md`](behavior.md) §8.
+destroying the line above it — is specified in [`behavior.md`](behavior.md) §9.
 
 - **`sync` — push.** Force-with-lease push of every in-scope branch to `origin`
   (§6), and nothing else. It touches git only and never the forge; that is what
@@ -213,8 +218,11 @@ Two remotes carry distinct meaning and we make both first-class:
   collapses to `origin` (you are working directly on the repo you'll merge into).
 
 The forge to talk to is determined by the **upstream** URL (that is where the MR
-lives). When origin and upstream have different owners, the MR head is expressed
-as `origin_owner:branch` — the standard cross-fork form on GitHub/Gitea.
+lives). When origin and upstream differ, the MR crosses a fork: GitHub/Gitea
+express that with an `origin_owner:branch` head, while GitLab needs its
+cross-project dance (create on the source project with a numeric
+`target_project_id`; the MR then lives in the target, where reads and edits go).
+The forge layer hides this — the verbs never know whether a fork is involved.
 
 ### 7.2 URL parsing and detection (`util::remote`)
 
@@ -277,9 +285,11 @@ does, do not silently recreate it — recreate only when its head SHA differs fr
 our local tip, or when the user passes `--force`. (The branch was likely merged
 and is being reused; recreating blindly spams the forge.)
 
-Known limitation: **cross-fork MRs on GitLab** need source/target project IDs,
-not the `owner:branch` head trick. v1 supports same-owner stacks (the main case)
-and documents this gap; see §12.
+**Cross-fork on GitLab** is handled inside the GitLab module: because it cannot
+use the `owner:branch` head trick, it resolves the numeric source/target project
+ids once, creates the MR on the source project with `target_project_id`, and does
+every read/edit against the target project (where the MR resides). Same-project
+stacks skip all of that and pay no extra request.
 
 ### 7.4 Transport and credentials
 
@@ -349,7 +359,6 @@ preference.
 
 - **future** `project`-subcommand integration: derive base/main branch (and more)
   from a source path once that tool exists (§5.1).
-- **future** Cross-fork MRs on GitLab (project-id based) (§7.3).
 - **future** Bitbucket / Azure forge impls — the trait is meant to make these
   pure mapping work (§7.3).
 - **future** CI status read-back into the annotation block.

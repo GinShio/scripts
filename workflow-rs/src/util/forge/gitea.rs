@@ -8,7 +8,12 @@
 
 use serde_json::{json, Value};
 
-use super::{pick, request, Auth, Forge, MergeRequest, MrState, NewMr, StateFilter};
+use std::collections::HashMap;
+
+use super::{
+    current_user, pick, request, resolve_self, Attributes, Auth, Forge, MergeRequest, MrState,
+    NewMr, StateFilter, SELF_REF,
+};
 use crate::util::remote::RemoteInfo;
 
 const WIP_PREFIX: &str = "WIP: ";
@@ -46,6 +51,46 @@ impl Gitea {
 
     fn pulls_url(&self) -> String {
         format!("{}/repos/{}/pulls", self.api_base, self.project)
+    }
+
+    fn repo_url(&self) -> String {
+        format!("{}/repos/{}", self.api_base, self.project)
+    }
+
+    fn resolve_users(&self, items: &[String]) -> anyhow::Result<Vec<String>> {
+        if items.iter().any(|i| i == SELF_REF) {
+            let me = current_user(&self.api_base, &self.auth, "login")?;
+            Ok(resolve_self(items, &me))
+        } else {
+            Ok(items.to_vec())
+        }
+    }
+
+    /// Gitea attaches labels by numeric id, so names have to be looked up against
+    /// the repo's label set first.
+    fn label_ids(&self, names: &[String]) -> anyhow::Result<Vec<i64>> {
+        let v = request(
+            "GET",
+            &format!("{}/labels?limit=100", self.repo_url()),
+            &self.auth,
+            None,
+        )?;
+        let by_name: HashMap<&str, i64> = v
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| Some((l["name"].as_str()?, l["id"].as_i64()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut ids = Vec::new();
+        for name in names {
+            match by_name.get(name.as_str()) {
+                Some(id) => ids.push(*id),
+                None => log::warn!("label '{name}' does not exist in this repo"),
+            }
+        }
+        Ok(ids)
     }
 }
 
@@ -118,4 +163,55 @@ impl Forge for Gitea {
         request("PATCH", &url, &self.auth, Some(&json!({ "body": body })))?;
         Ok(())
     }
+
+    fn apply_attributes(&self, id: &str, attrs: &Attributes) -> anyhow::Result<()> {
+        let issue = format!("{}/issues/{}", self.repo_url(), id);
+
+        if !attrs.labels.is_empty() {
+            let ids = self.label_ids(&attrs.labels)?;
+            if !ids.is_empty() {
+                // POST adds to the issue's labels without replacing them.
+                let body = json!({ "labels": ids });
+                if let Err(e) = request("POST", &format!("{issue}/labels"), &self.auth, Some(&body))
+                {
+                    log::warn!("labels: {e}");
+                }
+            }
+        }
+        if !attrs.assignees.is_empty() {
+            // Gitea's issue edit replaces assignees, so union with the current set
+            // to keep this additive.
+            let wanted = self.resolve_users(&attrs.assignees)?;
+            let mut union = current_logins(&request("GET", &issue, &self.auth, None)?);
+            for name in wanted {
+                if !union.contains(&name) {
+                    union.push(name);
+                }
+            }
+            let body = json!({ "assignees": union });
+            if let Err(e) = request("PATCH", &issue, &self.auth, Some(&body)) {
+                log::warn!("assignees: {e}");
+            }
+        }
+        if !attrs.reviewers.is_empty() {
+            let body = json!({ "reviewers": self.resolve_users(&attrs.reviewers)? });
+            let url = format!("{}/{}/requested_reviewers", self.pulls_url(), id);
+            if let Err(e) = request("POST", &url, &self.auth, Some(&body)) {
+                log::warn!("reviewers: {e}");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The `login` of each assignee currently on an issue/PR JSON object.
+fn current_logins(issue: &Value) -> Vec<String> {
+    issue["assignees"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|u| u["login"].as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }

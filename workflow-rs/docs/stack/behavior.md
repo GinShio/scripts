@@ -222,7 +222,40 @@ main -> A -> B(fork) -> C(fork) -> E
 
 ---
 
-## 7. `slice`
+## 7. `decorate`
+
+Add labels, assignees, and reviewers to MRs — additively, and per MR.
+
+Attributes differ from one MR to the next, so this verb is **single-MR by
+default**: it acts on the named branch (or the current one). `--all` applies the
+*same* set across the whole in-scope stack, for a uniform label like `stacked`.
+Per-branch differences are expressed by running it once per branch with that
+branch's flags — typically from a per-repo script; the tool keeps no defaults and
+reads no config. Flags `--label` / `--assignee` / `--reviewer` are each
+repeatable, and `@me` resolves to the authenticated user; at least one is
+required.
+
+Semantics:
+
+- **Additive and idempotent.** It only adds what you list and never removes
+  anything, so a project's own label/reviewer automation is never clobbered and
+  re-running is safe.
+- **Best-effort.** A sub-item that fails — an unknown label, a self-review the
+  platform forbids — is logged and skipped; the rest still apply.
+- Unlike `anno`, it does **not** skip a standalone branch: a lone MR still wants
+  labels.
+
+Per platform, hidden behind `apply_attributes`:
+
+- **GitHub** uses add-only endpoints (issue labels/assignees, requested
+  reviewers) — naturally additive, no read-merge.
+- **GitLab** uses `add_labels` for labels; assignees/reviewers are id lists with
+  no add verb, so it reads the current ids and unions ours in. Usernames (and
+  `@me`) resolve to numeric ids.
+- **Gitea** resolves label names to ids and uses add-only label/reviewer
+  endpoints; assignees are unioned through an issue edit.
+
+## 8. `slice`
 
 Cut the commits on top of a base into named branches, by driving `git rebase -i`
 with a sequence editor that seeds the todo with each commit and an `update-ref`
@@ -279,7 +312,7 @@ want to change.
 
 ---
 
-## 8. Editing the structure (`wf stack tree`)
+## 9. Editing the structure (`wf stack tree`)
 
 `slice` builds the forest from a rebase; `tree` is the set of direct edits for
 everything else. The rule shared by all of them: **removing a branch never
@@ -315,7 +348,7 @@ re-indenting.
 
 ---
 
-## 9. Known limitations
+## 10. Known limitations
 
 - **Re-`slice` does not prune** a branch dropped from a line; it lingers as a
   dead node (auto-pruning inside `slice` is unsafe — it cannot be told apart from
@@ -325,15 +358,17 @@ re-indenting.
   navigation block; `anno` no longer touches it.
 - **`tree mv` is metadata only** — it does not rebase commits; you must restack
   the branch yourself for the MR to be meaningful.
-- **Cross-fork MRs on GitLab** (source in a different project) are unsupported;
-  same-owner stacks are. GitHub/Gitea cross-fork (head `owner:branch`) works.
+- **Cross-fork MRs** are supported on all three: GitHub/Gitea via the
+  `owner:branch` head; GitLab via its cross-project mechanism (create on the
+  source project with a numeric `target_project_id`, read/edit on the target),
+  which costs two extra project-id lookups when a fork is detected.
 - **Gitea/Forgejo base changes** depend on the server version honouring the
   `base` field; a server that doesn't degrades to a per-branch warning, never a
   corruption.
 
 ---
 
-## 10. Where the logic lives
+## 11. Where the logic lives
 
 | Concept | Location |
 |---|---|
@@ -342,13 +377,14 @@ re-indenting.
 | push | `src/cmd/stack/sync.rs` |
 | MR reconcile decision | `src/cmd/stack/submit.rs` (`decide`) |
 | navigation rendering + splice | `src/cmd/stack/anno.rs` |
+| attribute application (labels/assignees/reviewers) | `src/cmd/stack/decorate.rs`, `src/util/forge/*` (`apply_attributes`) |
 | structure edits (prune/rm/mv), `remove` splice | `src/cmd/stack/tree.rs`, `topology.rs` (`remove`) |
 | forge primitives + normalized MR + detection | `src/util/forge/` |
 | remote URL parsing + origin/upstream roles | `src/util/remote.rs` |
 
 ---
 
-## 11. Invariants
+## 12. Invariants
 
 1. `sync`, `submit`, `anno` must share one scope computation — never fork the
    fork-point rule across verbs.
@@ -364,3 +400,5 @@ re-indenting.
    (parsing yields a forest by construction).
 7. `remove` must splice children up, never drop the subtree; removing a branch
    cannot destroy the work stacked above it.
+8. `decorate` is additive only — it adds attributes and never removes them, so it
+   cannot clobber a project's own label/reviewer automation.

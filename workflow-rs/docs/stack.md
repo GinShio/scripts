@@ -22,8 +22,9 @@ re-run it freely; each only reconciles its own slice of the world.
 | `wf stack submit` | MR **existence** and **base** | the forge API |
 | `wf stack anno` | MR **descriptions** | the forge API |
 
-Plus one local authoring verb, `wf stack slice`, for cutting commits into the
-stack in the first place.
+Plus a few helpers: `wf stack slice` cuts commits into the stack in the first
+place, `wf stack decorate` adds labels/reviewers/assignees to an MR, and
+`wf stack tree` edits the stack's structure.
 
 The dependency tree itself lives in `.git/machete` (the same format
 `git-machete` uses): one branch per line, indentation meaning "sits on top of".
@@ -208,6 +209,39 @@ wf stack sync && wf stack submit
 
 `anno` skips a lone branch: a single MR has no neighbours to navigate to.
 
+## Labels, reviewers, and assignees
+
+`wf stack decorate` adds labels, assignees, and reviewers to an MR. It is
+**additive** — it only adds what you name and never removes anything — so it
+never undoes a project's own label/reviewer bots, and re-running is safe.
+
+Because these differ from one MR to the next, `decorate` works on **one MR at a
+time** by default (the named branch, or the current one):
+
+```sh
+wf stack decorate feature-api --label api --reviewer alice --assignee @me
+wf stack decorate              --label wip            # the current branch's MR
+wf stack decorate --all        --label stacked        # the same label on every MR in the stack
+```
+
+`--label`, `--reviewer`, and `--assignee` are each repeatable; `@me` means you.
+
+There is no config and no stored defaults on purpose. To make a project's
+"always add these" behaviour, put the flags in a small per-repo script or your CI
+step — since `decorate` is additive and idempotent, running it there repeatedly is
+exactly equivalent to a default:
+
+```sh
+# a repo's dev script
+wf stack sync && wf stack submit && wf stack anno
+wf stack decorate feature-api --label api --reviewer alice
+wf stack decorate feature-ui  --label ui  --reviewer bob
+wf stack decorate --all       --label stacked
+```
+
+Attribute changes are best-effort: an unknown label or a reviewer the platform
+won't accept is warned about and skipped, without failing the rest.
+
 ## Maintaining the stack structure
 
 `slice` writes the stack; `wf stack tree` is for editing it afterwards. Removing
@@ -283,10 +317,10 @@ invocation rather than a standing preference.
 
 The short version: the **base branch** comes from the merge target's remote HEAD
 (`upstream`, else `origin`), then `main`/`master`/`trunk`; each **MR's base** is
-its parent in `.git/machete` (or the base branch at a root); a **cross-fork** MR
-expresses its head as `origin-owner:branch` (GitHub/Gitea — GitLab cross-project
-is unsupported). The full rules, including fork scope and dynamic edits, are in
-the [behaviour reference](stack/behavior.md).
+its parent in `.git/machete` (or the base branch at a root); **cross-fork** MRs
+work on all platforms (GitHub/Gitea via an `origin-owner:branch` head, GitLab via
+its cross-project API). The full rules, including fork scope and dynamic edits,
+are in the [behaviour reference](stack/behavior.md).
 
 ## Troubleshooting
 

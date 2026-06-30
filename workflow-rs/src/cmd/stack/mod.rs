@@ -11,6 +11,7 @@
 //! reasoning behind the topology rules and the forge abstraction.
 
 mod anno;
+mod decorate;
 mod resolution;
 mod slice;
 mod submit;
@@ -39,6 +40,8 @@ pub enum StackAction {
     Submit(SubmitArgs),
     /// Rewrite MR descriptions with stack navigation.
     Anno(ScopeArgs),
+    /// Add labels / assignees / reviewers to an MR (additive).
+    Decorate(DecorateArgs),
     /// Interactively cut HEAD's commits into a stack of branches.
     Slice(SliceArgs),
     /// Edit the stack's structure in `.git/machete` (prune, remove, move).
@@ -126,6 +129,28 @@ pub enum TitleSource {
 }
 
 #[derive(Debug, Args)]
+pub struct DecorateArgs {
+    /// The branch whose MR to decorate (default: current). Not valid with --all.
+    pub branch: Option<String>,
+
+    /// Apply the same attributes to every MR in the current stack instead of one.
+    #[arg(long)]
+    pub all: bool,
+
+    /// A label to add (repeatable).
+    #[arg(long = "label", value_name = "LABEL")]
+    pub labels: Vec<String>,
+
+    /// A reviewer to request; `@me` is you (repeatable).
+    #[arg(long = "reviewer", value_name = "USER")]
+    pub reviewers: Vec<String>,
+
+    /// An assignee to add; `@me` is you (repeatable).
+    #[arg(long = "assignee", value_name = "USER")]
+    pub assignees: Vec<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct SliceArgs {
     /// Slice commits reachable from HEAD but not this branch (default: the
     /// resolved base branch).
@@ -141,6 +166,7 @@ pub fn run(args: &StackArgs) -> anyhow::Result<()> {
         StackAction::Sync(s) => sync::run(&repo, s.all),
         StackAction::Submit(s) => submit::run(&repo, s),
         StackAction::Anno(s) => anno::run(&repo, s.all),
+        StackAction::Decorate(d) => decorate::run(&repo, d),
         StackAction::Slice(s) => slice::run(&repo, s.base.as_deref()),
         StackAction::Tree(t) => tree::run(&repo, &t.action),
     }

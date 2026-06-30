@@ -7,7 +7,10 @@
 
 use serde_json::{json, Value};
 
-use super::{encode, pick, request, Auth, Forge, MergeRequest, MrState, NewMr, StateFilter};
+use super::{
+    current_user, encode, pick, request, resolve_self, Attributes, Auth, Forge, MergeRequest,
+    MrState, NewMr, StateFilter, SELF_REF,
+};
 use crate::util::remote::RemoteInfo;
 
 pub struct GitHub {
@@ -60,6 +63,17 @@ impl GitHub {
 
     fn pulls_url(&self) -> String {
         format!("{}/repos/{}/pulls", self.api_base, self.project)
+    }
+
+    /// Expand `@me` to the authenticated login, only paying for the lookup when
+    /// the marker is actually present.
+    fn resolve_users(&self, items: &[String]) -> anyhow::Result<Vec<String>> {
+        if items.iter().any(|i| i == SELF_REF) {
+            let me = current_user(&self.api_base, &self.auth, "login")?;
+            Ok(resolve_self(items, &me))
+        } else {
+            Ok(items.to_vec())
+        }
     }
 }
 
@@ -124,6 +138,39 @@ impl Forge for GitHub {
     fn set_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
         let url = format!("{}/{}", self.pulls_url(), id);
         request("PATCH", &url, &self.auth, Some(&json!({ "body": body })))?;
+        Ok(())
+    }
+
+    fn apply_attributes(&self, id: &str, attrs: &Attributes) -> anyhow::Result<()> {
+        // A PR is an issue, and all three of GitHub's endpoints here *add* rather
+        // than replace, so each call is naturally additive — no read-merge needed.
+        let issue = format!("{}/repos/{}/issues/{}", self.api_base, self.project, id);
+        let pull = format!("{}/repos/{}/pulls/{}", self.api_base, self.project, id);
+
+        if !attrs.labels.is_empty() {
+            let body = json!({ "labels": attrs.labels });
+            if let Err(e) = request("POST", &format!("{issue}/labels"), &self.auth, Some(&body)) {
+                log::warn!("labels: {e}");
+            }
+        }
+        if !attrs.assignees.is_empty() {
+            let body = json!({ "assignees": self.resolve_users(&attrs.assignees)? });
+            if let Err(e) = request(
+                "POST",
+                &format!("{issue}/assignees"),
+                &self.auth,
+                Some(&body),
+            ) {
+                log::warn!("assignees: {e}");
+            }
+        }
+        if !attrs.reviewers.is_empty() {
+            let body = json!({ "reviewers": self.resolve_users(&attrs.reviewers)? });
+            let url = format!("{pull}/requested_reviewers");
+            if let Err(e) = request("POST", &url, &self.auth, Some(&body)) {
+                log::warn!("reviewers: {e}");
+            }
+        }
         Ok(())
     }
 }
