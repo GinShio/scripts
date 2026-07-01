@@ -2,22 +2,40 @@
 
 # Core Git Hooks Library - POSIX Compliant
 
-# Resolve Git Locations
-GIT_DIR=$(git rev-parse --git-dir)
-GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
-GIT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null)
-if [ -n "$GIT_TOPLEVEL" ]; then
-    # bare repo hasn't GIT_TOPLEVEL
-    GIT_TOPLEVEL=$GIT_DIR
-fi
-export GIT_DIR GIT_COMMON_DIR GIT_TOPLEVEL
-export CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-export NULL_SHA=$(git hash-object --stdin </dev/null | tr '[0-9a-f]' '0')
+# Repo-scoped state, resolved exactly once per hook run.
+#
+# The top-level runner sources this file, then execs each hook script as its own
+# process. Those children re-source this file only to obtain the shell functions
+# below (functions cannot be exported). The expensive git queries here are
+# guarded and their results exported, so a child inherits them from the
+# environment instead of re-forking git on every script — this matters most for
+# hot hooks such as reference-transaction.
+#
+# Caveat: the guard is keyed on the process environment, so a hook script that
+# recursively invokes another repository's hooks (e.g. across a submodule) would
+# inherit the outer repo's values. That already holds for the exported GIT_DIR,
+# and such nested invocations do not occur in this framework.
+if [ -z "${_GINSHIO_ENV_LOADED:-}" ]; then
+    GIT_DIR=$(git rev-parse --git-dir)
+    GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+    GIT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null)
+    if [ -z "$GIT_TOPLEVEL" ]; then
+        # A bare repository has no working tree; fall back to the git dir.
+        GIT_TOPLEVEL=$GIT_DIR
+    fi
+    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    NULL_SHA=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
 
-# Logic for protected branch.
-# Matches master, dev, release-*, patch-*
-# Using Extended Regex (ERE) for grep -E
-export PROTECTED_BRANCH='^(master|dev|release-.*|patch-.*)$'
+    # Protected branch matcher (ERE for grep -E): master, dev, release-*, patch-*.
+    PROTECTED_BRANCH='^(master|dev|release-.*|patch-.*)$'
+
+    # Global kill switch, read once (consumed by is_enabled).
+    _RAW_CFG_DISABLE_ALL=$(git config --bool hooks.ginshio.disable 2>/dev/null)
+
+    _GINSHIO_ENV_LOADED=1
+    export GIT_DIR GIT_COMMON_DIR GIT_TOPLEVEL CURRENT_BRANCH NULL_SHA \
+           PROTECTED_BRANCH _RAW_CFG_DISABLE_ALL _GINSHIO_ENV_LOADED
+fi
 
 # Colors
 if [ -t 1 ]; then
@@ -73,12 +91,8 @@ is_truthy() {
     esac
 }
 
-# Cache config to avoid repeated git calls
-# Variable name format: _CFG_<hook>_<script>_DISABLE
-# We use a simple prefix for global disable
-_RAW_CFG_DISABLE_ALL=$(git config --bool hooks.ginshio.disable 2>/dev/null)
-
 # Check if a hook or specific script is enabled
+# (_RAW_CFG_DISABLE_ALL is resolved once in the guarded block above.)
 is_enabled() {
     hook_name="$1"
     script_name="$2"

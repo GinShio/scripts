@@ -1,7 +1,10 @@
 #!/bin/sh
-# Avoid canceling the reference transaction in the case that `branchless` fails
-git branchless hook reference-transaction "$@" || (
-    echo 'branchless: Failed to process reference transaction!'
-    echo 'branchless: Some events (e.g. branch updates) may have been lost.'
-    echo 'branchless: This is a bug. Please report it.'
-)
+# git-branchless event recorder for reference-transaction.
+
+command -v git-branchless >/dev/null 2>&1 || exit 0
+
+# Never cancel the reference transaction if branchless itself fails; just warn.
+git branchless hook reference-transaction "$@" || {
+    echo 'branchless: failed to process reference transaction;' \
+         'some events (e.g. branch updates) may have been lost.' >&2
+}
