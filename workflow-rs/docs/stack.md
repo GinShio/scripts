@@ -170,6 +170,21 @@ wf stack sync --all
 wf stack submit --all
 ```
 
+You can also name a branch to anchor on, instead of checking it out — useful for
+driving another stack from a worktree or a dirty tree:
+
+```sh
+wf stack submit feature-api     # submit the whole stack around feature-api
+wf stack sync feature-api       # push that stack, without switching to it
+```
+
+The branch is a **scope anchor**, not the single target: the whole stack around
+it is operated on, exactly as if you'd checked it out (an anchor mid-line still
+pulls in its ancestors and downstream chain). That is the per-stack meaning —
+different from `decorate`, whose branch names the one MR to touch. The anchor
+must be a real branch (a local ref, or a name recorded in `.git/machete`), and it
+can't be combined with `--all`.
+
 The base branch (`main`/`master`/…) is never pushed and never gets an MR, but it
 does appear in the navigation chains so reviewers see the full lineage.
 

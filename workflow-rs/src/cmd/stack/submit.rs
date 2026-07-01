@@ -28,8 +28,7 @@ enum Decision {
 }
 
 pub fn run(repo: &Repository, args: &SubmitArgs) -> anyhow::Result<()> {
-    let current = repo.current_branch();
-    let plan = resolution::plan(repo, current.as_deref(), args.all)?;
+    let plan = resolution::plan_scoped(repo, &args.scope)?;
     if plan.selected.is_empty() {
         log::info!("no branches in scope");
         return Ok(());

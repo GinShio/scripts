@@ -15,14 +15,13 @@ use crate::util::forge::{self, MergeRequest, StateFilter};
 use crate::util::remote::Remotes;
 
 use super::topology::Topology;
-use super::{map_parallel, resolution};
+use super::{map_parallel, resolution, ScopeArgs};
 
 const HEADER: &str = "<!-- wf stack: generated navigation, do not edit below -->";
 const FOOTER: &str = "<!-- wf stack: end navigation -->";
 
-pub fn run(repo: &Repository, all: bool) -> anyhow::Result<()> {
-    let current = repo.current_branch();
-    let mut plan = resolution::plan(repo, current.as_deref(), all)?;
+pub fn run(repo: &Repository, scope: &ScopeArgs) -> anyhow::Result<()> {
+    let mut plan = resolution::plan_scoped(repo, scope)?;
 
     if plan.standalone {
         log::info!("standalone branch: a lone MR has nothing to navigate, skipping");

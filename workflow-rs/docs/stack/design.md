@@ -109,6 +109,19 @@ The base branch (usually `main`) is never itself pushed or given an MR, but it
 threshold ever changes for one, it changes for all. The selection therefore
 lives in exactly one place (§5), not copied per verb.
 
+The `[scope]` positional on those three is that single seam surfaced to the CLI:
+it is a *scope anchor*, the branch the selection is computed from, defaulting to
+the checked-out branch. It replaces `HEAD`, nothing more — so it flows through
+the same `plan()` and cannot fork the fork-point rule (it strengthens invariant
+1 rather than threatening it), and it lets a stack be driven without a checkout
+(worktrees, a dirty tree). It is deliberately *not* like `decorate`'s `[branch]`:
+that one names the single MR to touch (per-MR), this one names where a whole
+stack is read from (per-stack). It is branch-only, never a commit — the topology
+is keyed by branch name and a commit can carry several branches (§9), so a commit
+anchor would be ambiguous. Anchor and `--all` are mutually exclusive; a named
+anchor must resolve to a real branch (local ref or a file entry) so a typo fails
+loudly instead of resolving to an empty synthetic stack.
+
 Global `-v/--verbose` and `-n/--dry-run` come from the `wf` process layer for
 free; every mutating git/forge call respects dry-run, every read still runs.
 

@@ -89,19 +89,25 @@ pub struct MvArgs {
     pub onto: String,
 }
 
-/// The scope flag shared by the verbs that walk the stack.
+/// Scope shared by the verbs that walk the stack. The optional branch is a
+/// *scope anchor*: the whole stack around it is operated on, not just that one
+/// branch (that is the per-stack semantics, unlike `decorate`'s per-MR branch).
+/// It defaults to the checked-out branch and is mutually exclusive with `--all`.
 #[derive(Debug, Args)]
 pub struct ScopeArgs {
+    /// Branch to anchor the stack on (default: the current branch). The whole
+    /// stack around it is operated on, not just this branch. Not valid with --all.
+    pub branch: Option<String>,
+
     /// Operate on every recorded stack, not just the current branch's.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "branch")]
     pub all: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct SubmitArgs {
-    /// Operate on every recorded stack, not just the current branch's.
-    #[arg(long)]
-    pub all: bool,
+    #[command(flatten)]
+    pub scope: ScopeArgs,
 
     /// Open MRs ready for review. By default a mid-stack MR (one not targeting
     /// the base branch) starts as a draft, since it shouldn't merge before what
@@ -163,9 +169,9 @@ pub fn run(args: &StackArgs) -> anyhow::Result<()> {
     let repo = crate::core::git::Repository::new(&cwd);
 
     match &args.action {
-        StackAction::Sync(s) => sync::run(&repo, s.all),
+        StackAction::Sync(s) => sync::run(&repo, s),
         StackAction::Submit(s) => submit::run(&repo, s),
-        StackAction::Anno(s) => anno::run(&repo, s.all),
+        StackAction::Anno(s) => anno::run(&repo, s),
         StackAction::Decorate(d) => decorate::run(&repo, d),
         StackAction::Slice(s) => slice::run(&repo, s.base.as_deref()),
         StackAction::Tree(t) => tree::run(&repo, &t.action),

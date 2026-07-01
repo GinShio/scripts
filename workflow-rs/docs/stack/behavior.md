@@ -68,6 +68,18 @@ never gets its own MR), but it still appears inside `anno` chains so reviewers s
 the full lineage. A detached HEAD with no `--all` is an error (there is no branch
 to scope from).
 
+**Anchoring on a named branch.** N above is normally the checked-out branch, but
+`sync`/`submit`/`anno` accept an optional positional branch that replaces it as
+the anchor — the stack is then computed around *that* branch without checking it
+out. It is a scope anchor, not a single target: an anchor mid-line still selects
+its ancestors and downstream chain (the same set standing on it would). The
+anchor and `--all` are mutually exclusive, and an explicitly named anchor must be
+a real branch — a live local ref, or a name recorded in the file — so a typo
+fails loudly instead of quietly resolving to an empty synthetic stack. (An anchor
+that *is* a valid branch but absent from the file still becomes the synthetic
+one-node stack of §3, just as the checked-out branch would.) A named anchor also
+lifts the detached-HEAD restriction, since scope no longer depends on HEAD.
+
 **Worked examples** on the sample forest above:
 
 - Standing on **B** (fork): operable = `A, B, C, D, F` (ancestors `A` + subtree of

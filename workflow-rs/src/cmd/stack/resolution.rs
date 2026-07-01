@@ -89,6 +89,53 @@ pub fn plan(repo: &Repository, current: Option<&str>, all: bool) -> anyhow::Resu
     select(topology, base_branch, current, all)
 }
 
+/// The parsed scope selector, after CLI parsing but before touching git. clap's
+/// `conflicts_with` guarantees the positional branch and `--all` never co-occur,
+/// so the fourth (illegal) combination is simply not representable here — the
+/// exclusion is enforced at the parser and the domain sees only the three legal
+/// states.
+enum Scope<'a> {
+    /// Neither given: anchor on the checked-out branch (`None` = detached HEAD).
+    Current,
+    /// A named anchor branch.
+    Branch(&'a str),
+    /// Every recorded stack.
+    All,
+}
+
+impl<'a> Scope<'a> {
+    fn from_args(args: &'a super::ScopeArgs) -> Self {
+        match (args.branch.as_deref(), args.all) {
+            (Some(branch), _) => Scope::Branch(branch),
+            (None, true) => Scope::All,
+            (None, false) => Scope::Current,
+        }
+    }
+}
+
+/// Build the plan from CLI scope args. The positional branch is a *scope
+/// anchor*: it replaces the checked-out branch as the point the stack is
+/// computed from, so a stack can be driven without checking it out (handy with
+/// worktrees or a dirty tree). It is mutually exclusive with `--all` (enforced by
+/// clap), and — when given explicitly — must name a real branch (a live local
+/// ref, or one recorded in the file) so a typo cannot masquerade as an empty
+/// synthetic stack.
+pub fn plan_scoped(repo: &Repository, scope: &super::ScopeArgs) -> anyhow::Result<StackPlan> {
+    match Scope::from_args(scope) {
+        Scope::All => plan(repo, None, true),
+        Scope::Branch(branch) => {
+            let known = repo.rev_parse(branch).is_some() || load_topology(repo).contains(branch);
+            if !known {
+                anyhow::bail!(
+                    "no such branch '{branch}': not a local branch and not recorded in .git/machete"
+                );
+            }
+            plan(repo, Some(branch), false)
+        }
+        Scope::Current => plan(repo, repo.current_branch().as_deref(), false),
+    }
+}
+
 /// The scope decision, factored out from git so it can be exercised on literal
 /// forests. See the design doc, §2, for the rationale behind each branch.
 fn select(

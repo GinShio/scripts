@@ -7,11 +7,10 @@
 
 use crate::core::git::Repository;
 
-use super::{map_parallel, resolution};
+use super::{map_parallel, resolution, ScopeArgs};
 
-pub fn run(repo: &Repository, all: bool) -> anyhow::Result<()> {
-    let current = repo.current_branch();
-    let plan = resolution::plan(repo, current.as_deref(), all)?;
+pub fn run(repo: &Repository, scope: &ScopeArgs) -> anyhow::Result<()> {
+    let plan = resolution::plan_scoped(repo, scope)?;
 
     // Only push branches that actually exist locally; a name in the file with no
     // ref is a stale entry, not something to push.
