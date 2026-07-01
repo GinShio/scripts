@@ -1,25 +1,30 @@
 #!/bin/sh
+# Ask for confirmation before pushing to a protected branch on the remote.
+
 . "$HOOKS_DIR/core/lib.sh"
 
-# Config key: hooks.ginshio.pre-push.warn-protected-enabled
 : "${ENABLE:=$(git config --bool hooks.ginshio.pre-push.warn-protected-enabled)}"
-if ! is_truthy "${ENABLE:-false}"; then exit 0; fi
+is_truthy "${ENABLE:-false}" || exit 0
 
-REMOTE_NAME="$1"
-REMOTE_URL="$2"
+remote_name="$1"
 
+# stdin (one line per ref): <local_ref> <local_sha> <remote_ref> <remote_sha>
 while read -r local_ref local_sha remote_ref remote_sha; do
-    if [ "$local_sha" = "$NULL_SHA" ]; then
-        continue
-    fi
-    remote_branch_name=${remote_ref#refs/heads/}
-    if echo "$remote_branch_name" | grep -q -E "$PROTECTED_BRANCH"; then
-        log_warn "Pushing to protected branch ($remote_branch_name) on remote ($REMOTE_NAME)."
-        log_warn "Think before you type."
-        if ! prompt_confirm; then
-             log_warn "Abort..."
-             exit 1
-        fi
-        break 
+    # Skip branch deletions (local sha is all-zero).
+    [ "$local_sha" = "$NULL_SHA" ] && continue
+
+    # Only warn on updates to remote branches; ignore tags and other refs.
+    case "$remote_ref" in
+        refs/heads/*) branch=${remote_ref#refs/heads/} ;;
+        *) continue ;;
+    esac
+
+    if printf '%s\n' "$branch" | grep -qE "$PROTECTED_BRANCH"; then
+        log_warn "Pushing to protected branch '$branch' on remote '$remote_name'."
+        prompt_confirm "Continue pushing to '$branch'? [y/N] " || {
+            log_warn "Push aborted."
+            exit 1
+        }
+        break
     fi
 done
