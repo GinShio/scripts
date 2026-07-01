@@ -251,20 +251,62 @@ git config hooks.ginshio.pre-commit.disable true      # this repo, from now on
 GINSHIO_HOOKS_PRE_COMMIT_DISABLE=1 git commit …        # only this commit
 ```
 
-## Bringing your own hooks
+## Extending the pipeline
 
-If a repo already carries hooks — a Husky setup, a `.githooks` directory, a lone
-`scripts/lint.sh` — you needn't choose between them and this framework; they run
-in the same pass, under the same on/off rules, and *after* the built-in scripts,
-so a project's own checks get the last word. Name the directories to scan (Husky's
-single-file `pre-commit` and split `pre-commit.d/` forms are both understood), or
-map individual scripts to a hook. Entries are colon-separated, absolute or
-relative to the repo root:
+When a hook fires, its scripts run in a fixed order — each stage additive, and
+fail-fast (the first non-zero exit stops the hook):
+
+1. the built-in `<hook>.d/` scripts;
+2. any **overlay layers** (`secret-*`, below);
+3. the **external hooks** you point the framework at;
+4. the repository's own `.git/hooks/<hook>`, if it still has one.
+
+A candidate runs only if it is **executable** and its first line is a `#!`
+shebang — anything else (a data file, or a still-encrypted blob) is skipped
+rather than executed. Every stage obeys the same
+[disable hierarchy](#turning-pieces-off).
+
+### External hooks (Husky, `.githooks`, custom scripts)
+
+If a repo already carries hooks, they can run in the same pass instead of being
+displaced. There are two ways to point at them; both accept colon-separated
+entries, absolute or relative to the repo root, and both run *after* the built-in
+and overlay scripts so a project's own checks get the last word.
+
+**Directories to scan** — `hooks.ginshio.external-dirs`. In each directory, for a
+given hook, the framework runs whichever of these it finds:
+
+- a single executable file named exactly `<hook>` — the Husky convention
+  (`.husky/pre-commit`);
+- a `<hook>.d/` directory, whose executable scripts run in filename order, exactly
+  like the built-in ones (`.githooks/pre-commit.d/`).
+
+**Explicit scripts** — `hooks.ginshio.<hook>.external-scripts`, for a project whose
+scripts don't follow the `dir/<hook>` convention. They run in the order listed.
 
 ```sh
 git config hooks.ginshio.external-dirs ".husky:.githooks"
 git config hooks.ginshio.pre-commit.external-scripts "scripts/lint.sh:tools/check-fmt"
 ```
+
+A scanned directory's single-file hook is toggled under the pseudo-name
+`external` (`GINSHIO_HOOKS_PRE_COMMIT_EXTERNAL_DISABLE=1`); explicit scripts and a
+directory's `.d/` scripts are toggled under their own filename.
+
+### Overlay layers (`secret-*`)
+
+Alongside the hooks directory you can drop overlay directories named `secret-*`,
+each mirroring the main layout (`secret-<name>/<hook>.d/`). Their scripts run
+right after the built-in ones and before any external hooks — a home for private
+or machine-specific hooks you don't want in the shared tree.
+
+This is also where a **transparently-encrypted** hook belongs. Keep a script under
+`secret-<name>/<hook>.d/` and encrypt it with transcrypt: it sits in the repo as
+ciphertext, and because a script only runs when it starts with a `#!` shebang, the
+encrypted (shebang-less) blob is quietly skipped until it's decrypted on checkout
+— after which it runs like any other. So a private hook can travel in the repo
+without exposing its contents, and without erroring on a machine that can't
+decrypt it.
 
 ## Seeing what a hook is doing
 

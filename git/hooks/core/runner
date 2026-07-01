@@ -18,9 +18,10 @@ else
     exit 1
 fi
 
+# lib.sh is the shared utility library; dispatch.sh (beside it) is the engine
+# that actually runs the layers. Hook scripts source only lib.sh.
 . "$LIB_PATH"
-
-HOOK_DIR="$current_dir/$HOOK_NAME.d"
+. "$(dirname "$LIB_PATH")/dispatch.sh"
 
 # Handle STDIN buffering for hooks that consume input
 # pre-push, post-rewrite, push-to-checkout, pre-receive, post-receive, reference-transaction
