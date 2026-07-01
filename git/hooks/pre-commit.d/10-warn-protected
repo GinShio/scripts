@@ -1,9 +1,7 @@
 #!/bin/sh
 . "$HOOKS_DIR/core/lib.sh"
 
-# Config key: hooks.ginshio.pre-commit.warn-protected-enabled
-: "${ENABLE:=$(git config --bool hooks.ginshio.pre-commit.warn-protected-enabled)}"
-if ! is_truthy "${ENABLE:-false}"; then exit 0; fi
+cfg_bool hooks.ginshio.pre-commit.warn-protected-enabled || exit 0
 
 if echo "$CURRENT_BRANCH" | grep -q -E "$PROTECTED_BRANCH"; then
   log_warn "Commit to protected branch ($CURRENT_BRANCH), think before you type."

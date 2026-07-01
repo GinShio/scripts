@@ -6,11 +6,8 @@
 
 . "$HOOKS_DIR/core/lib.sh"
 
-# Opt-in requirement: Disabled by default to prevent community project pollution
-ENABLE_ISSUE_TRACKER=$(git config --bool hooks.ginshio.prepare-commit-msg.issue-tracker-enabled 2>/dev/null || echo false)
-if ! is_truthy "$ENABLE_ISSUE_TRACKER"; then
-    exit 0
-fi
+# Opt-in: off by default so it never intrudes on repos that don't use a tracker.
+cfg_bool hooks.ginshio.prepare-commit-msg.issue-tracker-enabled || exit 0
 
 COMMIT_MSG_FILE="$1"
 COMMIT_SOURCE="$2"
@@ -26,13 +23,10 @@ case "$COMMIT_SOURCE" in
         ;;
 esac
 
-# 1. Provide sensible defaults but allow Git config overrides
-# Default regex extracts something like PROJ-123 (Uppercase letters followed by dash and numbers)
-ISSUE_REGEX=$(git config hooks.ginshio.prepare-commit-msg.issue-tracker-regex 2>/dev/null || echo "[A-Z]+-[0-9]+")
-# Default format is "[ISSUE_ID] "
-ISSUE_FORMAT=$(git config hooks.ginshio.prepare-commit-msg.issue-tracker-format 2>/dev/null || echo "[%s] ")
-# Default fallback Issue ID if the branch name does not match the regex
-DEFAULT_ISSUE=$(git config hooks.ginshio.prepare-commit-msg.issue-tracker-default 2>/dev/null)
+# What to extract from the branch name, how to wrap it, and a fallback ID.
+ISSUE_REGEX=$(cfg_value hooks.ginshio.prepare-commit-msg.issue-tracker-regex '[A-Z]+-[0-9]+')
+ISSUE_FORMAT=$(cfg_value hooks.ginshio.prepare-commit-msg.issue-tracker-format '[%s] ')
+DEFAULT_ISSUE=$(cfg_value hooks.ginshio.prepare-commit-msg.issue-tracker-default)
 
 # 2. Get current branch
 BRANCH_NAME=$(git symbolic-ref --short HEAD 2>/dev/null)

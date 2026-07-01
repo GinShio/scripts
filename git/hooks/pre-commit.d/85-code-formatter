@@ -14,28 +14,16 @@ HAS_RUFF=""
 HAS_BLACK=""
 HAS_ISORT=""
 
-# Configuration - Checks enabled state for each language
-# Defaults to TRUE for existence of this script, but can be disabled individually
-ENABLE_CLANG=$(git config --bool hooks.ginshio.pre-commit.clang-format-enabled)
-ENABLE_ZIG=$(git config --bool hooks.ginshio.pre-commit.zig-fmt-enabled)
-ENABLE_RUST=$(git config --bool hooks.ginshio.pre-commit.rust-fmt-enabled)
-ENABLE_PYTHON=$(git config --bool hooks.ginshio.pre-commit.python-fmt-enabled)
-ENABLE_WHITESPACE=$(git config --bool hooks.ginshio.pre-commit.whitespace-enabled)
+# Each language is on by default and disabled individually.
+ENABLE_CLANG=$(cfg_bool hooks.ginshio.pre-commit.clang-format-enabled true && echo true || echo false)
+ENABLE_ZIG=$(cfg_bool hooks.ginshio.pre-commit.zig-fmt-enabled true && echo true || echo false)
+ENABLE_RUST=$(cfg_bool hooks.ginshio.pre-commit.rust-fmt-enabled true && echo true || echo false)
+ENABLE_PYTHON=$(cfg_bool hooks.ginshio.pre-commit.python-fmt-enabled true && echo true || echo false)
+ENABLE_WHITESPACE=$(cfg_bool hooks.ginshio.pre-commit.whitespace-enabled true && echo true || echo false)
 
-# If no specific config is set, default to TRUE for the consolidated formatter script itself,
-# so we rely on whether the script "code-formatter" is disabled in parent.
-# But for individual langs, we can default to true as well if not explicitly disabled.
-# Actually, let's keep it simple: formatting is good.
-# If user wants to disable clang-format specifically, they set hooks.ginshio.pre-commit.clang-format-enabled = false
-
-: "${ENABLE_CLANG:=$([ "$ENABLE_CLANG" != "false" ] && echo true || echo false)}"
-: "${ENABLE_ZIG:=$([ "$ENABLE_ZIG" != "false" ] && echo true || echo false)}"
-: "${ENABLE_RUST:=$([ "$ENABLE_RUST" != "false" ] && echo true || echo false)}"
-: "${ENABLE_PYTHON:=$([ "$ENABLE_PYTHON" != "false" ] && echo true || echo false)}"
-: "${ENABLE_WHITESPACE:=$([ "$ENABLE_WHITESPACE" != "false" ] && echo true || echo false)}"
-
-# Clang Format Specific Config
-CF_STYLE=$(git config --get hooks.ginshio.pre-commit.clang-format-style)
+# clang-format takes its style from a repo .clang-format if present, else a
+# configured named style.
+CF_STYLE=$(cfg_value hooks.ginshio.pre-commit.clang-format-style)
 CF_ARGS=""
 if [ -e "$GIT_TOPLEVEL/.clang-format" ]; then
     :

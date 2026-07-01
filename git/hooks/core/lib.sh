@@ -91,6 +91,38 @@ is_truthy() {
     esac
 }
 
+# The environment-variable twin of a `hooks.ginshio.<rest>` config key:
+# GINSHIO_HOOKS_<REST>, with the part after the namespace upper-cased and every
+# `-`/`.` turned into `_`.  (The disable hierarchy in is_enabled builds the same
+# names inline; the global switch is the one alias, GINSHIO_HOOKS_DISABLE_ALL.)
+_cfg_env_name() {
+    printf 'GINSHIO_HOOKS_%s' \
+        "$(echo "${1#hooks.ginshio.}" | tr '[:lower:]' '[:upper:]' | tr '.-' '__')"
+}
+
+# Resolve a setting, environment twin first, then git config. This is the single
+# path every script uses, so one rule holds everywhere: env overrides config,
+# config is the standing value.
+#
+#   cfg_bool  <config-key> [default]   -> exit status (0 = true), for --bool keys
+#   cfg_value <config-key> [default]   -> echoes the resolved string
+cfg_bool() {
+    _env=$(_cfg_env_name "$1")
+    eval _val="\${$_env:-}"
+    [ -n "$_val" ] && { is_truthy "$_val"; return; }
+    _val=$(git config --bool "$1" 2>/dev/null)
+    [ -n "$_val" ] && { is_truthy "$_val"; return; }
+    is_truthy "${2:-false}"
+}
+cfg_value() {
+    _env=$(_cfg_env_name "$1")
+    eval _val="\${$_env:-}"
+    [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
+    _val=$(git config "$1" 2>/dev/null)
+    [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
+    printf '%s\n' "${2:-}"
+}
+
 # Check if a hook or specific script is enabled
 # (_RAW_CFG_DISABLE_ALL is resolved once in the guarded block above.)
 is_enabled() {

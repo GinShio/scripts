@@ -3,8 +3,7 @@
 
 . "$HOOKS_DIR/core/lib.sh"
 
-: "${ENABLE:=$(git config --bool hooks.ginshio.pre-push.warn-protected-enabled)}"
-is_truthy "${ENABLE:-false}" || exit 0
+cfg_bool hooks.ginshio.pre-push.warn-protected-enabled || exit 0
 
 remote_name="$1"
 
