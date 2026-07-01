@@ -1,0 +1,61 @@
+#!/bin/sh
+. "$HOOKS_DIR/core/lib.sh"
+
+# Format the *staged* content of each supported file and write it back into the
+# index (apply_to_staged keeps unstaged edits untouched). Every language is on
+# by default and disabled on its own; a missing formatter is simply skipped.
+CLANG=$(cfg_bool hooks.ginshio.pre-commit.clang-format-enabled true && echo 1 || echo 0)
+RUST=$(cfg_bool hooks.ginshio.pre-commit.rust-fmt-enabled true && echo 1 || echo 0)
+ZIG=$(cfg_bool hooks.ginshio.pre-commit.zig-fmt-enabled true && echo 1 || echo 0)
+PYTHON=$(cfg_bool hooks.ginshio.pre-commit.python-fmt-enabled true && echo 1 || echo 0)
+WHITESPACE=$(cfg_bool hooks.ginshio.pre-commit.whitespace-enabled true && echo 1 || echo 0)
+
+# clang-format discovers a nearby .clang-format via --assume-filename; an
+# explicit configured style overrides that.
+CF_STYLE=$(cfg_value hooks.ginshio.pre-commit.clang-format-style)
+if [ -n "$CF_STYLE" ]; then
+    CF_STYLE_ARG="-style=$CF_STYLE"
+else
+    CF_STYLE_ARG="-style=file -fallback-style=LLVM"
+fi
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+staged_files | while IFS= read -r file; do
+    is_staged_text "$file" || continue
+
+    case "$file" in
+        *.c|*.h|*.inc|*.hh|*.hpp|*.hxx|*.h++|*.cc|*.cpp|*.cxx|*.c++|*.icc|*.ipp|*.ixx|*.i++|*.tcc|*.tpp|*.txx)
+            # shellcheck disable=SC2086
+            [ "$CLANG" = 1 ] && have clang-format &&
+                apply_to_staged "$file" clang-format "--assume-filename=$file" $CF_STYLE_ARG
+            ;;
+        *.rs)
+            [ "$RUST" = 1 ] && have rustfmt &&
+                apply_to_staged "$file" rustfmt --edition 2021
+            ;;
+        *.zig|*.zon)
+            [ "$ZIG" = 1 ] && have zig &&
+                apply_to_staged "$file" zig fmt --stdin
+            ;;
+        *.py|*.pyi)
+            if [ "$PYTHON" = 1 ]; then
+                if have ruff; then
+                    apply_to_staged "$file" ruff format --stdin-filename "$file" -
+                    apply_to_staged "$file" ruff check --fix --select I --stdin-filename "$file" -
+                elif have black; then
+                    have isort && apply_to_staged "$file" isort -
+                    apply_to_staged "$file" black -q -
+                fi
+            fi
+            ;;
+        *)
+            # Any other text file: just tidy trailing whitespace and guarantee a
+            # final newline (awk's print re-adds the newline it splits on).
+            [ "$WHITESPACE" = 1 ] &&
+                apply_to_staged "$file" awk '{ sub(/[ \t]+$/, ""); print }'
+            ;;
+    esac
+done
+
+exit 0

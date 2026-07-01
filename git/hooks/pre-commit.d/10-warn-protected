@@ -1,12 +1,10 @@
 #!/bin/sh
 . "$HOOKS_DIR/core/lib.sh"
 
+# Ask before committing straight onto a shared branch. Opt-in.
 cfg_bool hooks.ginshio.pre-commit.warn-protected-enabled || exit 0
 
-if echo "$CURRENT_BRANCH" | grep -q -E "$PROTECTED_BRANCH"; then
-  log_warn "Commit to protected branch ($CURRENT_BRANCH), think before you type."
-  if ! prompt_confirm; then
-    log_warn "Abort..."
-    exit 1
-  fi
-fi
+printf '%s\n' "$CURRENT_BRANCH" | grep -qE "$PROTECTED_BRANCH" || exit 0
+
+log_warn "Committing to protected branch '$CURRENT_BRANCH' — think before you type."
+prompt_confirm || { log_warn "Aborted."; exit 1; }

@@ -65,14 +65,18 @@ To bypass the whole hook for one commit, `git commit --no-verify`.
 
 ### Formatter
 
-Keeps the tree consistently formatted without you having to think about it: each
-staged file is run through the right formatter and re-staged, so what you commit
-is already clean. C/C++ go through `clang-format`, Rust through `rustfmt`, Zig
-through `zig fmt`, Python through `ruff` (falling back to `black` + `isort`), and
-a final language-agnostic pass trims trailing whitespace and adds a closing
-newline. A language is handled only when its formatter is on your `PATH`, and
-each part is independent, so you can bow out where it fights a project's own
-conventions.
+Keeps the tree consistently formatted without you having to think about it, so
+what you commit is already clean. C/C++ go through `clang-format`, Rust through
+`rustfmt`, Zig through `zig fmt`, Python through `ruff` (falling back to `black`
++ `isort`), and any other text file gets a trim of trailing whitespace and a
+guaranteed final newline. A language is handled only when its formatter is on
+your `PATH`, and each part is independent, so you can bow out where it fights a
+project's own conventions.
+
+It formats the **staged content**, not the working tree: it rewrites the version
+in the index and, when your working copy has no unstaged edits, updates that too.
+A partially-staged file therefore keeps its unstaged changes intact — the commit
+gets the formatted version, your in-progress edits are left alone.
 
 - `clang-format-enabled`, `rust-fmt-enabled`, `zig-fmt-enabled`,
   `python-fmt-enabled` — one per language, on by default.
@@ -116,11 +120,11 @@ through with `git commit --no-verify`.
 
 ### Encoding check
 
-Keeps text files sane where it matters, without imposing a rule across the whole
-tree. For any file you've tagged with an `encoding` gitattribute it enforces
-UTF-8/ASCII with LF newlines and rejects a stray CRLF or non-UTF-8 blob. Files
-you haven't opted in are left untouched, so it's a scalpel rather than a blanket
-— nothing to configure beyond the gitattribute itself.
+Keeps staged text honest: LF newlines only, and valid UTF-8. A staged text file
+carrying a CR/CRLF line ending or an invalid UTF-8 byte is rejected. Binary blobs
+are skipped, and so is the UTF-8 half when `iconv` isn't available. Nothing to
+configure — for automatic newline normalization on top of this, let git handle it
+with a `.gitattributes` `text=auto eol=lf`.
 
 ### Protected-branch prompt
 

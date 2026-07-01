@@ -1,0 +1,63 @@
+#!/bin/sh
+. "$HOOKS_DIR/core/lib.sh"
+
+# Fast static analysis of the staged languages, run on the working-tree copies
+# (linters need real files, and cargo works per-crate regardless). Each language
+# is on by default; a missing tool warns rather than fails.
+PYTHON=$(cfg_bool hooks.ginshio.pre-commit.python-lint-enabled true && echo 1 || echo 0)
+ZIG=$(cfg_bool hooks.ginshio.pre-commit.zig-lint-enabled true && echo 1 || echo 0)
+RUST=$(cfg_bool hooks.ginshio.pre-commit.rust-lint-enabled true && echo 1 || echo 0)
+
+files=$(staged_files)
+[ -n "$files" ] || exit 0
+
+rc=0
+oldifs=$IFS
+IFS='
+'
+set -f
+
+# Bucket staged paths by language (newline-separated so paths may contain
+# spaces; the unquoted expansions below rely on IFS still being a newline).
+py="" ; zig="" ; rust=0
+for file in $files; do
+    case "$file" in
+        *.py|*.pyi)  py="${py:+$py
+}$file" ;;
+        *.zig|*.zon) zig="${zig:+$zig
+}$file" ;;
+        *.rs)        rust=1 ;;
+    esac
+done
+
+if [ "$PYTHON" = 1 ] && [ -n "$py" ]; then
+    if command -v ruff >/dev/null 2>&1; then
+        ruff check -- $py || rc=1
+    elif command -v flake8 >/dev/null 2>&1; then
+        flake8 -- $py || rc=1
+    else
+        log_warn "python lint enabled but neither ruff nor flake8 is installed"
+    fi
+fi
+
+if [ "$ZIG" = 1 ] && [ -n "$zig" ]; then
+    if command -v zig >/dev/null 2>&1; then
+        for f in $zig; do zig ast-check "$f" || rc=1; done
+    else
+        log_warn "zig lint enabled but zig is not installed"
+    fi
+fi
+
+if [ "$RUST" = 1 ] && [ "$rust" = 1 ]; then
+    if command -v cargo >/dev/null 2>&1; then
+        cargo clippy -- -D warnings || rc=1
+    else
+        log_warn "rust lint enabled but cargo is not installed"
+    fi
+fi
+
+IFS=$oldifs
+set +f
+
+[ "$rc" -eq 0 ] || log_error "lint failed; fix the issues above or commit with --no-verify"
+exit $rc

@@ -191,7 +191,7 @@ check_script_header() {
     if [ "$_magic_bytes" = "#!/bin/sh" ]; then
         return 0
     fi
-    
+
     # Not a script (likely encrypted blob or binary without shebang)
     return 1
 }
@@ -210,7 +210,7 @@ run_hook_dir() {
         if [ -f "$script" ] && [ -x "$script" ]; then
             script_base=$(basename "$script")
             if is_enabled "$hook_name" "$script_base"; then
-                
+
                 # Check Header (Shebang)
                 check_script_header "$script"
                 _chk_status=$?
@@ -245,7 +245,7 @@ run_hook_overlays() {
     # 1. Base Layer (e.g. git/hooks/pre-commit.d)
     run_hook_dir "${_base_root}/${_hook_name}.d" "$_hook_name" "$_stdin_source" "$@"
 
-    # 2. Domain Layers 
+    # 2. Domain Layers
     # We scan for any directory starting with 'secret-'
     for _domain_root in "$_base_root"/secret-*; do
         if [ -d "$_domain_root" ]; then
@@ -325,7 +325,7 @@ run_external_hooks() {
     _env_hook_name=$(echo "$_ext_hook_name" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
     eval _ext_scripts_env="\$GINSHIO_HOOKS_${_env_hook_name}_EXTERNAL_SCRIPTS"
     _ext_scripts="${_ext_scripts_env:-$(git config "hooks.ginshio.${_ext_hook_name}.external-scripts" 2>/dev/null)}"
-    
+
     if [ -n "$_ext_scripts" ]; then
         _old_ifs="$IFS"
         IFS=":"
@@ -494,8 +494,67 @@ get_main_branch() {
     echo "master"
 }
 
-# Retrieve file content from the staging area
-# Usage: git_cat_file_staged <file_path>
-git_cat_file_staged() {
-    git show ":$1"
+# --- Staged content ---
+#
+# A pre-commit hook judges what is *being committed* — the staged blob — not the
+# working tree, which may carry unstaged edits. These helpers let every script
+# speak in terms of the index consistently.
+
+# The staged paths a pre-commit script cares about: added, copied, or modified.
+staged_files() {
+    git diff --cached --name-only --diff-filter=ACM
+}
+
+# The staged content of a file, straight from the index.
+staged_blob() {
+    git cat-file blob ":$1" 2>/dev/null
+}
+
+# Size of the staged blob, in bytes.
+staged_size() {
+    git cat-file -s ":$1" 2>/dev/null
+}
+
+# True when the staged blob is text (git's own heuristic: a diff against a
+# binary blob reports '-' additions instead of a line count).
+is_staged_text() {
+    [ "$(git diff --cached --numstat -- "$1" | cut -f1)" != "-" ]
+}
+
+# True when the working tree differs from the index for a file — i.e. it is only
+# partially staged, so rewriting the whole file would capture unstaged edits.
+has_unstaged_changes() {
+    ! git diff --quiet -- "$1"
+}
+
+# Format a file's *staged content* in place in the index, leaving unstaged edits
+# untouched. The command reads the blob on stdin and writes the result to
+# stdout; if it changes anything, the new content is written back to the index,
+# and to the working tree too when that is safe (no unstaged edits to clobber).
+# Usage: apply_to_staged <file> <formatter> [args...]
+apply_to_staged() {
+    _f="$1"
+    shift
+    _in=$(mktemp) || return 1
+    _out=$(mktemp) || { rm -f "$_in"; return 1; }
+
+    staged_blob "$_f" > "$_in"
+    if "$@" < "$_in" > "$_out" 2>/dev/null && ! cmp -s "$_in" "$_out"; then
+        # Decide whether to sync the working tree *before* rewriting the index —
+        # afterwards the (still-unformatted) working copy would always look like
+        # it differs from the freshly-updated index.
+        _sync_worktree=1
+        has_unstaged_changes "$_f" && _sync_worktree=0
+
+        _mode=$(git ls-files --stage -- "$_f" | cut -d' ' -f1)
+        _sha=$(git hash-object -w "$_out")
+        git update-index --cacheinfo "$_mode" "$_sha" "$_f"
+
+        # Update the working copy only when it held nothing we'd overwrite;
+        # otherwise the index is fixed and the working copy is left for the next
+        # `git add` to pick up, so unstaged edits survive untouched.
+        [ "$_sync_worktree" -eq 1 ] && git checkout-index -f -- "$_f"
+    fi
+
+    rm -f "$_in" "$_out"
 }
