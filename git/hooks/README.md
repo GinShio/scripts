@@ -161,9 +161,9 @@ Enforces text encoding and newline style.
 *   **Behavior**: Blocks files with CRLF or non-UTF8 encodings.
 
 ### Git LFS (`git-lfs`)
-*Hook: pre-push*
-Wraps `git lfs pre-push` to ensure Large File Storage is synchronized.
-*   **Requirement**: `git-lfs` command line tool must be available.
+*Hooks: post-checkout, post-commit, post-merge, pre-push*
+Wraps the matching `git lfs <hook>` command to keep Large File Storage synchronized.
+*   **Requirement**: none. Each script no-ops silently if `git-lfs` is not installed.
 
 ### Issue Tracker Autocomplete (`issue-tracker`)
 *Hook: prepare-commit-msg*
@@ -208,11 +208,50 @@ Analyzes code for bugs exactly like `code-formatter` but purely for finding erro
 *   **Rust**: Automatically triggers a check (`cargo clippy -- -D warnings`). Note: Since Rust is heavily macro & dependency driven, it does require dependencies to be present, but falls back gracefully if rust is disabled or unavailable.
     *   **Enable**: `hooks.ginshio.pre-commit.rust-lint-enabled` (boolean). Default: **true**.
 
+## Post-Checkout & Post-Merge Hooks
+
+These run after `git checkout` / `git switch` / `git clone` (and merges). All of
+them honor the standard disable hierarchy, e.g.
+`hooks.ginshio.post-checkout.<script>-disable` or
+`GINSHIO_HOOKS_POST_CHECKOUT_<SCRIPT>_DISABLE`.
+
+### Git Branchless Auto-Init (`branchless-init`)
+*Hook: post-checkout*
+On the first *branch* checkout (typically right after a clone), runs
+`git branchless init` when `git-branchless` is installed and not yet initialized
+for the repo. Idempotent and a no-op if branchless is absent.
+
+### Git Branchless Recorder (`git-branchless`)
+*Hook: post-checkout*
+Forwards to `git branchless hook post-checkout` on every checkout so branchless
+can track HEAD movement. No-ops if `git-branchless` is not installed, and never
+aborts the rest of the hook chain on failure.
+
+### Workspace Restore (`workspace-restore`)
+*Hook: post-checkout*
+On branch switch, points `./compile_commands.json` at the active branch's build
+directory (resolved via `builder.py`). Only acts when the path is absent or an
+existing symlink; a real in-tree file is never clobbered. No-ops in detached
+HEAD or when no build directory exists yet.
+
+### Dependency Change Warning (`check-dependencies`)
+*Hooks: post-checkout, post-merge*
+Warns (never blocks) when a dependency lockfile changes across the checkout/merge
+so you remember to re-run your package manager. Matches by basename anywhere in
+the tree. Watched files: `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`,
+`bun.lockb`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `requirements.txt`,
+`Cargo.lock`, `go.sum`, `Gemfile.lock`, `composer.lock`.
+
+### Background Maintenance (`maintenance`)
+*Hook: post-checkout*
+Registers the repository with `git maintenance start` (once). No-ops on git
+versions without the `maintenance` subcommand (< 2.29).
+
 ## Directory Structure
 
 *   `hooks/core/`: Core library and runner.
 *   `hooks/<HOOK_NAME>.d/`: Directory containing scripts for that hook.
-*   `hooks/<HOOK_NAME>`: Symlink to `core/runner`.
+*   `hooks/<HOOK_NAME>`: Thin stub that sources `core/runner` (kept as a real file, not a symlink, so third-party tools can append to it without corrupting shared logic).
 
 ### Sanity Checks (`sanity-checks`)
 Performs basic health checks on committed files:

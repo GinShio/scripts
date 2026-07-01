@@ -1,2 +1,11 @@
 #!/bin/sh
-git branchless hook post-checkout "$@"
+# git-branchless event recorder. Runs on every checkout (including file
+# checkouts) so branchless can track HEAD movement for smartlog/undo.
+
+. "$HOOKS_DIR/core/lib.sh"
+
+command -v git-branchless >/dev/null 2>&1 || exit 0
+
+# Never abort the rest of the post-checkout chain if branchless hiccups.
+git branchless hook post-checkout "$@" ||
+    log_warn "git-branchless post-checkout hook returned non-zero."

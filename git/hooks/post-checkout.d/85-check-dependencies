@@ -1,44 +1,53 @@
 #!/bin/sh
-# Check for dependency file changes and warn user
-# Hook: post-checkout, post-merge
+# Warn (never block) when dependency lockfiles change across a checkout or
+# merge, so you remember to re-run your package manager.
+# Shared by post-checkout and post-merge (post-merge.d/85 is a symlink here).
 
 . "$HOOKS_DIR/core/lib.sh"
 
-# Args for post-checkout: prev_head new_head flag
-# Args for post-merge: is_squash
+case "$HOOK_NAME" in
+    post-checkout)
+        # args: <prev_head> <new_head> <branch_flag>
+        [ "$3" = "1" ] || exit 0
+        old="$1"
+        new="$2"
+        ;;
+    post-merge)
+        # args: <is_squash>; compare the pre-merge HEAD to the current HEAD.
+        old="ORIG_HEAD"
+        new="HEAD"
+        ;;
+    *)
+        exit 0
+        ;;
+esac
 
-if [ "$HOOK_NAME" = "post-checkout" ]; then
-    PREV_HEAD="$1"
-    NEW_HEAD="$2"
-    FLAG="$3"
-    # Only run on branch checkout (1)
-    if [ "$FLAG" != "1" ]; then exit 0; fi
-elif [ "$HOOK_NAME" = "post-merge" ]; then
-    # For post-merge, we compare ORIG_HEAD to HEAD
-    PREV_HEAD="ORIG_HEAD"
-    NEW_HEAD="HEAD"
-else
-    exit 0
-fi
+# Watched lockfiles, matched by basename anywhere in the tree.
+lockfiles="
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
+poetry.lock
+uv.lock
+Pipfile.lock
+requirements.txt
+Cargo.lock
+go.sum
+Gemfile.lock
+composer.lock
+"
 
-# Define lockfiles to watch
-LOCKFILES="package-lock.json yarn.lock pnpm-lock.yaml poetry.lock Cargo.lock go.sum requirements.txt"
+# Single diff; keep paths whose basename is in the watch list.
+changed=$(git diff --name-only "$old" "$new" 2>/dev/null | while IFS= read -r path; do
+    base=${path##*/}
+    for lf in $lockfiles; do
+        [ "$base" = "$lf" ] && { printf '%s\n' "$path"; break; }
+    done
+done)
 
-changed_files=""
-
-for lockfile in $LOCKFILES; do
-    if git diff --name-only "$PREV_HEAD" "$NEW_HEAD" | grep -q "^$lockfile$"; then
-        changed_files="$changed_files $lockfile"
-    fi
-done
-
-if [ -n "$changed_files" ]; then
-    log_warn "Dependencies changed in:$changed_files"
-    log_warn "You may need to run your package manager install command."
-    
-    # Optional: Auto-install (commented out by default for safety)
-    # if echo "$changed_files" | grep -q "package-lock.json"; then
-    #    log_info "Running npm install..."
-    #    npm install
-    # fi
+if [ -n "$changed" ]; then
+    log_warn "Dependency lockfiles changed:"
+    printf '%s\n' "$changed" | while IFS= read -r f; do log_warn "  $f"; done
+    log_warn "You may need to re-run your package manager install."
 fi
