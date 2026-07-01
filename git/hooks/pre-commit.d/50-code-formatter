@@ -23,6 +23,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 staged_files | while IFS= read -r file; do
     is_staged_text "$file" || continue
+    is_encrypted "$file" && continue   # never rewrite a transcrypt/git-crypt blob
 
     case "$file" in
         *.c|*.h|*.inc|*.hh|*.hpp|*.hxx|*.h++|*.cc|*.cpp|*.cxx|*.c++|*.icc|*.ipp|*.ixx|*.i++|*.tcc|*.tpp|*.txx)

@@ -21,6 +21,7 @@ set -f
 # spaces; the unquoted expansions below rely on IFS still being a newline).
 py="" ; zig="" ; rust=0
 for file in $files; do
+    is_staged_text "$file" || continue   # never feed a binary blob to a linter
     case "$file" in
         *.py|*.pyi)  py="${py:+$py
 }$file" ;;

@@ -17,6 +17,7 @@ IFS='
 set -f
 for file in $files; do
     is_staged_text "$file" || continue
+    is_encrypted "$file" && continue   # its staged blob is ciphertext
 
     if staged_blob "$file" | LC_ALL=C grep -q "$CR"; then
         log_error "CR/CRLF line endings in $file (use LF)"
