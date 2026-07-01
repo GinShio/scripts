@@ -62,7 +62,7 @@ git config workflow.platform.token              ghp_xxx
 Or supply it through the environment, which always works and is handy on CI:
 
 ```sh
-export GITHUB_TOKEN=ghp_xxx     # GITLAB_TOKEN / GITEA_TOKEN / CODEBERG_TOKEN
+export GITHUB_TOKEN=ghp_xxx     # GITLAB_TOKEN / GITEA_TOKEN / FORGEJO_TOKEN / CODEBERG_TOKEN
 ```
 
 `sync` needs no token (it only pushes); `submit` and `anno` do.
@@ -82,9 +82,9 @@ git remote add origin   git@github.com:me/project.git
 git remote add upstream git@github.com:acme/project.git   # only if you forked
 ```
 
-The forge (GitHub/GitLab/Gitea/Codeberg) is detected from the **upstream**
-URL — or `origin` when there's no upstream. A self-hosted instance behind a
-custom domain can be named explicitly:
+The forge (GitHub/GitLab/Gitea/Forgejo/Codeberg) is detected from the
+**upstream** URL — or `origin` when there's no upstream. A self-hosted instance
+behind a custom domain can be named explicitly:
 
 ```sh
 git config workflow.platform.git.acme.com.service gitlab
@@ -298,9 +298,9 @@ All keys live under git config's `workflow.*` namespace.
 | Setting | Key | Notes |
 |---|---|---|
 | Token (per host) | `workflow.platform.<host>.token` | Most specific; `<host>` is e.g. `github.com` |
-| Token (per service) | `workflow.platform.<service>.token` | `<service>` ∈ github, gitlab, gitea, codeberg |
+| Token (per service) | `workflow.platform.<service>.token` | `<service>` ∈ github, gitlab, gitea, forgejo, codeberg |
 | Token (blanket) | `workflow.platform.token` | Last config fallback |
-| Token (env) | `GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITEA_TOKEN`, `CODEBERG_TOKEN` | Used when no config key matches |
+| Token (env) | `GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITEA_TOKEN`, `FORGEJO_TOKEN`, `CODEBERG_TOKEN` | Used when no config key matches. |
 | Service override | `workflow.platform.<host>.service` | Name a self-hosted host's type |
 | API base override | `workflow.platform.<host>.api-url` | For self-hosted / enterprise endpoints |
 | Branch prefix | `workflow.branch-prefix` | `slice` name suggestions (default: slug of `user.name`, else `stack/`) |

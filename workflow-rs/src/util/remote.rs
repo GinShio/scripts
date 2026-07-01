@@ -22,10 +22,13 @@ use crate::core::process::Command;
 pub enum Service {
     GitHub,
     GitLab,
+    /// Gitea — the original of the Gitea/Forgejo API family.
     Gitea,
+    /// Forgejo, Gitea's hard fork.
+    Forgejo,
+    /// codeberg.org specifically — a hosted Forgejo instance.
     Codeberg,
     Bitbucket,
-    Azure,
     Unknown,
 }
 
@@ -37,9 +40,9 @@ impl Service {
             Service::GitHub => "github",
             Service::GitLab => "gitlab",
             Service::Gitea => "gitea",
+            Service::Forgejo => "forgejo",
             Service::Codeberg => "codeberg",
             Service::Bitbucket => "bitbucket",
-            Service::Azure => "azure",
             Service::Unknown => "unknown",
         }
     }
@@ -49,9 +52,9 @@ impl Service {
             "github" => Service::GitHub,
             "gitlab" => Service::GitLab,
             "gitea" => Service::Gitea,
+            "forgejo" => Service::Forgejo,
             "codeberg" => Service::Codeberg,
             "bitbucket" => Service::Bitbucket,
-            "azure" => Service::Azure,
             _ => return None,
         })
     }
@@ -80,8 +83,6 @@ fn normalize_domain(domain: &str) -> String {
     match domain.as_str() {
         "ssh.github.com" => "github.com",
         "altssh.gitlab.com" => "gitlab.com",
-        "ssh.dev.azure.com" => "dev.azure.com",
-        "vs-ssh.visualstudio.com" => "visualstudio.com",
         "altssh.bitbucket.org" => "bitbucket.org",
         other => other,
     }
@@ -91,15 +92,14 @@ fn normalize_domain(domain: &str) -> String {
 fn detect_service(domain: &str) -> Service {
     match domain {
         "github.com" | "www.github.com" => Service::GitHub,
-        "codeberg.org" | "www.codeberg.org" => Service::Codeberg,
         "bitbucket.org" | "www.bitbucket.org" => Service::Bitbucket,
-        "dev.azure.com" | "visualstudio.com" => Service::Azure,
         "gitlab.com" | "www.gitlab.com" => Service::GitLab,
+        "codeberg.org" | "www.codeberg.org" => Service::Codeberg,
         // Self-hosted instances conventionally keep the product in the hostname,
         // which is the only signal we have for them.
         d if d.contains("gitlab") => Service::GitLab,
+        d if d.contains("forgejo") => Service::Forgejo,
         d if d.contains("gitea") => Service::Gitea,
-        d if d.contains("forgejo") => Service::Gitea,
         _ => Service::Unknown,
     }
 }
@@ -268,6 +268,15 @@ mod tests {
     fn detects_self_hosted_by_hostname_hint() {
         let info = parse_url("https://gitlab.example.com/team/app.git").unwrap();
         assert_eq!(info.service, Service::GitLab);
+    }
+
+    #[test]
+    fn forgejo_is_its_own_identity() {
+        // A self-hosted host naming Forgejo is detected as Forgejo, not folded
+        // into Gitea — they are parallel identities now, even sharing one impl.
+        let info = parse_url("https://forgejo.example.com/team/app.git").unwrap();
+        assert_eq!(info.service, Service::Forgejo);
+        assert_eq!(Service::parse("forgejo"), Some(Service::Forgejo));
     }
 
     #[test]

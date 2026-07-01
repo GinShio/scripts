@@ -151,8 +151,8 @@ fn parse_mr(v: &Value) -> Option<MergeRequest> {
 }
 
 impl Forge for GitLab {
-    fn labels(&self) -> (&'static str, &'static str) {
-        ("MR", "!")
+    fn noun(&self) -> &'static str {
+        "MR"
     }
 
     fn find(&self, branch: &str, state: StateFilter) -> anyhow::Result<Option<MergeRequest>> {

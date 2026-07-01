@@ -37,7 +37,7 @@ pub fn run(repo: &Repository, args: &SubmitArgs) -> anyhow::Result<()> {
 
     let remotes = Remotes::resolve(repo);
     let forge = forge::detect(repo, &remotes)?;
-    let (noun, _) = forge.labels();
+    let noun = forge.noun();
     let tips = repo.branch_tips();
 
     // Phase 1 — read existing MR state for every branch, in parallel.
@@ -174,8 +174,8 @@ mod tests {
     }
 
     impl Forge for MockForge {
-        fn labels(&self) -> (&'static str, &'static str) {
-            ("PR", "#")
+        fn noun(&self) -> &'static str {
+            "PR"
         }
         fn find(&self, _branch: &str, state: StateFilter) -> anyhow::Result<Option<MergeRequest>> {
             Ok(match state {

@@ -262,8 +262,9 @@ trait Forge: Send + Sync {
 
 A host impl (`github`/`gitlab`/`gitea`) is then *only* a mapping: base API URL
 from host, auth header style, endpoint paths, and the JSON↔`MergeRequest`
-translation. Gitea/Codeberg is GitHub-shaped but kept as its own impl
-(composition over a fragile shared base class).
+translation. The Gitea impl is GitHub-shaped but kept as its own thing
+(composition over a fragile shared base class), and serves the whole Gitea /
+Forgejo / Codeberg family — one API surface, three identities.
 
 There is no monolithic "reconcile" — the split verbs compose the primitives, and
 that is cleaner than a mode flag:
@@ -302,8 +303,14 @@ it yet.
 Token resolution, most specific first:
 `workflow.platform.<host>.token` → `workflow.platform.<service>.token` →
 `workflow.platform.token` → env (`GITHUB_TOKEN` / `GITLAB_TOKEN` /
-`GITEA_TOKEN` / `CODEBERG_TOKEN`). Environment is the most deliberate, most
-ephemeral override, consistent with the rest of the codebase.
+`GITEA_TOKEN` / `FORGEJO_TOKEN` / `CODEBERG_TOKEN`). Environment is the most
+deliberate, most ephemeral override, consistent with the rest of the codebase.
+
+Gitea, Forgejo and Codeberg are one API family and share a single impl, but stay
+three separate *identities* — each with its own token env and `.service` name —
+because they are parallel platforms users think of by name. Their env search
+follows the fork lineage rather than jumping to the root: a Forgejo host falls
+back to `GITEA_TOKEN`.
 
 ## 8. Annotation rendering (`anno`)
 
@@ -359,6 +366,4 @@ preference.
 
 - **future** `project`-subcommand integration: derive base/main branch (and more)
   from a source path once that tool exists (§5.1).
-- **future** Bitbucket / Azure forge impls — the trait is meant to make these
-  pure mapping work (§7.3).
 - **future** CI status read-back into the annotation block.

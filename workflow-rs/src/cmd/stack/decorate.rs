@@ -46,7 +46,7 @@ pub fn run(repo: &Repository, args: &DecorateArgs) -> anyhow::Result<()> {
 
     let remotes = Remotes::resolve(repo);
     let forge = forge::detect(repo, &remotes)?;
-    let (noun, _) = forge.labels();
+    let noun = forge.noun();
 
     let outcomes = map_parallel(&branches, |branch| {
         let outcome = match forge.find(branch, StateFilter::Open) {

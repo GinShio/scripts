@@ -113,9 +113,9 @@ impl Attributes {
 /// written once against this trait; see the module note for why the surface is
 /// this small.
 pub trait Forge: Send + Sync {
-    /// The human noun and sigil for this platform — `("PR", "#")` /
-    /// `("MR", "!")` — used when rendering navigation and log lines.
-    fn labels(&self) -> (&'static str, &'static str);
+    /// The user-facing noun for a merge request here — GitHub's "PR",
+    /// GitLab's "MR", Gitea's "PR".
+    fn noun(&self) -> &'static str;
 
     /// The MR for `branch` matching the state filter, regardless of its current
     /// base. Base is deliberately *not* a match criterion: a caller fixing a
@@ -252,6 +252,27 @@ pub fn detect(repo: &Repository, remotes: &Remotes) -> anyhow::Result<Box<dyn Fo
         .and_then(|s| Service::parse(&s))
         .unwrap_or(target.service);
 
+    // Turn away a recognized-but-unsupported host *before* hunting for a token,
+    // so the failure names the real reason instead of masquerading as a missing
+    // token. Bitbucket is the live case: we still parse its remotes and
+    // `wf stack sync` pushes to it, but the MR verbs have no backend for it.
+    match service {
+        Service::GitHub
+        | Service::GitLab
+        | Service::Gitea
+        | Service::Forgejo
+        | Service::Codeberg => {}
+        Service::Bitbucket => anyhow::bail!(
+            "`wf stack` speaks to GitHub, GitLab and Gitea; Bitbucket has no MR backend here \
+             (`wf stack sync` still pushes to it)"
+        ),
+        Service::Unknown => anyhow::bail!(
+            "could not detect the forge for host '{}'; set workflow.platform.{}.service",
+            target.host,
+            target.host
+        ),
+    }
+
     let token = resolve_token(repo, &target.host, service).ok_or_else(|| {
         anyhow::anyhow!(
             "no API token for {} ({}); set workflow.platform.{}.token or the platform's *_TOKEN env var",
@@ -281,7 +302,9 @@ pub fn detect(repo: &Repository, remotes: &Remotes) -> anyhow::Result<Box<dyn Fo
             token,
             api_url_override,
         ))),
-        Service::Gitea | Service::Codeberg => Ok(Box::new(gitea::Gitea::new(
+        // One API family, one impl: only their identities (token env, config key,
+        // detection) set Gitea, Forgejo and Codeberg apart.
+        Service::Gitea | Service::Forgejo | Service::Codeberg => Ok(Box::new(gitea::Gitea::new(
             target,
             head_owner,
             token,
@@ -293,14 +316,8 @@ pub fn detect(repo: &Repository, remotes: &Remotes) -> anyhow::Result<Box<dyn Fo
             token,
             api_url_override,
         )?)),
-        Service::Bitbucket | Service::Azure => {
-            anyhow::bail!("{} support is not implemented yet", service.as_str())
-        }
-        Service::Unknown => anyhow::bail!(
-            "could not detect the forge for host '{}'; set workflow.platform.{}.service",
-            target.host,
-            target.host
-        ),
+        // The unsupported services were already rejected above.
+        Service::Bitbucket | Service::Unknown => unreachable!(),
     }
 }
 
@@ -326,9 +343,10 @@ fn resolve_token(repo: &Repository, host: &str, service: Service) -> Option<Stri
         Service::GitHub => &["GITHUB_TOKEN"],
         Service::GitLab => &["GITLAB_TOKEN"],
         Service::Gitea => &["GITEA_TOKEN"],
-        Service::Codeberg => &["CODEBERG_TOKEN", "GITEA_TOKEN"],
+        Service::Forgejo => &["FORGEJO_TOKEN", "GITEA_TOKEN"],
+        // Codeberg runs Forgejo, so it falls back to Forgejo's env.
+        Service::Codeberg => &["CODEBERG_TOKEN", "FORGEJO_TOKEN"],
         Service::Bitbucket => &["BITBUCKET_TOKEN"],
-        Service::Azure => &["AZURE_DEVOPS_TOKEN"],
         Service::Unknown => &[],
     };
     env_vars.iter().find_map(|v| std::env::var(v).ok())

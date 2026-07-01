@@ -35,7 +35,7 @@ pub fn run(repo: &Repository, all: bool) -> anyhow::Result<()> {
 
     let remotes = Remotes::resolve(repo);
     let forge = forge::detect(repo, &remotes)?;
-    let (noun, _) = forge.labels();
+    let noun = forge.noun();
 
     // Discover the open MR for each branch up front; everything else is local.
     let found = map_parallel(&plan.selected, |branch| {

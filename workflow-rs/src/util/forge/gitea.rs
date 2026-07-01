@@ -114,8 +114,8 @@ fn parse_pull(v: &Value) -> Option<MergeRequest> {
 }
 
 impl Forge for Gitea {
-    fn labels(&self) -> (&'static str, &'static str) {
-        ("PR", "#")
+    fn noun(&self) -> &'static str {
+        "PR"
     }
 
     fn find(&self, branch: &str, state: StateFilter) -> anyhow::Result<Option<MergeRequest>> {
