@@ -180,19 +180,51 @@ is the moment to seed it with something.
 ### Issue-ID prefix
 
 Saves retyping a ticket number into every commit. Enabled, it reads an issue ID
-out of the current branch name and prepends it to a *new* message — so on
-`feature/PROJ-123-login` your message opens with `[PROJ-123] ` already there. It
-only touches fresh messages (never an amend, merge, or squash) and won't
-double-prefix on a re-edit. Off by default so it never intrudes on repos that
-don't work this way.
+out of the current branch name and adds it to the message — so on
+`feature/PROJ-123-login` your subject opens with `[PROJ-123] ` already there. It
+applies to almost every message-producing command (a plain commit, `-m`, a `-t`
+template, a merge, a cherry-pick, a revert, an amend, …) but stays out of the way
+where it shouldn't act: it never rewrites messages during a `rebase` (replayed
+commits already carry their ID), never touches an autosquash marker
+(`fixup!`/`squash!`/`amend!`, so `git rebase --autosquash` still matches), never
+runs on a detached HEAD (no branch to read from), and never adds itself twice.
+Off by default so it never intrudes on repos that don't work this way.
+
+By default the ID is **prepended** to the subject as `[PROJ-123] `. It can
+instead be **appended** as a git trailer at the end of the message
+(`Refs: PROJ-123`) — the right shape for tools that read trailers.
 
 - `issue-tracker-enable` — off by default; set true to turn it on.
 - `issue-tracker-regex` — what to pull from the branch name (default
   `[A-Z]+-[0-9]+`).
-- `issue-tracker-format` — how to wrap the ID, `printf`-style with `%s` as the ID
-  (default `[%s] `).
+- `issue-tracker-position` — `prepend` (default) puts the ID at the start of the
+  subject; `append` adds it as a git trailer at the end of the message body
+  (placed correctly relative to git's comment block; idempotent on a re-run, but
+  a *different* ID is accumulated rather than duplicated).
+- `issue-tracker-format` — how to wrap the ID; the first `%s` is replaced by the
+  ID and everything else is taken literally. The default follows the position:
+  `[%s] ` for `prepend`, `Refs: %s` for `append` (which should stay
+  trailer-shaped, `Token: %s`).
 - `issue-tracker-default` — a fallback ID to use when the branch name carries
-  none.
+  none. In `append` mode this placeholder is added only when the message has no
+  issue trailer yet (it never stacks onto a real, branch-derived reference),
+  whereas a branch-derived ID accumulates a distinct value as described above.
+
+### Provenance trailer
+
+Records where a *derived* commit came from as a structured git trailer, so the
+link is machine-readable instead of buried in prose (or, for a cherry-pick
+without `-x`, absent entirely):
+
+- a merge → `Merges: <sha>` (one per parent, so an octopus merge lists them all);
+- a cherry-pick → `Cherry-picked-from: <sha>`;
+- a revert → `Reverts: <sha>`, *replacing* git's default `This reverts commit
+  <sha>.` line.
+
+The operation is detected from git's in-progress marker files, so it works for a
+cherry-pick or revert done without an editor. It stays out of a `rebase`, and the
+trailer is idempotent on a re-edit. On by default — it only touches
+merge/cherry-pick/revert and is otherwise additive.
 
 ## `pre-push`
 
