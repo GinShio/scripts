@@ -2,7 +2,7 @@
 . "$HOOKS_DIR/core/lib.sh"
 
 # Ask before committing straight onto a shared branch. Opt-in.
-cfg_bool hooks.ginshio.pre-commit.warn-protected-enabled || exit 0
+cfg_bool wits.hooks.pre-commit.warn-protected-enable || exit 0
 
 printf '%s\n' "$CURRENT_BRANCH" | grep -qE "$PROTECTED_BRANCH" || exit 0
 

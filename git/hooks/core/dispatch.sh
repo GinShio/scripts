@@ -9,24 +9,23 @@
 # lib.sh for is_truthy, the cfg_* resolvers, and logging.
 
 # Is a hook, or a specific script within it, enabled? Answers to the disable
-# hierarchy: global, per-hook, per-script (by clean name). Each level reads its
-# environment twin then git config, via cfg_bool — the one exception being the
-# global switch, whose env alias is GINSHIO_HOOKS_DISABLE_ALL.
+# hierarchy: global, per-hook, per-script (by clean name). The global and per-hook
+# switches both apply to the whole run and are checked identically, so lib.sh
+# resolves them once (env overrides config) into the single flag _WITS_HOOKS_OFF
+# and this hot path never re-forks git for them; only the per-script key varies
+# per candidate and is read live via cfg_bool.
 is_enabled() {
     _hook="$1"
     _script="$2"
 
-    # Global kill switch.
-    is_truthy "${GINSHIO_HOOKS_DISABLE_ALL:-false}" && return 1
-    is_truthy "${_RAW_CFG_DISABLE_ALL:-false}" && return 1
+    # Whole-run kill switch (global or per-hook), resolved once in lib.sh.
+    [ "${_WITS_HOOKS_OFF:-0}" = 1 ] && return 1
 
-    # Hook level.
-    cfg_bool "hooks.ginshio.$_hook.disable" && return 1
-
-    # Script level, addressed by clean name (numeric prefix stripped).
+    # Script level, addressed by clean name (numeric prefix stripped). The script
+    # name varies per candidate, so this one stays a live lookup.
     if [ -n "$_script" ]; then
         _clean=$(echo "$_script" | sed -E 's/^[0-9]+-//')
-        cfg_bool "hooks.ginshio.$_hook.$_clean-disable" && return 1
+        cfg_bool "wits.hooks.$_hook.$_clean-disable" && return 1
     fi
 
     return 0
@@ -103,7 +102,7 @@ run_external_hooks() {
     shift 2
 
     # 1. Directory scanning — ENV takes precedence over git config.
-    _ext_dirs="${GINSHIO_HOOKS_EXTERNAL_DIRS:-$(git config hooks.ginshio.external-dirs 2>/dev/null)}"
+    _ext_dirs="${WITS_HOOKS_EXTERNAL_DIRS:-$(git config wits.hooks.external-dirs 2>/dev/null)}"
     if [ -n "$_ext_dirs" ]; then
         _old_ifs="$IFS"
         IFS=":"
@@ -155,8 +154,8 @@ run_external_hooks() {
 
     # 2. Explicit script mapping (e.g. scripts/lint.sh).
     _env_hook_name=$(echo "$_ext_hook_name" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-    eval _ext_scripts_env="\$GINSHIO_HOOKS_${_env_hook_name}_EXTERNAL_SCRIPTS"
-    _ext_scripts="${_ext_scripts_env:-$(git config "hooks.ginshio.${_ext_hook_name}.external-scripts" 2>/dev/null)}"
+    eval _ext_scripts_env="\$WITS_HOOKS_${_env_hook_name}_EXTERNAL_SCRIPTS"
+    _ext_scripts="${_ext_scripts_env:-$(git config "wits.hooks.${_ext_hook_name}.external-scripts" 2>/dev/null)}"
 
     if [ -n "$_ext_scripts" ]; then
         _old_ifs="$IFS"

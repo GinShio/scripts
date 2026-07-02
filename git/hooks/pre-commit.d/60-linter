@@ -2,11 +2,27 @@
 . "$HOOKS_DIR/core/lib.sh"
 
 # Fast static analysis of the staged languages, run on the working-tree copies
-# (linters need real files, and cargo works per-crate regardless). Each language
-# is on by default; a missing tool warns rather than fails.
-PYTHON=$(cfg_bool hooks.ginshio.pre-commit.python-lint-enabled true && echo 1 || echo 0)
-ZIG=$(cfg_bool hooks.ginshio.pre-commit.zig-lint-enabled true && echo 1 || echo 0)
-RUST=$(cfg_bool hooks.ginshio.pre-commit.rust-lint-enabled true && echo 1 || echo 0)
+# (linters need real files). Most tools are file-oriented and take paths; clippy
+# is crate-oriented, so it is dispatched per owning crate (see below). Each
+# language runs by default and is turned off on its own via a `-disable` switch;
+# a missing tool warns rather than fails.
+PYTHON=$(cfg_bool wits.hooks.pre-commit.linter-python-disable false && echo 0 || echo 1)
+ZIG=$(cfg_bool wits.hooks.pre-commit.linter-zig-disable false && echo 0 || echo 1)
+RUST=$(cfg_bool wits.hooks.pre-commit.linter-rust-disable false && echo 0 || echo 1)
+
+# clippy is crate-oriented, so — unlike the file-oriented linters below — it needs
+# a manifest. Walk up from a staged .rs file to the nearest Cargo.toml; failure
+# means the file belongs to no crate and clippy simply cannot see it.
+find_crate_manifest() {
+    _d=$(dirname -- "$1")
+    while :; do
+        [ -f "$_d/Cargo.toml" ] && { printf '%s\n' "$_d/Cargo.toml"; return 0; }
+        case "$_d" in
+            .|/) return 1 ;;
+        esac
+        _d=$(dirname -- "$_d")
+    done
+}
 
 files=$(staged_files)
 [ -n "$files" ] || exit 0
@@ -19,7 +35,7 @@ set -f
 
 # Bucket staged paths by language (newline-separated so paths may contain
 # spaces; the unquoted expansions below rely on IFS still being a newline).
-py="" ; zig="" ; rust=0
+py="" ; zig="" ; rs=""
 for file in $files; do
     is_staged_text "$file" || continue   # never feed a binary blob to a linter
     case "$file" in
@@ -27,7 +43,8 @@ for file in $files; do
 }$file" ;;
         *.zig|*.zon) zig="${zig:+$zig
 }$file" ;;
-        *.rs)        rust=1 ;;
+        *.rs)        rs="${rs:+$rs
+}$file" ;;
     esac
 done
 
@@ -49,9 +66,31 @@ if [ "$ZIG" = 1 ] && [ -n "$zig" ]; then
     fi
 fi
 
-if [ "$RUST" = 1 ] && [ "$rust" = 1 ]; then
+if [ "$RUST" = 1 ] && [ -n "$rs" ]; then
     if command -v cargo >/dev/null 2>&1; then
-        cargo clippy -- -D warnings || rc=1
+        # Map the staged .rs files onto the distinct crates that own them, so a
+        # subdir crate is linted and a repo with no root manifest doesn't abort.
+        manifests="" ; stray=0
+        for f in $rs; do
+            if m=$(find_crate_manifest "$f"); then
+                case "
+$manifests
+" in
+                    *"
+$m
+"*) ;;                       # crate already queued
+                    *) manifests="${manifests:+$manifests
+}$m" ;;
+                esac
+            else
+                stray=1
+            fi
+        done
+        [ "$stray" = 1 ] &&
+            log_warn "some staged .rs files belong to no Cargo.toml; skipping clippy for them"
+        for m in $manifests; do
+            cargo clippy --manifest-path "$m" -- -D warnings || rc=1
+        done
     else
         log_warn "rust lint enabled but cargo is not installed"
     fi

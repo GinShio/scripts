@@ -4,11 +4,55 @@
 # script. The engine that drives the runner (the enable hierarchy and the
 # execution layers) lives beside this file in dispatch.sh.
 
+# --- Configuration ---
+#
+# Defined ahead of the state block below, which resolves the global kill switch
+# through cfg_bool.
+
+# Helper to check boolean values.
+is_truthy() {
+    case "$1" in
+        [Yy][Ee][Ss]|[Yy]|[Tt][Rr][Uu][Ee]|1|[Oo][Nn]) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The environment-variable twin of a config key is a pure mechanical transform:
+# upper-case the whole key and turn every `-` and `.` into `_`. So
+# `wits.hooks.pre-commit.formatter-disable` maps to
+# WITS_HOOKS_PRE_COMMIT_FORMATTER_DISABLE — no prefix juggling, no special case.
+_cfg_env_name() {
+    echo "$1" | tr '[:lower:]' '[:upper:]' | tr '.-' '__'
+}
+
+# Resolve a setting, environment twin first, then git config. This is the single
+# path every script uses, so one rule holds everywhere: env overrides config,
+# config is the standing value.
+#
+#   cfg_bool  <config-key> [default]   -> exit status (0 = true), for --bool keys
+#   cfg_value <config-key> [default]   -> echoes the resolved string
+cfg_bool() {
+    _env=$(_cfg_env_name "$1")
+    eval _val="\${$_env:-}"
+    [ -n "$_val" ] && { is_truthy "$_val"; return; }
+    _val=$(git config --bool "$1" 2>/dev/null)
+    [ -n "$_val" ] && { is_truthy "$_val"; return; }
+    is_truthy "${2:-false}"
+}
+cfg_value() {
+    _env=$(_cfg_env_name "$1")
+    eval _val="\${$_env:-}"
+    [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
+    _val=$(git config "$1" 2>/dev/null)
+    [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
+    printf '%s\n' "${2:-}"
+}
+
 # Repo-scoped state, resolved exactly once per hook run.
 #
 # The top-level runner sources this file, then execs each hook script as its own
 # process. Those children re-source this file only to obtain the shell functions
-# below (functions cannot be exported). The expensive git queries here are
+# defined here (functions cannot be exported). The expensive git queries here are
 # guarded and their results exported, so a child inherits them from the
 # environment instead of re-forking git on every script — this matters most for
 # hot hooks such as reference-transaction.
@@ -17,7 +61,7 @@
 # recursively invokes another repository's hooks (e.g. across a submodule) would
 # inherit the outer repo's values. That already holds for the exported GIT_DIR,
 # and such nested invocations do not occur in this framework.
-if [ -z "${_GINSHIO_ENV_LOADED:-}" ]; then
+if [ -z "${_WITS_ENV_LOADED:-}" ]; then
     GIT_DIR=$(git rev-parse --git-dir)
     GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
     GIT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null)
@@ -28,15 +72,23 @@ if [ -z "${_GINSHIO_ENV_LOADED:-}" ]; then
     CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
     NULL_SHA=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
 
-    # Protected branch matcher (ERE for grep -E): master, dev, release-*, patch-*.
-    PROTECTED_BRANCH='^(master|dev|release-.*|patch-.*)$'
+    # Protected branch matcher (ERE for grep -E).
+    PROTECTED_BRANCH='^(main|master|dev|release-.*|patch-.*)$'
 
-    # Global kill switch, read once (consumed by is_enabled).
-    _RAW_CFG_DISABLE_ALL=$(git config --bool hooks.ginshio.disable 2>/dev/null)
+    # Whole-run kill switch. The global switch and the per-hook switch both apply
+    # to the entire run and is_enabled checks them identically, so they collapse
+    # into one cached flag (env overrides config, resolved once — never re-forked
+    # in the hot path). The hook name is fixed for the run (the runner exports
+    # HOOK_NAME before sourcing this file); absent it, only the global switch
+    # counts. The per-hook query is skipped once the global switch already applies.
+    _WITS_HOOKS_OFF=0
+    cfg_bool wits.hooks.disable && _WITS_HOOKS_OFF=1
+    [ "$_WITS_HOOKS_OFF" = 0 ] && [ -n "${HOOK_NAME:-}" ] &&
+        cfg_bool "wits.hooks.$HOOK_NAME.disable" && _WITS_HOOKS_OFF=1
 
-    _GINSHIO_ENV_LOADED=1
+    _WITS_ENV_LOADED=1
     export GIT_DIR GIT_COMMON_DIR GIT_TOPLEVEL CURRENT_BRANCH NULL_SHA \
-           PROTECTED_BRANCH _RAW_CFG_DISABLE_ALL _GINSHIO_ENV_LOADED
+           PROTECTED_BRANCH _WITS_HOOKS_OFF _WITS_ENV_LOADED
 fi
 
 # Colors
@@ -55,8 +107,8 @@ else
 fi
 
 # Logging levels: 0=OFF, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG (default WARN).
-# Configured via ENV: GINSHIO_HOOKS_LOG_LEVEL
-log_level=${GINSHIO_HOOKS_LOG_LEVEL:-2}
+# Configured via ENV: WITS_HOOKS_LOG_LEVEL
+log_level=${WITS_HOOKS_LOG_LEVEL:-2}
 
 # Enable shell tracing for debug level
 if [ "$log_level" -ge 4 ]; then
@@ -82,48 +134,6 @@ log_error() {
     if [ "$log_level" -ge 1 ]; then
         printf "%s[ERROR]%s %s\n" "$COLOR_RED" "$COLOR_RESET" "$*";
     fi
-}
-
-# --- Configuration ---
-
-# Helper to check boolean values.
-is_truthy() {
-    case "$1" in
-        [Yy][Ee][Ss]|[Yy]|[Tt][Rr][Uu][Ee]|1|[Oo][Nn]) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# The environment-variable twin of a `hooks.ginshio.<rest>` config key:
-# GINSHIO_HOOKS_<REST>, with the part after the namespace upper-cased and every
-# `-`/`.` turned into `_`.  (is_enabled builds the same names for the disable
-# hierarchy; the global switch is the one alias, GINSHIO_HOOKS_DISABLE_ALL.)
-_cfg_env_name() {
-    printf 'GINSHIO_HOOKS_%s' \
-        "$(echo "${1#hooks.ginshio.}" | tr '[:lower:]' '[:upper:]' | tr '.-' '__')"
-}
-
-# Resolve a setting, environment twin first, then git config. This is the single
-# path every script uses, so one rule holds everywhere: env overrides config,
-# config is the standing value.
-#
-#   cfg_bool  <config-key> [default]   -> exit status (0 = true), for --bool keys
-#   cfg_value <config-key> [default]   -> echoes the resolved string
-cfg_bool() {
-    _env=$(_cfg_env_name "$1")
-    eval _val="\${$_env:-}"
-    [ -n "$_val" ] && { is_truthy "$_val"; return; }
-    _val=$(git config --bool "$1" 2>/dev/null)
-    [ -n "$_val" ] && { is_truthy "$_val"; return; }
-    is_truthy "${2:-false}"
-}
-cfg_value() {
-    _env=$(_cfg_env_name "$1")
-    eval _val="\${$_env:-}"
-    [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
-    _val=$(git config "$1" 2>/dev/null)
-    [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
-    printf '%s\n' "${2:-}"
 }
 
 # --- Common utilities ---

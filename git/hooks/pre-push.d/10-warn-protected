@@ -3,7 +3,7 @@
 
 . "$HOOKS_DIR/core/lib.sh"
 
-cfg_bool hooks.ginshio.pre-push.warn-protected-enabled || exit 0
+cfg_bool wits.hooks.pre-push.warn-protected-enable || exit 0
 
 remote_name="$1"
 

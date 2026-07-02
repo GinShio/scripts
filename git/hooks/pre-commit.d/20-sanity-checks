@@ -7,7 +7,7 @@
 files=$(staged_files)
 [ -n "$files" ] || exit 0
 
-max_size=$(cfg_value hooks.ginshio.pre-commit.sanity-checks-max-file-size 26214400)
+max_size=$(cfg_value wits.hooks.pre-commit.sanity-checks-max-file-size 26214400)
 
 rc=0
 oldifs=$IFS

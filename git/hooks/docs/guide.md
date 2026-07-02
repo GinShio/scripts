@@ -29,7 +29,7 @@ scripts.
 
 ## How settings are read
 
-Every knob in this guide is a git config key under the `hooks.ginshio.`
+Every knob in this guide is a git config key under the `wits.hooks.`
 namespace, and every one has an environment-variable twin. They cover different
 needs:
 
@@ -39,22 +39,31 @@ needs:
 - **The environment variable** is a one-off for the command in front of you, and
   it overrides config when both are set — the "not this time" escape hatch.
 
-The environment name is mechanical: drop the `hooks.ginshio.` namespace,
-upper-case what remains, and turn every `-` and `.` into `_`, yielding a
-`GINSHIO_HOOKS_…` name.
+The environment name is a pure mechanical transform of the config key: upper-case
+the whole thing and turn every `-` and `.` into `_`. There is no prefix juggling
+and no special case — the global kill switch `wits.hooks.disable` is simply
+`WITS_HOOKS_DISABLE`.
 
 ```
-hooks.ginshio.pre-commit.code-formatter-disable  →  GINSHIO_HOOKS_PRE_COMMIT_CODE_FORMATTER_DISABLE
-hooks.ginshio.pre-commit.clang-format-enabled    →  GINSHIO_HOOKS_PRE_COMMIT_CLANG_FORMAT_ENABLED
+wits.hooks.disable                             →  WITS_HOOKS_DISABLE
+wits.hooks.pre-commit.formatter-disable        →  WITS_HOOKS_PRE_COMMIT_FORMATTER_DISABLE
+wits.hooks.pre-commit.formatter-clang-disable  →  WITS_HOOKS_PRE_COMMIT_FORMATTER_CLANG_DISABLE
 ```
 
-The one exception is the global kill switch: `hooks.ginshio.disable` also answers
-to `GINSHIO_HOOKS_DISABLE_ALL`. Boolean keys accept the usual git spellings —
-`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`.
+Boolean keys accept the usual git spellings — `true`/`false`, `1`/`0`,
+`yes`/`no`, `on`/`off`.
+
+Every boolean switch reads its polarity from its suffix, so the default is always
+"key unset" and you only ever set one to move off that default:
+
+- a **`-disable`** key guards a behaviour that runs **by default** — set it to
+  turn that behaviour off;
+- an **`-enable`** key guards a behaviour that is **off by default** — set it to
+  turn it on.
 
 Throughout the sections below keys are written relative to their hook: a setting
-shown as `clang-format-enabled` under `pre-commit` is the full key
-`hooks.ginshio.pre-commit.clang-format-enabled`.
+shown as `formatter-clang-disable` under `pre-commit` is the full key
+`wits.hooks.pre-commit.formatter-clang-disable`.
 
 ## `pre-commit`
 
@@ -78,11 +87,13 @@ in the index and, when your working copy has no unstaged edits, updates that too
 A partially-staged file therefore keeps its unstaged changes intact — the commit
 gets the formatted version, your in-progress edits are left alone.
 
-- `clang-format-enabled`, `rust-fmt-enabled`, `zig-fmt-enabled`,
-  `python-fmt-enabled` — one per language, on by default.
-- `whitespace-enabled` — the generic trim/final-newline pass, on by default.
-- `clang-format-style` — a named style (`llvm`, `google`, …) for C/C++ when the
-  repo has no `.clang-format` of its own.
+- `formatter-clang-disable`, `formatter-rust-disable`, `formatter-zig-disable`,
+  `formatter-python-disable` — one per language, each on by default; set to turn
+  that language's formatter off.
+- `formatter-whitespace-disable` — the generic trim/final-newline pass, on by
+  default.
+- `formatter-clang-style` — a named style (`llvm`, `google`, …) for C/C++ when
+  the repo has no `.clang-format` of its own.
 
 ### Linter
 
@@ -92,7 +103,8 @@ analyzers over what you're committing — `ruff` (or `flake8`) for Python,
 the commit on a finding. Like the formatter it is per-language and only runs
 where the tool exists.
 
-- `python-lint-enabled`, `zig-lint-enabled`, `rust-lint-enabled` — on by default.
+- `linter-python-disable`, `linter-zig-disable`, `linter-rust-disable` — one per
+  language, each on by default; set to turn that language's linter off.
 
 ### Sanity checks
 
@@ -133,7 +145,7 @@ asks you to confirm before committing while `master`, `dev`, `release-*`, or
 `patch-*` is checked out. Off by default, since whether a direct commit is a
 mistake depends entirely on how you work.
 
-- `warn-protected-enabled` — off by default; set true to get the prompt.
+- `warn-protected-enable` — off by default; set true to get the prompt.
 
 ## `prepare-commit-msg`
 
@@ -149,7 +161,7 @@ only touches fresh messages (never an amend, merge, or squash) and won't
 double-prefix on a re-edit. Off by default so it never intrudes on repos that
 don't work this way.
 
-- `issue-tracker-enabled` — off by default.
+- `issue-tracker-enable` — off by default; set true to turn it on.
 - `issue-tracker-regex` — what to pull from the branch name (default
   `[A-Z]+-[0-9]+`).
 - `issue-tracker-format` — how to wrap the ID, `printf`-style with `%s` as the ID
@@ -166,7 +178,7 @@ Runs before git hands refs to a remote, and can abort the push.
 The push-side counterpart to the commit prompt: enabled, it asks for confirmation
 before pushing to a protected branch on the remote. Off by default.
 
-- `warn-protected-enabled` — off by default; set true to get the prompt.
+- `warn-protected-enable` — off by default; set true to get the prompt.
 
 ## `post-checkout`
 
@@ -221,7 +233,7 @@ Reclaims disk when you delete a branch. Opt in, and deleting a branch also remov
 its build directory (resolved through the project's `builder.py`). Off by default
 because it deletes files — enable it per repo where you want the housekeeping.
 
-- `cleanup-build-dir-enabled` — off by default; set true to remove build
+- `cleanup-build-dir-enable` — off by default; set true to remove build
   directories on branch deletion.
 
 ## The recorder hooks
@@ -237,18 +249,18 @@ to configure on any of them.
 Beyond the per-behaviour switches above, you can silence things wholesale — when
 a hook is wrong for a repo, or simply in your way this once. Three scopes:
 
-- **Everything** — `hooks.ginshio.disable`
-- **One hook** — `hooks.ginshio.<hook>.disable`, e.g. `hooks.ginshio.pre-commit.disable`
-- **One script** — `hooks.ginshio.<hook>.<script>-disable`, naming the script
-  without its numeric prefix, e.g. `hooks.ginshio.pre-commit.code-formatter-disable`
+- **Everything** — `wits.hooks.disable`
+- **One hook** — `wits.hooks.<hook>.disable`, e.g. `wits.hooks.pre-commit.disable`
+- **One script** — `wits.hooks.<hook>.<script>-disable`, naming the script
+  without its numeric prefix, e.g. `wits.hooks.pre-commit.formatter-disable`
 
 As everywhere, config is the standing choice and the environment variable is the
 one-shot that wins for a single command (see [How settings are
 read](#how-settings-are-read)):
 
 ```sh
-git config hooks.ginshio.pre-commit.disable true      # this repo, from now on
-GINSHIO_HOOKS_PRE_COMMIT_DISABLE=1 git commit …        # only this commit
+git config wits.hooks.pre-commit.disable true      # this repo, from now on
+WITS_HOOKS_PRE_COMMIT_DISABLE=1 git commit …        # only this commit
 ```
 
 ## Extending the pipeline
@@ -273,7 +285,7 @@ displaced. There are two ways to point at them; both accept colon-separated
 entries, absolute or relative to the repo root, and both run *after* the built-in
 and overlay scripts so a project's own checks get the last word.
 
-**Directories to scan** — `hooks.ginshio.external-dirs`. In each directory, for a
+**Directories to scan** — `wits.hooks.external-dirs`. In each directory, for a
 given hook, the framework runs whichever of these it finds:
 
 - a single executable file named exactly `<hook>` — the Husky convention
@@ -281,16 +293,16 @@ given hook, the framework runs whichever of these it finds:
 - a `<hook>.d/` directory, whose executable scripts run in filename order, exactly
   like the built-in ones (`.githooks/pre-commit.d/`).
 
-**Explicit scripts** — `hooks.ginshio.<hook>.external-scripts`, for a project whose
+**Explicit scripts** — `wits.hooks.<hook>.external-scripts`, for a project whose
 scripts don't follow the `dir/<hook>` convention. They run in the order listed.
 
 ```sh
-git config hooks.ginshio.external-dirs ".husky:.githooks"
-git config hooks.ginshio.pre-commit.external-scripts "scripts/lint.sh:tools/check-fmt"
+git config wits.hooks.external-dirs ".husky:.githooks"
+git config wits.hooks.pre-commit.external-scripts "scripts/lint.sh:tools/check-fmt"
 ```
 
 A scanned directory's single-file hook is toggled under the pseudo-name
-`external` (`GINSHIO_HOOKS_PRE_COMMIT_EXTERNAL_DISABLE=1`); explicit scripts and a
+`external` (`WITS_HOOKS_PRE_COMMIT_EXTERNAL_DISABLE=1`); explicit scripts and a
 directory's `.d/` scripts are toggled under their own filename.
 
 ### Overlay layers (`secret-*`)
@@ -314,5 +326,5 @@ When something surprises you, turn up the logging for the next command — the
 levels run from silent to a full shell trace:
 
 ```sh
-GINSHIO_HOOKS_LOG_LEVEL=3 git commit …   # 0 silent · 1 errors · 2 warnings (default) · 3 info · 4 trace
+WITS_HOOKS_LOG_LEVEL=3 git commit …   # 0 silent · 1 errors · 2 warnings (default) · 3 info · 4 trace
 ```

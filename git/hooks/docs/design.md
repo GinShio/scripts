@@ -113,12 +113,12 @@ config and an environment variable, and the split between them is deliberate.
 **Git config is for standing preference** — "this repo never runs the
 formatter" — and lives with the repo (or globally). **Environment variables are
 for the ephemeral, one-shot override** — "not this once" — and compose with the
-command in front of you (`GINSHIO_HOOKS_PRE_COMMIT_DISABLE=1 git commit …`). The
+command in front of you (`WITS_HOOKS_PRE_COMMIT_DISABLE=1 git commit …`). The
 same env-over-config precedence runs through the whole codebase; hooks follow it
 so there is one rule to remember.
 
 Scripts are addressed by their **clean name** — the filename minus its numeric
-prefix (`85-code-formatter` → `code-formatter`) — so the toggle is stable even
+prefix (`50-formatter` → `formatter`) — so the toggle is stable even
 when a script is renumbered. That decoupling is the reason the prefix can stay a
 pure ordering device (§4).
 

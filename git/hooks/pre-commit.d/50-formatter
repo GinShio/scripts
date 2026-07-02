@@ -2,17 +2,18 @@
 . "$HOOKS_DIR/core/lib.sh"
 
 # Format the *staged* content of each supported file and write it back into the
-# index (apply_to_staged keeps unstaged edits untouched). Every language is on
-# by default and disabled on its own; a missing formatter is simply skipped.
-CLANG=$(cfg_bool hooks.ginshio.pre-commit.clang-format-enabled true && echo 1 || echo 0)
-RUST=$(cfg_bool hooks.ginshio.pre-commit.rust-fmt-enabled true && echo 1 || echo 0)
-ZIG=$(cfg_bool hooks.ginshio.pre-commit.zig-fmt-enabled true && echo 1 || echo 0)
-PYTHON=$(cfg_bool hooks.ginshio.pre-commit.python-fmt-enabled true && echo 1 || echo 0)
-WHITESPACE=$(cfg_bool hooks.ginshio.pre-commit.whitespace-enabled true && echo 1 || echo 0)
+# index (apply_to_staged keeps unstaged edits untouched). Every language runs by
+# default and is turned off on its own via a `-disable` switch; a missing
+# formatter is simply skipped.
+CLANG=$(cfg_bool wits.hooks.pre-commit.formatter-clang-disable false && echo 0 || echo 1)
+RUST=$(cfg_bool wits.hooks.pre-commit.formatter-rust-disable false && echo 0 || echo 1)
+ZIG=$(cfg_bool wits.hooks.pre-commit.formatter-zig-disable false && echo 0 || echo 1)
+PYTHON=$(cfg_bool wits.hooks.pre-commit.formatter-python-disable false && echo 0 || echo 1)
+WHITESPACE=$(cfg_bool wits.hooks.pre-commit.formatter-whitespace-disable false && echo 0 || echo 1)
 
 # clang-format discovers a nearby .clang-format via --assume-filename; an
 # explicit configured style overrides that.
-CF_STYLE=$(cfg_value hooks.ginshio.pre-commit.clang-format-style)
+CF_STYLE=$(cfg_value wits.hooks.pre-commit.formatter-clang-style)
 if [ -n "$CF_STYLE" ]; then
     CF_STYLE_ARG="-style=$CF_STYLE"
 else
