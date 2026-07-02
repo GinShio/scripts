@@ -77,9 +77,16 @@ To bypass the whole hook for one commit, `git commit --no-verify`.
 Keeps the tree consistently formatted without you having to think about it, so
 what you commit is already clean. Each language is handled independently — C/C++
 through `clang-format`, Rust through `rustfmt`, Zig through `zig fmt`, Python
-through `ruff` (falling back to `black` + `isort`) — and a generic pass trims
-trailing whitespace and guarantees a final newline on every other text file. A
-language is handled only when its formatter is on your `PATH`.
+through `ruff` (falling back to `black` + `isort`) — and a generic pass ensures a
+final newline on every other text file, trimming trailing whitespace where that
+is safe. A language is handled only when its formatter is on your `PATH`.
+
+The generic pass withholds the trailing-whitespace trim where it would corrupt
+meaning — Markdown (trailing spaces are a hard line break) and CSV/TSV (a
+trailing tab/space is a delimiter) keep their whitespace, and `patch`/`diff` are
+left entirely untouched. Trailing whitespace is insignificant in most other
+markup (LaTeX, HTML, rST), so those are trimmed; the exception is verbatim-style
+blocks, so spare such a file by extension if you keep literal trailing spaces.
 
 It formats the **staged content**, not the working tree: it rewrites the version
 in the index and, when your working copy has no unstaged edits, updates that too.
@@ -92,6 +99,9 @@ Because each language is its own script, it is turned off through the ordinary
 - `format-clang-disable`, `format-rust-disable`, `format-zig-disable`,
   `format-python-disable` — one per language, each on by default.
 - `format-generic-disable` — the generic trim/final-newline pass, on by default.
+- `format-generic-notrim` — a space-separated list of extra file extensions
+  (e.g. `.tex .snap`) whose trailing whitespace to preserve, on top of the
+  built-in Markdown/CSV/TSV set.
 - `format-clang-style` — a named style (`llvm`, `google`, …) for C/C++ when the
   repo has no `.clang-format` of its own.
 
