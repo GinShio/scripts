@@ -64,9 +64,9 @@ under our own control. The stub is a firebreak, and the cost of it is two lines.
 ## 4. The `.d` execution contract
 
 A hook's behaviours live as separate executables in `<hook>.d/`, run in
-filename order. The numeric prefix (`10-`, `15-`, `85-`) is just sort order and
-carries no other meaning; it leaves room to slot things between without
-renaming the world.
+filename order. The numeric prefix (`10-`, `25-`, `50-`) is just sort order and
+carries no other meaning; it leaves room to slot things between without renaming
+the world.
 
 The contract is deliberately blunt: scripts run in order, and **the first
 non-zero exit stops the hook with that status.** For a blocking hook
@@ -118,9 +118,10 @@ same env-over-config precedence runs through the whole codebase; hooks follow it
 so there is one rule to remember.
 
 Scripts are addressed by their **clean name** — the filename minus its numeric
-prefix (`50-formatter` → `formatter`) — so the toggle is stable even
+prefix (`50-format-python` → `format-python`) — so the toggle is stable even
 when a script is renumbered. That decoupling is the reason the prefix can stay a
-pure ordering device (§4).
+pure ordering device (§4), and it is what lets a per-language check be toggled
+with no wiring beyond its filename.
 
 ## 7. Repo-scoped state: eager for the few, lazy for the rest
 

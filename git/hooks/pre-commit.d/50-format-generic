@@ -1,0 +1,15 @@
+#!/bin/sh
+. "$HOOKS_DIR/core/lib.sh"
+
+# Generic whitespace pass for every staged text file: trim trailing whitespace
+# and guarantee a final newline (awk's print re-adds the newline it split on).
+# It runs last, after the language formatters — which already leave their files
+# clean, so this is a no-op on them (apply_to_staged only rewrites on a change)
+# and exists to cover everything they don't. Binary and encrypted blobs skipped.
+staged_files | while IFS= read -r f; do
+    is_staged_text "$f" || continue
+    is_encrypted "$f" && continue
+    apply_to_staged "$f" awk '{ sub(/[ \t]+$/, ""); print }'
+done
+
+exit 0

@@ -45,9 +45,9 @@ and no special case — the global kill switch `wits.hooks.disable` is simply
 `WITS_HOOKS_DISABLE`.
 
 ```
-wits.hooks.disable                             →  WITS_HOOKS_DISABLE
-wits.hooks.pre-commit.formatter-disable        →  WITS_HOOKS_PRE_COMMIT_FORMATTER_DISABLE
-wits.hooks.pre-commit.formatter-clang-disable  →  WITS_HOOKS_PRE_COMMIT_FORMATTER_CLANG_DISABLE
+wits.hooks.disable                            →  WITS_HOOKS_DISABLE
+wits.hooks.pre-commit.disable                 →  WITS_HOOKS_PRE_COMMIT_DISABLE
+wits.hooks.pre-commit.format-clang-disable    →  WITS_HOOKS_PRE_COMMIT_FORMAT_CLANG_DISABLE
 ```
 
 Boolean keys accept the usual git spellings — `true`/`false`, `1`/`0`,
@@ -62,8 +62,8 @@ Every boolean switch reads its polarity from its suffix, so the default is alway
   turn it on.
 
 Throughout the sections below keys are written relative to their hook: a setting
-shown as `formatter-clang-disable` under `pre-commit` is the full key
-`wits.hooks.pre-commit.formatter-clang-disable`.
+shown as `format-clang-disable` under `pre-commit` is the full key
+`wits.hooks.pre-commit.format-clang-disable`.
 
 ## `pre-commit`
 
@@ -75,36 +75,42 @@ To bypass the whole hook for one commit, `git commit --no-verify`.
 ### Formatter
 
 Keeps the tree consistently formatted without you having to think about it, so
-what you commit is already clean. C/C++ go through `clang-format`, Rust through
-`rustfmt`, Zig through `zig fmt`, Python through `ruff` (falling back to `black`
-+ `isort`), and any other text file gets a trim of trailing whitespace and a
-guaranteed final newline. A language is handled only when its formatter is on
-your `PATH`, and each part is independent, so you can bow out where it fights a
-project's own conventions.
+what you commit is already clean. Each language is handled independently — C/C++
+through `clang-format`, Rust through `rustfmt`, Zig through `zig fmt`, Python
+through `ruff` (falling back to `black` + `isort`) — and a generic pass trims
+trailing whitespace and guarantees a final newline on every other text file. A
+language is handled only when its formatter is on your `PATH`.
 
 It formats the **staged content**, not the working tree: it rewrites the version
 in the index and, when your working copy has no unstaged edits, updates that too.
 A partially-staged file therefore keeps its unstaged changes intact — the commit
 gets the formatted version, your in-progress edits are left alone.
 
-- `formatter-clang-disable`, `formatter-rust-disable`, `formatter-zig-disable`,
-  `formatter-python-disable` — one per language, each on by default; set to turn
-  that language's formatter off.
-- `formatter-whitespace-disable` — the generic trim/final-newline pass, on by
-  default.
-- `formatter-clang-style` — a named style (`llvm`, `google`, …) for C/C++ when
-  the repo has no `.clang-format` of its own.
+Because each language is its own script, it is turned off through the ordinary
+[per-script switch](#turning-pieces-off) — set the key, no special casing:
+
+- `format-clang-disable`, `format-rust-disable`, `format-zig-disable`,
+  `format-python-disable` — one per language, each on by default.
+- `format-generic-disable` — the generic trim/final-newline pass, on by default.
+- `format-clang-style` — a named style (`llvm`, `google`, …) for C/C++ when the
+  repo has no `.clang-format` of its own.
 
 ### Linter
 
-Catches mistakes cheaply, before they reach a reviewer. It runs the fast,
-file-oriented static analyzers over what you're committing — `ruff` (or
-`flake8`) for Python, `zig ast-check` for Zig — and stops the commit on a
-finding. Like the formatter it works on the **staged content** (a partially
-staged file is linted exactly as it will be committed, not with your unstaged
-edits) and is per-language, only running where the tool exists.
+Catches mistakes cheaply, before they reach a reviewer. Like the formatter, each
+language is handled independently, running the fast, file-oriented static
+analyzer over what you're committing — `ruff` (or `flake8`) for Python,
+`zig ast-check` for Zig — and stops the commit on a finding. It works on the
+**staged content** (a partially staged file is linted exactly as it will be
+committed, not with your unstaged edits) and only runs where the tool exists.
 
-- `linter-python-disable`, `linter-zig-disable` — one per language, each on by
+Only genuinely *static* (no-build) linters live here. Languages whose analysis
+requires a compile have no entry: **Rust** has no non-compiling linter (`clippy`
+builds the crate, so it is left to CI rather than the commit path), and **C/C++**
+is not linted for now (accurate analysis needs a compilation database and still
+carries false positives). Both are still *formatted*, just not linted.
+
+- `lint-python-disable`, `lint-zig-disable` — one per language, each on by
   default; set to turn that language's linter off.
 
 ### Sanity checks
@@ -191,18 +197,6 @@ under [`pre-commit`](#protected-branch-prompt).
 
 - `warn-protected-enable` — off by default; set true to get the prompt.
 
-### Linter (Compile-time)
-
-The heavy, compile-based lint tier, kept off the commit path. On push it runs
-`cargo clippy` (as `-D warnings`) over just the crates whose Rust sources are
-going out — resolved from the commits being pushed, then mapped to their owning
-`Cargo.toml` — so a multi-crate repo only rebuilds what changed. On by default
-whenever `cargo` is installed; a missing `cargo` is a silent pass. A finding
-aborts the push (bypass with `git push --no-verify`).
-
-- `linter-rust-disable` — on by default when cargo is present; set to turn the
-  clippy pass off.
-
 ## `post-checkout`
 
 Runs after `git checkout`/`switch` and after `clone`. Everything here is advisory
@@ -275,7 +269,7 @@ a hook is wrong for a repo, or simply in your way this once. Three scopes:
 - **Everything** — `wits.hooks.disable`
 - **One hook** — `wits.hooks.<hook>.disable`, e.g. `wits.hooks.pre-commit.disable`
 - **One script** — `wits.hooks.<hook>.<script>-disable`, naming the script
-  without its numeric prefix, e.g. `wits.hooks.pre-commit.formatter-disable`
+  without its numeric prefix, e.g. `wits.hooks.pre-commit.format-python-disable`
 
 As everywhere, config is the standing choice and the environment variable is the
 one-shot that wins for a single command (see [How settings are
@@ -300,6 +294,30 @@ A candidate runs only if it is **executable** and its first line is a `#!`
 shebang — anything else (a data file, or a still-encrypted blob) is skipped
 rather than executed. Every stage obeys the same
 [disable hierarchy](#turning-pieces-off).
+
+### Adding a built-in check (e.g. another language)
+
+Every behaviour is one executable, so adding one is dropping a file into the
+right `<hook>.d/`. The formatter and linter are split one-language-per-file
+precisely for this: to add a language, copy the closest sibling, point it at the
+tool, and list the extensions. The `staged_lang_files` helper does the
+staged/text/binary/encrypted filtering, so the script stays a few lines:
+
+```sh
+#!/bin/sh
+. "$HOOKS_DIR/core/lib.sh"
+files=$(staged_lang_files .go)          # staged .go files, text only
+[ -n "$files" ] || exit 0
+command -v golangci-lint >/dev/null 2>&1 || exit 0
+# ... run the tool on the staged content, exit non-zero to block the commit
+```
+
+Peers of one concern share a numeric prefix (every formatter is `50-`, every
+linter `60-`); the prefix only sets run order, so the shared number just says
+"these are the same stage." The clean name (prefix stripped) is the
+[toggle key](#turning-pieces-off) automatically — a `60-lint-go` answers to
+`wits.hooks.pre-commit.lint-go-disable` with no extra wiring. Nothing to
+register.
 
 ### External hooks (Husky, `.githooks`, custom scripts)
 

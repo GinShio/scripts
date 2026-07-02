@@ -328,6 +328,22 @@ is_encrypted() {
     esac
 }
 
+# Echo the staged text paths whose extension matches one of the given suffixes,
+# skipping binary and encrypted blobs. This is the one line every per-language
+# formatter/linter shares, so a new language is just a new one-concern script
+# that calls this with its extensions. Usage: staged_lang_files .py .pyi
+staged_lang_files() {
+    staged_files | while IFS= read -r _slf; do
+        is_staged_text "$_slf" || continue
+        is_encrypted "$_slf" && continue
+        for _ext in "$@"; do
+            case "$_slf" in
+                *"$_ext") printf '%s\n' "$_slf"; break ;;
+            esac
+        done
+    done
+}
+
 # True when the working tree differs from the index for a file — i.e. it is only
 # partially staged, so rewriting the whole file would capture unstaged edits.
 has_unstaged_changes() {
