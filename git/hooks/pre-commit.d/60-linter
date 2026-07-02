@@ -1,28 +1,19 @@
 #!/bin/sh
 . "$HOOKS_DIR/core/lib.sh"
 
-# Fast static analysis of the staged languages, run on the working-tree copies
-# (linters need real files). Most tools are file-oriented and take paths; clippy
-# is crate-oriented, so it is dispatched per owning crate (see below). Each
-# language runs by default and is turned off on its own via a `-disable` switch;
-# a missing tool warns rather than fails.
+# Fast, file-oriented static analysis of the *staged* content — the version
+# actually being committed, so a partially-staged file is linted exactly as it
+# lands, not with the unstaged edits still in the working tree. Tools that read
+# stdin (ruff, flake8) are fed the staged blob directly with the real path so
+# their config resolution and diagnostics stay accurate; those that only take a
+# path (zig ast-check) run against a materialized copy.
+#
+# The compile-based Rust check (clippy) is deliberately *not* here: it builds the
+# whole crate and is far too heavy for every commit. It runs at push time
+# instead (pre-push.d/15-linter). Each language is on by default and turned off
+# on its own via a `-disable` switch; a missing tool warns rather than fails.
 PYTHON=$(cfg_bool wits.hooks.pre-commit.linter-python-disable false && echo 0 || echo 1)
 ZIG=$(cfg_bool wits.hooks.pre-commit.linter-zig-disable false && echo 0 || echo 1)
-RUST=$(cfg_bool wits.hooks.pre-commit.linter-rust-disable false && echo 0 || echo 1)
-
-# clippy is crate-oriented, so — unlike the file-oriented linters below — it needs
-# a manifest. Walk up from a staged .rs file to the nearest Cargo.toml; failure
-# means the file belongs to no crate and clippy simply cannot see it.
-find_crate_manifest() {
-    _d=$(dirname -- "$1")
-    while :; do
-        [ -f "$_d/Cargo.toml" ] && { printf '%s\n' "$_d/Cargo.toml"; return 0; }
-        case "$_d" in
-            .|/) return 1 ;;
-        esac
-        _d=$(dirname -- "$_d")
-    done
-}
 
 files=$(staged_files)
 [ -n "$files" ] || exit 0
@@ -35,24 +26,27 @@ set -f
 
 # Bucket staged paths by language (newline-separated so paths may contain
 # spaces; the unquoted expansions below rely on IFS still being a newline).
-py="" ; zig="" ; rs=""
+py="" ; zig=""
 for file in $files; do
     is_staged_text "$file" || continue   # never feed a binary blob to a linter
+    is_encrypted "$file" && continue      # its staged blob is ciphertext, not source
     case "$file" in
         *.py|*.pyi)  py="${py:+$py
 }$file" ;;
         *.zig|*.zon) zig="${zig:+$zig
-}$file" ;;
-        *.rs)        rs="${rs:+$rs
 }$file" ;;
     esac
 done
 
 if [ "$PYTHON" = 1 ] && [ -n "$py" ]; then
     if command -v ruff >/dev/null 2>&1; then
-        ruff check -- $py || rc=1
+        for f in $py; do
+            staged_blob "$f" | ruff check --stdin-filename "$f" - || rc=1
+        done
     elif command -v flake8 >/dev/null 2>&1; then
-        flake8 -- $py || rc=1
+        for f in $py; do
+            staged_blob "$f" | flake8 --stdin-display-name "$f" - || rc=1
+        done
     else
         log_warn "python lint enabled but neither ruff nor flake8 is installed"
     fi
@@ -60,39 +54,18 @@ fi
 
 if [ "$ZIG" = 1 ] && [ -n "$zig" ]; then
     if command -v zig >/dev/null 2>&1; then
-        for f in $zig; do zig ast-check "$f" || rc=1; done
+        for f in $zig; do
+            # zig ast-check takes a path, not stdin; materialize the staged blob
+            # under its own basename so any diagnostic still names the file.
+            d=$(mktemp -d) || { rc=1; continue; }
+            t="$d/${f##*/}"
+            if staged_blob "$f" > "$t"; then
+                zig ast-check "$t" || rc=1
+            fi
+            rm -rf "$d"
+        done
     else
         log_warn "zig lint enabled but zig is not installed"
-    fi
-fi
-
-if [ "$RUST" = 1 ] && [ -n "$rs" ]; then
-    if command -v cargo >/dev/null 2>&1; then
-        # Map the staged .rs files onto the distinct crates that own them, so a
-        # subdir crate is linted and a repo with no root manifest doesn't abort.
-        manifests="" ; stray=0
-        for f in $rs; do
-            if m=$(find_crate_manifest "$f"); then
-                case "
-$manifests
-" in
-                    *"
-$m
-"*) ;;                       # crate already queued
-                    *) manifests="${manifests:+$manifests
-}$m" ;;
-                esac
-            else
-                stray=1
-            fi
-        done
-        [ "$stray" = 1 ] &&
-            log_warn "some staged .rs files belong to no Cargo.toml; skipping clippy for them"
-        for m in $manifests; do
-            cargo clippy --manifest-path "$m" -- -D warnings || rc=1
-        done
-    else
-        log_warn "rust lint enabled but cargo is not installed"
     fi
 fi
 

@@ -5,6 +5,7 @@
 
 # Skip if this exact repo path is already registered globally.
 # -x forces a whole-line match so path prefixes don't cause false positives.
+git_toplevel
 if git config --global --get-all maintenance.repo 2>/dev/null | grep -Fqx "$GIT_TOPLEVEL"; then
     exit 0
 fi

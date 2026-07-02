@@ -18,7 +18,7 @@ shared state and helpers live in `core/lib.sh`.
 |---|---|
 | `pre-commit` | block markers, sanity checks, secret scan, encoding, lint, format |
 | `prepare-commit-msg` | issue-ID prefix from the branch name (opt-in) |
-| `pre-push` | protected-branch prompt (opt-in), Git LFS |
+| `pre-push` | protected-branch prompt (opt-in), clippy, Git LFS |
 | `post-checkout` | branchless init/record, LFS, workspace restore, lockfile warning, maintenance |
 | `post-merge` | branchless record, LFS, lockfile warning |
 | `post-commit` / `post-applypatch` / `post-rewrite` / `pre-auto-gc` | branchless recorders (+ LFS on commit) |

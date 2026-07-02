@@ -4,6 +4,8 @@
 # Ask before committing straight onto a shared branch. Opt-in.
 cfg_bool wits.hooks.pre-commit.warn-protected-enable || exit 0
 
+current_branch
+protected_branch
 printf '%s\n' "$CURRENT_BRANCH" | grep -qE "$PROTECTED_BRANCH" || exit 0
 
 log_warn "Committing to protected branch '$CURRENT_BRANCH' — think before you type."

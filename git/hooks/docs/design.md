@@ -122,20 +122,38 @@ prefix (`50-formatter` → `formatter`) — so the toggle is stable even
 when a script is renumbered. That decoupling is the reason the prefix can stay a
 pure ordering device (§4).
 
-## 7. Repo-scoped state, resolved once
+## 7. Repo-scoped state: eager for the few, lazy for the rest
 
-`core/lib.sh` opens by resolving a handful of facts — the git dir, the common
-dir, the top-level, the current branch, the all-zero SHA, the global kill
-switch — each of which costs a `git` subprocess. The runner sources the library
-once, then execs each `.d` script as its own process, and every one of those
-re-sources the library to get its functions (shell functions cannot cross an
-`exec`).
+`core/lib.sh` resolves a handful of facts — the git dir, the common dir, the
+top-level, the current branch, the all-zero SHA, the protected-branch pattern,
+the global kill switch — each of which costs a `git` (or config) subprocess. The
+runner sources the library once, then execs each `.d` script as its own process,
+and every one of those re-sources the library to get its functions (shell
+functions cannot cross an `exec`).
 
-The one wrinkle worth recording: the guard keys on the process environment, so a
-hook that recursively drove *another* repository's hooks would see the outer
-repo's values. That is already true of the exported `GIT_DIR` git itself
-respects, and no hook here does that — but it is why the guard is scoped to the
-values, not treated as a license to assume a single repo forever.
+The split that matters: **only two things are resolved eagerly and exported** —
+the kill switch (the dispatcher consults it for every candidate) and, on
+`pre-commit`, the staged-content cache (every content script shares it). A child
+inherits those and never re-runs the guarded block. **Everything else is lazy.**
+Each remaining fact is a memoizing getter (`git_dir`, `null_sha`, …) that fills
+its variable on first use and is a no-op after; a script calls the getter it
+needs *after* its early-exit guards and then reads the plain variable. The
+placement is the whole point: on a `reference-transaction` fire that isn't a
+committed branch deletion — the overwhelming majority — every script bails at its
+guard, so not one of those `git` subprocesses is ever spawned. This is what
+keeps the hottest hook cheap without a value cache to invalidate.
+
+What lazy evaluation deliberately does *not* buy: it cannot stop each child from
+re-parsing the library on `exec` (POSIX `sh` has no way to share compiled
+functions across processes). That interpreter cost is the price of the shell
+architecture; the only lever against it is compiling the hot path, which is a
+separate decision from this one.
+
+The one wrinkle worth recording: a getter honours a value already in the
+environment, so a hook that recursively drove *another* repository's hooks would
+see the outer repo's values. That is already true of the `GIT_DIR` git itself
+exports, and no hook here does that — but it is why the getters read the
+environment first rather than assuming a single repo forever.
 
 ## 8. Coexisting with encrypted repositories
 

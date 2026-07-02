@@ -97,14 +97,15 @@ gets the formatted version, your in-progress edits are left alone.
 
 ### Linter
 
-Catches mistakes cheaply, before they reach a reviewer. It runs the fast
-analyzers over what you're committing — `ruff` (or `flake8`) for Python,
-`zig ast-check` for Zig, `cargo clippy` (as `-D warnings`) for Rust — and stops
-the commit on a finding. Like the formatter it is per-language and only runs
-where the tool exists.
+Catches mistakes cheaply, before they reach a reviewer. It runs the fast,
+file-oriented static analyzers over what you're committing — `ruff` (or
+`flake8`) for Python, `zig ast-check` for Zig — and stops the commit on a
+finding. Like the formatter it works on the **staged content** (a partially
+staged file is linted exactly as it will be committed, not with your unstaged
+edits) and is per-language, only running where the tool exists.
 
-- `linter-python-disable`, `linter-zig-disable`, `linter-rust-disable` — one per
-  language, each on by default; set to turn that language's linter off.
+- `linter-python-disable`, `linter-zig-disable` — one per language, each on by
+  default; set to turn that language's linter off.
 
 ### Sanity checks
 
@@ -141,11 +142,19 @@ with a `.gitattributes` `text=auto eol=lf`.
 ### Protected-branch prompt
 
 A guard against committing straight onto a shared branch by accident. Enabled, it
-asks you to confirm before committing while `master`, `dev`, `release-*`, or
-`patch-*` is checked out. Off by default, since whether a direct commit is a
-mistake depends entirely on how you work.
+asks you to confirm before committing while a protected branch is checked out.
+Off by default, since whether a direct commit is a mistake depends entirely on
+how you work.
 
 - `warn-protected-enable` — off by default; set true to get the prompt.
+
+Which branches count as protected is shared by this prompt and the `pre-push`
+one, and is configurable framework-wide:
+
+- `wits.hooks.protected-branch` — an extended regular expression (matched with
+  `grep -E`) a branch name must match to be treated as protected. Defaults to
+  `^(main|master|dev|release-.*|patch-.*)$`. As with every key it has an
+  environment twin, `WITS_HOOKS_PROTECTED_BRANCH`.
 
 ## `prepare-commit-msg`
 
@@ -176,9 +185,23 @@ Runs before git hands refs to a remote, and can abort the push.
 ### Protected-branch prompt
 
 The push-side counterpart to the commit prompt: enabled, it asks for confirmation
-before pushing to a protected branch on the remote. Off by default.
+before pushing to a protected branch on the remote. Off by default. The set of
+protected branches is the shared `wits.hooks.protected-branch` regex documented
+under [`pre-commit`](#protected-branch-prompt).
 
 - `warn-protected-enable` — off by default; set true to get the prompt.
+
+### Linter (Compile-time)
+
+The heavy, compile-based lint tier, kept off the commit path. On push it runs
+`cargo clippy` (as `-D warnings`) over just the crates whose Rust sources are
+going out — resolved from the commits being pushed, then mapped to their owning
+`Cargo.toml` — so a multi-crate repo only rebuilds what changed. On by default
+whenever `cargo` is installed; a missing `cargo` is a silent pass. A finding
+aborts the push (bypass with `git push --no-verify`).
+
+- `linter-rust-disable` — on by default when cargo is present; set to turn the
+  clippy pass off.
 
 ## `post-checkout`
 

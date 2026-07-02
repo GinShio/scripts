@@ -33,9 +33,37 @@ is_enabled() {
 
 # A candidate is runnable only if it starts with a shebang. Anything else is a
 # data file or an encrypted blob (transcrypt) sitting in the hooks tree, and is
-# skipped rather than executed. Only the first two bytes matter.
+# skipped rather than executed. Reading the first line with the shell builtin
+# avoids a `dd`/`head` fork per candidate; only the leading `#!` is inspected.
 check_script_header() {
-    [ "$(dd if="$1" bs=2 count=1 2>/dev/null)" = "#!" ]
+    IFS= read -r _hdr < "$1" 2>/dev/null
+    case "$_hdr" in
+        "#!"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Execute one hook script, feeding it the hook's buffered stdin when there is
+# any, and enforce the fail-fast rule: a non-zero exit is logged (with <label>)
+# and aborts the whole hook with that status. This is the single place the
+# run/redirect/check-and-exit dance lives; every layer below calls it.
+# Usage: run_script <label> <script> <stdin_source> [args...]
+run_script() {
+    _rs_label="$1"
+    _rs_script="$2"
+    _rs_stdin="$3"
+    shift 3
+
+    if [ -n "$_rs_stdin" ] && [ -f "$_rs_stdin" ]; then
+        "$_rs_script" "$@" < "$_rs_stdin"
+    else
+        "$_rs_script" "$@"
+    fi
+    _rs_code=$?
+    if [ "$_rs_code" -ne 0 ]; then
+        log_error "$_rs_label failed with exit code $_rs_code"
+        exit "$_rs_code"
+    fi
 }
 
 # Run every enabled, executable script in a directory, in filename order,
@@ -59,16 +87,7 @@ run_hook_dir() {
             continue
         fi
 
-        if [ -n "$stdin_source" ] && [ -f "$stdin_source" ]; then
-            "$script" "$@" < "$stdin_source"
-        else
-            "$script" "$@"
-        fi
-        exit_code=$?
-        if [ "$exit_code" -ne 0 ]; then
-            log_error "Hook script '$script_base' failed with exit code $exit_code"
-            exit "$exit_code"
-        fi
+        run_script "Hook script '$script_base'" "$script" "$stdin_source" "$@"
     done
 }
 
@@ -104,6 +123,7 @@ run_external_hooks() {
     # 1. Directory scanning — ENV takes precedence over git config.
     _ext_dirs="${WITS_HOOKS_EXTERNAL_DIRS:-$(git config wits.hooks.external-dirs 2>/dev/null)}"
     if [ -n "$_ext_dirs" ]; then
+        git_toplevel   # relative external dirs are resolved against the work tree
         _old_ifs="$IFS"
         IFS=":"
         set -f
@@ -124,16 +144,8 @@ run_external_hooks() {
                     if [ -f "$_ext_script" ] && [ -x "$_ext_script" ]; then
                         if is_enabled "$_ext_hook_name" "external"; then
                             log_info "Running external hook script: $_ext_script"
-                            if [ -n "$_ext_stdin_source" ] && [ -f "$_ext_stdin_source" ]; then
-                                "$_ext_script" "$@" < "$_ext_stdin_source"
-                            else
-                                "$_ext_script" "$@"
-                            fi
-                            _exit_code=$?
-                            if [ "$_exit_code" -ne 0 ]; then
-                                log_error "External hook '$_ext_script' failed with code $_exit_code"
-                                exit "$_exit_code"
-                            fi
+                            run_script "External hook '$_ext_script'" \
+                                "$_ext_script" "$_ext_stdin_source" "$@"
                         fi
                     fi
 
@@ -158,6 +170,7 @@ run_external_hooks() {
     _ext_scripts="${_ext_scripts_env:-$(git config "wits.hooks.${_ext_hook_name}.external-scripts" 2>/dev/null)}"
 
     if [ -n "$_ext_scripts" ]; then
+        git_toplevel   # relative script paths are resolved against the work tree
         _old_ifs="$IFS"
         IFS=":"
         set -f
@@ -175,16 +188,8 @@ run_external_hooks() {
                     _script_base=$(basename "$_resolved_script")
                     if is_enabled "$_ext_hook_name" "$_script_base"; then
                         log_info "Running explicit external script: $_resolved_script"
-                        if [ -n "$_ext_stdin_source" ] && [ -f "$_ext_stdin_source" ]; then
-                            "$_resolved_script" "$@" < "$_ext_stdin_source"
-                        else
-                            "$_resolved_script" "$@"
-                        fi
-                        _exit_code=$?
-                        if [ "$_exit_code" -ne 0 ]; then
-                            log_error "Explicit external script '$_resolved_script' failed with code $_exit_code"
-                            exit "$_exit_code"
-                        fi
+                        run_script "Explicit external script '$_resolved_script'" \
+                            "$_resolved_script" "$_ext_stdin_source" "$@"
                     fi
                 elif [ ! -e "$_resolved_script" ]; then
                     log_warn "Explicit external script not found: $_resolved_script"
@@ -205,20 +210,12 @@ run_local_hook() {
     hook_name="$1"
     stdin_source="$2"
     shift 2
+    git_dir
     local_hook_script="$GIT_DIR/hooks/$hook_name"
 
     if [ -f "$local_hook_script" ] && [ -x "$local_hook_script" ]; then
         if is_enabled "$hook_name" "local"; then
-            if [ -n "$stdin_source" ] && [ -f "$stdin_source" ]; then
-                "$local_hook_script" "$@" < "$stdin_source"
-            else
-                "$local_hook_script" "$@"
-            fi
-            exit_code=$?
-            if [ "$exit_code" -ne 0 ]; then
-                log_error "Local hook '$hook_name' failed"
-                exit "$exit_code"
-            fi
+            run_script "Local hook '$hook_name'" "$local_hook_script" "$stdin_source" "$@"
         fi
     fi
 }

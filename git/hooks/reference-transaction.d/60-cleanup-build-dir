@@ -1,0 +1,36 @@
+#!/bin/sh
+# Remove a branch's build directory (via builder.py) when the branch is deleted.
+
+. "$HOOKS_DIR/core/lib.sh"
+
+cfg_bool wits.hooks.reference-transaction.cleanup-build-dir-enable || exit 0
+
+# Only act once the refs are actually written (see cleanup-machete for details).
+[ "$1" = "committed" ] || exit 0
+
+git_toplevel
+null_sha
+repo_name=$(basename "$GIT_TOPLEVEL")
+
+# stdin: <old-sha> <new-sha> <ref-name>. A new-sha of all-zero means deletion.
+while read -r old_sha new_sha ref_name; do
+    [ "$new_sha" = "$NULL_SHA" ] || continue
+    case "$ref_name" in
+        refs/heads/*) branch=${ref_name#refs/heads/} ;;
+        *) continue ;;
+    esac
+
+    resolve_build_dirs "$repo_name" "$branch" | while read -r build_dir; do
+        # builder.py may report either the base dir or a "-Debug"/"-Release"
+        # variant; normalize to the base and remove every known variant.
+        base=${build_dir%-Debug}
+        base=${base%-Release}
+        for suffix in "" "-Debug" "-Release"; do
+            target="${base}${suffix}"
+            if [ -n "$target" ] && [ -d "$target" ]; then
+                log_warn "Branch '$branch' deleted; removing build dir: $target"
+                rm -rf "$target"
+            fi
+        done
+    done
+done

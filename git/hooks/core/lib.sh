@@ -48,33 +48,60 @@ cfg_value() {
     printf '%s\n' "${2:-}"
 }
 
-# Repo-scoped state, resolved exactly once per hook run.
+# --- Lazily-resolved repo facts ---
 #
-# The top-level runner sources this file, then execs each hook script as its own
-# process. Those children re-source this file only to obtain the shell functions
-# defined here (functions cannot be exported). The expensive git queries here are
-# guarded and their results exported, so a child inherits them from the
-# environment instead of re-forking git on every script — this matters most for
-# hot hooks such as reference-transaction.
+# Each of these costs a `git` (or config) subprocess, and most hooks need only a
+# couple of them — a reference-transaction fire that is not a committed branch
+# deletion needs none at all. So rather than resolve every fact eagerly on every
+# hook run, each is a memoizing getter that fills its well-known variable on
+# first use and is a no-op thereafter. A POSIX function shares the caller's
+# scope, so `null_sha` (etc.) leaves `$NULL_SHA` populated for the plain
+# `$NULL_SHA` reads the scripts already use — no command-substitution fork at the
+# call site. The getter also honours a value already in the environment (one git
+# itself exported, or one a parent resolved), so it stays free when possible.
 #
-# Caveat: the guard is keyed on the process environment, so a hook script that
-# recursively invokes another repository's hooks (e.g. across a submodule) would
-# inherit the outer repo's values. That already holds for the exported GIT_DIR,
-# and such nested invocations do not occur in this framework.
-if [ -z "${_WITS_ENV_LOADED:-}" ]; then
-    GIT_DIR=$(git rev-parse --git-dir)
-    GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
-    GIT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null)
-    if [ -z "$GIT_TOPLEVEL" ]; then
+# The contract: a script calls the getter it needs *after* its early-exit
+# guards, then reads the variable as before. That placement is the whole point —
+# the fork happens only once the script has committed to doing real work.
+git_dir() {
+    [ -n "${GIT_DIR:-}" ] || GIT_DIR=$(git rev-parse --git-dir)
+}
+git_common_dir() {
+    [ -n "${GIT_COMMON_DIR:-}" ] || GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+}
+git_toplevel() {
+    if [ -z "${GIT_TOPLEVEL:-}" ]; then
+        GIT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null)
         # A bare repository has no working tree; fall back to the git dir.
-        GIT_TOPLEVEL=$GIT_DIR
+        [ -n "$GIT_TOPLEVEL" ] || { git_dir; GIT_TOPLEVEL=$GIT_DIR; }
     fi
-    CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-    NULL_SHA=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+}
+current_branch() {
+    [ -n "${CURRENT_BRANCH:-}" ] || CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+}
+null_sha() {
+    [ -n "${NULL_SHA:-}" ] || NULL_SHA=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
+}
+# Protected-branch matcher (ERE for grep -E). Overridable through
+# wits.hooks.protected-branch (env: WITS_HOOKS_PROTECTED_BRANCH); the default
+# covers the usual shared branches.
+protected_branch() {
+    [ -n "${PROTECTED_BRANCH:-}" ] ||
+        PROTECTED_BRANCH=$(cfg_value wits.hooks.protected-branch '^(main|master|dev|release-.*|patch-.*)$')
+}
 
-    # Protected branch matcher (ERE for grep -E).
-    PROTECTED_BRANCH='^(main|master|dev|release-.*|patch-.*)$'
-
+# Repo-scoped state that *is* resolved once per run and exported for the children
+# to inherit. Only two things earn that: the kill switch (the dispatcher consults
+# it for every candidate) and the pre-commit staged cache (shared by every
+# content script). Everything else is lazy (above).
+#
+# The runner sources this file once, then execs each hook script as its own
+# process; those children re-source it for the functions (functions cannot be
+# exported) and inherit these exported values, so the guard below never re-runs
+# in a child. Caveat: the guard keys on the process environment, so a hook that
+# recursively drove another repository's hooks would inherit the outer values —
+# already true of the GIT_DIR git itself exports, and no hook here does that.
+if [ -z "${_WITS_ENV_LOADED:-}" ]; then
     # Whole-run kill switch. The global switch and the per-hook switch both apply
     # to the entire run and is_enabled checks them identically, so they collapse
     # into one cached flag (env overrides config, resolved once — never re-forked
@@ -86,9 +113,26 @@ if [ -z "${_WITS_ENV_LOADED:-}" ]; then
     [ "$_WITS_HOOKS_OFF" = 0 ] && [ -n "${HOOK_NAME:-}" ] &&
         cfg_bool "wits.hooks.$HOOK_NAME.disable" && _WITS_HOOKS_OFF=1
 
+    # Staged-content cache, pre-commit only. A single `--numstat` both enumerates
+    # the staged paths (added/copied/modified) and classifies each as text or
+    # binary (a binary blob shows '-' for its line counts). That one query
+    # replaces the per-file `git diff`/`git cat-file` that sanity, encoding,
+    # formatter, and linter would each otherwise fork per file; the children
+    # inherit the result through the environment. Every other hook stages no
+    # content, so it skips this and the helpers fall back to a live query.
+    _WITS_STAGED_CACHED=""
+    STAGED_FILES=""
+    STAGED_TEXT_FILES=""
+    if [ "$_WITS_HOOKS_OFF" = 0 ] && [ "${HOOK_NAME:-}" = pre-commit ]; then
+        _numstat=$(git diff --cached --numstat --diff-filter=ACM 2>/dev/null)
+        STAGED_FILES=$(printf '%s\n' "$_numstat" | awk -F'\t' 'NF>=3 { print $3 }')
+        STAGED_TEXT_FILES=$(printf '%s\n' "$_numstat" | awk -F'\t' 'NF>=3 && $1 != "-" { print $3 }')
+        _WITS_STAGED_CACHED=1
+    fi
+
     _WITS_ENV_LOADED=1
-    export GIT_DIR GIT_COMMON_DIR GIT_TOPLEVEL CURRENT_BRANCH NULL_SHA \
-           PROTECTED_BRANCH _WITS_HOOKS_OFF _WITS_ENV_LOADED
+    export _WITS_HOOKS_OFF _WITS_ENV_LOADED \
+           STAGED_FILES STAGED_TEXT_FILES _WITS_STAGED_CACHED
 fi
 
 # Colors
@@ -106,6 +150,11 @@ else
     COLOR_RESET=""
 fi
 
+# A literal newline, for building and matching newline-delimited lists in the
+# portable subset (no arrays, no `read -d`).
+LF='
+'
+
 # Logging levels: 0=OFF, 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG (default WARN).
 # Configured via ENV: WITS_HOOKS_LOG_LEVEL
 log_level=${WITS_HOOKS_LOG_LEVEL:-2}
@@ -115,37 +164,43 @@ if [ "$log_level" -ge 4 ]; then
     set -x
 fi
 
+# All diagnostics go to stderr: a hook's stdout can be meaningful (or piped),
+# and by convention progress/errors belong on fd 2 so they stay visible even
+# when stdout is captured or redirected.
 log_debug() {
     if [ "$log_level" -ge 4 ]; then
-        printf "%s[DEBUG]%s %s\n" "$COLOR_CYAN" "$COLOR_RESET" "$*"
+        printf "%s[DEBUG]%s %s\n" "$COLOR_CYAN" "$COLOR_RESET" "$*" >&2
     fi
 }
 log_info() {
     if [ "$log_level" -ge 3 ]; then
-        printf "%s[INFO]%s %s\n" "$COLOR_GREEN" "$COLOR_RESET" "$*"
+        printf "%s[INFO]%s %s\n" "$COLOR_GREEN" "$COLOR_RESET" "$*" >&2
     fi
 }
 log_warn() {
     if [ "$log_level" -ge 2 ]; then
-        printf "%s[WARN]%s %s\n" "$COLOR_YELLOW" "$COLOR_RESET" "$*"
+        printf "%s[WARN]%s %s\n" "$COLOR_YELLOW" "$COLOR_RESET" "$*" >&2
     fi
 }
 log_error() {
     if [ "$log_level" -ge 1 ]; then
-        printf "%s[ERROR]%s %s\n" "$COLOR_RED" "$COLOR_RESET" "$*";
+        printf "%s[ERROR]%s %s\n" "$COLOR_RED" "$COLOR_RESET" "$*" >&2
     fi
 }
 
 # --- Common utilities ---
 
 prompt_confirm() {
-    msg="${1:-Are you sure want to continue? [y/N] }"
-    if [ ! -t 0 ]; then
-       exec < /dev/tty
-    fi
-    printf "%s%s " "$COLOR_YELLOW" "$msg" "$COLOR_RESET"
-    read -r response
-    case "$response" in
+    _msg="${1:-Are you sure want to continue? [y/N] }"
+    # Read the answer straight from the controlling terminal for this one prompt,
+    # rather than `exec < /dev/tty`, which would permanently reassign fd 0 and
+    # swallow whatever the hook is still streaming on stdin (e.g. the pre-push
+    # ref list the caller loops over). No terminal (CI, no tty) means we cannot
+    # ask, so decline safely.
+    [ -r /dev/tty ] || return 1
+    printf "%s%s%s " "$COLOR_YELLOW" "$_msg" "$COLOR_RESET" >&2
+    read -r _response < /dev/tty || return 1
+    case "$_response" in
         [yY][eE][sS]|[yY]) return 0 ;;
         *) return 1 ;;
     esac
@@ -229,7 +284,13 @@ get_main_branch() {
 # speak in terms of the index consistently.
 
 # The staged paths a pre-commit script cares about: added, copied, or modified.
+# Served from the pre-commit cache when present (resolved once in the state
+# block above), otherwise a live query so the helper still works in any hook.
 staged_files() {
+    if [ -n "${_WITS_STAGED_CACHED:-}" ]; then
+        [ -n "$STAGED_FILES" ] && printf '%s\n' "$STAGED_FILES"
+        return 0
+    fi
     git diff --cached --name-only --diff-filter=ACM
 }
 
@@ -244,8 +305,16 @@ staged_size() {
 }
 
 # True when the staged blob is text (git's own heuristic: a diff against a
-# binary blob reports '-' additions instead of a line count).
+# binary blob reports '-' additions instead of a line count). When the
+# pre-commit cache is populated this is a membership test against the precomputed
+# text set (no fork); otherwise it falls back to a live per-file query.
 is_staged_text() {
+    if [ -n "${_WITS_STAGED_CACHED:-}" ]; then
+        case "$LF$STAGED_TEXT_FILES$LF" in
+            *"$LF$1$LF"*) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
     [ "$(git diff --cached --numstat -- "$1" | cut -f1)" != "-" ]
 }
 
