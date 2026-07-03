@@ -10,7 +10,6 @@
 branch=$(git symbolic-ref --short HEAD 2>/dev/null)
 [ -n "$branch" ] || exit 0   # detached HEAD: nothing to activate
 
-git_toplevel
 build_dir=$(resolve_build_dirs "$(basename "$GIT_TOPLEVEL")" "$branch" | head -n 1)
 if [ -z "$build_dir" ] || [ ! -d "$build_dir" ]; then
     log_info "No build directory for '$branch' yet; skipping workspace restore."

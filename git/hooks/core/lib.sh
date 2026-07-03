@@ -1,13 +1,8 @@
 #!/bin/sh
 
-# Core git-hooks library: shared state and utilities sourced by every hook
-# script. The engine that drives the runner (the enable hierarchy and the
-# execution layers) lives beside this file in dispatch.sh.
+# Core git-hooks library: shared state and utilities sourced by every hook script.
 
 # --- Configuration ---
-#
-# Defined ahead of the state block below, which resolves the global kill switch
-# through cfg_bool.
 
 # Helper to check boolean values.
 is_truthy() {
@@ -29,111 +24,36 @@ _cfg_env_name() {
 # path every script uses, so one rule holds everywhere: env overrides config,
 # config is the standing value.
 #
-#   cfg_bool  <config-key> [default]   -> exit status (0 = true), for --bool keys
+# The runner batches this hook's config (its own namespace plus the top-level
+# globals) into env twins once (see core/runner's warm_config) and sets
+# _WITS_CONFIG_WARMED; when that flag is present the twin already reflects config,
+# so the per-call `git config` fork is skipped — an unset twin then means "unset,
+# use the default". Outside the runner (no warm), the live `git config` fallback
+# still runs, so these stay correct anywhere.
+#
+#   cfg_bool  <config-key> [default]   -> exit status (0 = true)
 #   cfg_value <config-key> [default]   -> echoes the resolved string
 cfg_bool() {
     _env=$(_cfg_env_name "$1")
     eval _val="\${$_env:-}"
     [ -n "$_val" ] && { is_truthy "$_val"; return; }
-    _val=$(git config --bool "$1" 2>/dev/null)
-    [ -n "$_val" ] && { is_truthy "$_val"; return; }
+    if [ -z "${_WITS_CONFIG_WARMED:-}" ]; then
+        _val=$(git config --bool "$1" 2>/dev/null)
+        [ -n "$_val" ] && { is_truthy "$_val"; return; }
+    fi
     is_truthy "${2:-false}"
 }
 cfg_value() {
     _env=$(_cfg_env_name "$1")
     eval _val="\${$_env:-}"
     [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
-    _val=$(git config "$1" 2>/dev/null)
-    [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
+    if [ -z "${_WITS_CONFIG_WARMED:-}" ]; then
+        _val=$(git config "$1" 2>/dev/null)
+        [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
+    fi
     printf '%s\n' "${2:-}"
 }
 
-# --- Lazily-resolved repo facts ---
-#
-# Each of these costs a `git` (or config) subprocess, and most hooks need only a
-# couple of them — a reference-transaction fire that is not a committed branch
-# deletion needs none at all. So rather than resolve every fact eagerly on every
-# hook run, each is a memoizing getter that fills its well-known variable on
-# first use and is a no-op thereafter. A POSIX function shares the caller's
-# scope, so `null_sha` (etc.) leaves `$NULL_SHA` populated for the plain
-# `$NULL_SHA` reads the scripts already use — no command-substitution fork at the
-# call site. The getter also honours a value already in the environment (one git
-# itself exported, or one a parent resolved), so it stays free when possible.
-#
-# The contract: a script calls the getter it needs *after* its early-exit
-# guards, then reads the variable as before. That placement is the whole point —
-# the fork happens only once the script has committed to doing real work.
-git_dir() {
-    [ -n "${GIT_DIR:-}" ] || GIT_DIR=$(git rev-parse --git-dir)
-}
-git_common_dir() {
-    [ -n "${GIT_COMMON_DIR:-}" ] || GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
-}
-git_toplevel() {
-    if [ -z "${GIT_TOPLEVEL:-}" ]; then
-        GIT_TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null)
-        # A bare repository has no working tree; fall back to the git dir.
-        [ -n "$GIT_TOPLEVEL" ] || { git_dir; GIT_TOPLEVEL=$GIT_DIR; }
-    fi
-}
-current_branch() {
-    [ -n "${CURRENT_BRANCH:-}" ] || CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-}
-null_sha() {
-    [ -n "${NULL_SHA:-}" ] || NULL_SHA=$(git hash-object --stdin </dev/null | tr '0-9a-f' '0')
-}
-# Protected-branch matcher (ERE for grep -E). Overridable through
-# wits.hooks.protected-branch (env: WITS_HOOKS_PROTECTED_BRANCH); the default
-# covers the usual shared branches.
-protected_branch() {
-    [ -n "${PROTECTED_BRANCH:-}" ] ||
-        PROTECTED_BRANCH=$(cfg_value wits.hooks.protected-branch '^(main|master|dev|release-.*|patch-.*)$')
-}
-
-# Repo-scoped state that *is* resolved once per run and exported for the children
-# to inherit. Only two things earn that: the kill switch (the dispatcher consults
-# it for every candidate) and the pre-commit staged cache (shared by every
-# content script). Everything else is lazy (above).
-#
-# The runner sources this file once, then execs each hook script as its own
-# process; those children re-source it for the functions (functions cannot be
-# exported) and inherit these exported values, so the guard below never re-runs
-# in a child. Caveat: the guard keys on the process environment, so a hook that
-# recursively drove another repository's hooks would inherit the outer values —
-# already true of the GIT_DIR git itself exports, and no hook here does that.
-if [ -z "${_WITS_ENV_LOADED:-}" ]; then
-    # Whole-run kill switch. The global switch and the per-hook switch both apply
-    # to the entire run and is_enabled checks them identically, so they collapse
-    # into one cached flag (env overrides config, resolved once — never re-forked
-    # in the hot path). The hook name is fixed for the run (the runner exports
-    # HOOK_NAME before sourcing this file); absent it, only the global switch
-    # counts. The per-hook query is skipped once the global switch already applies.
-    _WITS_HOOKS_OFF=0
-    cfg_bool wits.hooks.disable && _WITS_HOOKS_OFF=1
-    [ "$_WITS_HOOKS_OFF" = 0 ] && [ -n "${HOOK_NAME:-}" ] &&
-        cfg_bool "wits.hooks.$HOOK_NAME.disable" && _WITS_HOOKS_OFF=1
-
-    # Staged-content cache, pre-commit only. A single `--numstat` both enumerates
-    # the staged paths (added/copied/modified) and classifies each as text or
-    # binary (a binary blob shows '-' for its line counts). That one query
-    # replaces the per-file `git diff`/`git cat-file` that sanity, encoding,
-    # formatter, and linter would each otherwise fork per file; the children
-    # inherit the result through the environment. Every other hook stages no
-    # content, so it skips this and the helpers fall back to a live query.
-    _WITS_STAGED_CACHED=""
-    STAGED_FILES=""
-    STAGED_TEXT_FILES=""
-    if [ "$_WITS_HOOKS_OFF" = 0 ] && [ "${HOOK_NAME:-}" = pre-commit ]; then
-        _numstat=$(git diff --cached --numstat --diff-filter=ACM 2>/dev/null)
-        STAGED_FILES=$(printf '%s\n' "$_numstat" | awk -F'\t' 'NF>=3 { print $3 }')
-        STAGED_TEXT_FILES=$(printf '%s\n' "$_numstat" | awk -F'\t' 'NF>=3 && $1 != "-" { print $3 }')
-        _WITS_STAGED_CACHED=1
-    fi
-
-    _WITS_ENV_LOADED=1
-    export _WITS_HOOKS_OFF _WITS_ENV_LOADED \
-           STAGED_FILES STAGED_TEXT_FILES _WITS_STAGED_CACHED
-fi
 
 # Colors
 if [ -t 1 ]; then

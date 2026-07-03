@@ -8,8 +8,6 @@ cfg_bool wits.hooks.reference-transaction.cleanup-build-dir-enable || exit 0
 # Only act once the refs are actually written (see cleanup-machete for details).
 [ "$1" = "committed" ] || exit 0
 
-git_toplevel
-null_sha
 repo_name=$(basename "$GIT_TOPLEVEL")
 
 # stdin: <old-sha> <new-sha> <ref-name>. A new-sha of all-zero means deletion.

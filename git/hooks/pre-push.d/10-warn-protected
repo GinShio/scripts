@@ -6,8 +6,7 @@
 cfg_bool wits.hooks.pre-push.warn-protected-enable || exit 0
 
 remote_name="$1"
-null_sha
-protected_branch
+protected=$(cfg_value wits.hooks.protected-branch '^(main|master|dev|release-.*|patch-.*)$')
 
 # stdin (one line per ref): <local_ref> <local_sha> <remote_ref> <remote_sha>
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -20,7 +19,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         *) continue ;;
     esac
 
-    if printf '%s\n' "$branch" | grep -qE "$PROTECTED_BRANCH"; then
+    if printf '%s\n' "$branch" | grep -qE "$protected"; then
         log_warn "Pushing to protected branch '$branch' on remote '$remote_name'."
         prompt_confirm "Continue pushing to '$branch'? [y/N] " || {
             log_warn "Push aborted."

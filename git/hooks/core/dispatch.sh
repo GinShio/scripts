@@ -120,8 +120,8 @@ run_external_hooks() {
     _ext_stdin_source="$2"
     shift 2
 
-    # 1. Directory scanning — ENV takes precedence over git config.
-    _ext_dirs="${WITS_HOOKS_EXTERNAL_DIRS:-$(git config wits.hooks.external-dirs 2>/dev/null)}"
+    # 1. Directory scanning. cfg_value applies the standard env-over-config rule.
+    _ext_dirs=$(cfg_value wits.hooks.external-dirs)
     if [ -n "$_ext_dirs" ]; then
         git_toplevel   # relative external dirs are resolved against the work tree
         _old_ifs="$IFS"
@@ -164,10 +164,9 @@ run_external_hooks() {
         set +f
     fi
 
-    # 2. Explicit script mapping (e.g. scripts/lint.sh).
-    _env_hook_name=$(echo "$_ext_hook_name" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
-    eval _ext_scripts_env="\$WITS_HOOKS_${_env_hook_name}_EXTERNAL_SCRIPTS"
-    _ext_scripts="${_ext_scripts_env:-$(git config "wits.hooks.${_ext_hook_name}.external-scripts" 2>/dev/null)}"
+    # 2. Explicit script mapping (e.g. scripts/lint.sh). cfg_value handles the
+    #    env twin (WITS_HOOKS_<HOOK>_EXTERNAL_SCRIPTS) and config in one call.
+    _ext_scripts=$(cfg_value "wits.hooks.${_ext_hook_name}.external-scripts")
 
     if [ -n "$_ext_scripts" ]; then
         git_toplevel   # relative script paths are resolved against the work tree
