@@ -10,8 +10,7 @@ the exhaustive list of every config key and every flag, see
 [`project/reference.md`](project/reference.md). For *why* the tool is shaped this
 way, see [`project/design.md`](project/design.md).
 
-> Status: design draft — no code yet. This guide describes the intended
-> behaviour so the shape can be reviewed before implementation.
+> Status: implemented (v1). This guide describes the behaviour the tool provides.
 
 ---
 

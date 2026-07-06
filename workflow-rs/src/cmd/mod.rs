@@ -5,5 +5,6 @@
 //! plus one arm in `main`'s dispatch — there is no plugin machinery to learn,
 //! and nothing speculative is carried around for commands that don't exist yet.
 
+pub mod project;
 pub mod stack;
 pub mod transcrypt;

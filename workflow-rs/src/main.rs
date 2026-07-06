@@ -56,6 +56,8 @@ enum Commands {
     Transcrypt(cmd::transcrypt::TranscryptArgs),
     /// Manage a stack of branches as a set of merge requests.
     Stack(cmd::stack::StackArgs),
+    /// Build, update, and introspect source projects from one registry.
+    Project(cmd::project::ProjectArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,6 +67,7 @@ fn main() -> anyhow::Result<()> {
     match &cli.command {
         Commands::Transcrypt(args) => cmd::transcrypt::run(args),
         Commands::Stack(args) => cmd::stack::run(args),
+        Commands::Project(args) => cmd::project::run(args),
     }
 }
 

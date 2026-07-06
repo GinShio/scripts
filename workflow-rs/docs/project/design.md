@@ -1,10 +1,9 @@
 # `wf project` — Design
 
-> Status: **design draft**, no code yet. This is the agreed shape of the
-> `project` tool before implementation. Items marked **[open]** still need a
-> decision; everything marked **future** is deliberately out of v1; everything
-> else is settled and may shift while we implement, but should not be reopened
-> casually.
+> Status: **implemented (v1)**. This is the agreed shape of the `project` tool
+> and the reasoning behind it. Items marked **[open]** still need a decision;
+> everything marked **future**/**TODO** is deliberately out of v1; everything else
+> is settled and reflected in the code.
 >
 > This file explains *why the tool is shaped the way it is*. The reader-facing
 > documents explain *how to drive it*: [`project.md`](../project.md) is the usage

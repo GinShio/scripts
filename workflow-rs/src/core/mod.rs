@@ -16,3 +16,4 @@ pub mod git;
 pub mod log;
 pub mod process;
 pub mod resolver;
+pub mod template;

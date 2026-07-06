@@ -4,7 +4,7 @@ The exhaustive reference: every configuration key, every CLI flag, the template
 language, and the resolution rules. For a gentle introduction read
 [`../project.md`](../project.md); for rationale read [`design.md`](design.md).
 
-> Status: design draft — no code yet. This documents the intended contract.
+> Status: implemented (v1). This documents the contract the code upholds.
 
 ---
 
@@ -284,9 +284,16 @@ a mode, and detects prior configuration.
 | `launcher` | `CMAKE_*_COMPILER_LAUNCHER` | prefix on `CC`/`CXX` | `RUSTC_WRAPPER` |
 | `c_flags`/`cxx_flags`/`link_flags` | `CMAKE_C/CXX_FLAGS` / linker flags | `CFLAGS`/`CXXFLAGS`/`LDFLAGS` | `CFLAGS` / `RUSTFLAGS` |
 
-Every canonical field is additionally exported as its universal env var. This
-translation runs at pipeline layer L0, so an explicit preset or CLI override of
-the same key wins.
+For meson and cargo, each canonical field is *also* exported as its universal env
+var (`CC`, `CXX`, `AR`, `CFLAGS`, …); **cmake is the exception** — it is
+configured entirely through `-D` definitions and is not given these environment
+variables, which it does not need and which can conflict with its cached
+compiler. This translation runs at pipeline layer L0, so an explicit preset or
+CLI override of the same key wins.
+
+Multi-config cmake generators (Ninja Multi-Config, Visual Studio, Xcode) are
+handled correctly: `CMAKE_BUILD_TYPE` is *not* set at configure, and the build
+type is selected at build/install time with `--config`.
 
 ### 7.2 `is_configured`
 
