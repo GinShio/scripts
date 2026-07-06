@@ -21,20 +21,23 @@ use clap::{Args, Subcommand};
 use model::{BuildMode, BuildOptions, Profile};
 use workspace::{expand_tilde, looks_like_path, ProjectData, Workspace};
 
+/// `wf project` — describe projects (the default), or manage a build context.
+///
+/// The read surface (`project`) and the mutating actions (`wf build`, `wf update`)
+/// are deliberately separate top-level commands (§1); only `context` still hangs
+/// here, pending a decision on where it belongs. All of them share the one
+/// read-only core under this module.
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct ProjectArgs {
     #[command(subcommand)]
-    pub action: ProjectAction,
+    pub command: Option<ProjectSub>,
+    #[command(flatten)]
+    pub info: InfoArgs,
 }
 
 #[derive(Debug, Subcommand)]
-pub enum ProjectAction {
-    /// Describe projects, or validate their configuration with --check.
-    Info(InfoArgs),
-    /// Configure and build a project (and optionally install / uninstall).
-    Build(BuildArgs),
-    /// Refresh git for every repo of a project.
-    Update(UpdateArgs),
+pub enum ProjectSub {
     /// Manage a branch's build context (worktree + build dir).
     Context(ContextArgs),
 }
@@ -173,20 +176,32 @@ pub struct ContextItemArgs {
     pub force: bool,
 }
 
+/// `wf project` (and `wf project context`).
 pub fn run(args: &ProjectArgs) -> Result<()> {
     let ws = Workspace::load()?;
-    match &args.action {
-        ProjectAction::Info(a) => info(&ws, a),
-        ProjectAction::Build(a) => {
-            let project = resolve_target(&ws, a.target.as_deref())?;
-            build::run(&ws, project, &a.profile.to_profile(), &build_options(a)?)
-        }
-        ProjectAction::Update(a) => {
-            let project = resolve_target(&ws, a.target.as_deref())?;
-            update::run(&ws, project)
-        }
-        ProjectAction::Context(a) => run_context(&ws, a),
+    match &args.command {
+        Some(ProjectSub::Context(c)) => run_context(&ws, c),
+        None => info(&ws, &args.info),
     }
+}
+
+/// `wf build` — its own top-level command, over the shared core.
+pub fn run_build(args: &BuildArgs) -> Result<()> {
+    let ws = Workspace::load()?;
+    let project = resolve_target(&ws, args.target.as_deref())?;
+    build::run(
+        &ws,
+        project,
+        &args.profile.to_profile(),
+        &build_options(args)?,
+    )
+}
+
+/// `wf update` — its own top-level command, over the shared core.
+pub fn run_update(args: &UpdateArgs) -> Result<()> {
+    let ws = Workspace::load()?;
+    let project = resolve_target(&ws, args.target.as_deref())?;
+    update::run(&ws, project)
 }
 
 fn run_context(ws: &Workspace, args: &ContextArgs) -> Result<()> {

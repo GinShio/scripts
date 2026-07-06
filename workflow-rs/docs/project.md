@@ -1,11 +1,16 @@
 # `wf project`
 
 Build, update, and introspect the source projects you work on, from one
-declarative registry. `project` knows *what each project is* — where its repos
-live, which branches, which toolchain, how to build it — and drives cmake / meson
-/ cargo on your behalf without you re-typing the same flags.
+declarative registry that knows *what each project is* — where its repos live,
+which branches, which toolchain, how to build it — and drives cmake / meson /
+cargo on your behalf without you re-typing the same flags.
 
-This page is the **usage guide**: it teaches the tool by walking through it. For
+Three commands share that registry: **`wf project`** describes and validates
+(read-only), **`wf build`** configures and builds, and **`wf update`** refreshes
+git. (`wf project context` manages per-branch worktrees.) This page is the
+**usage guide** for all of them.
+
+For
 the exhaustive list of every config key and every flag, see
 [`project/reference.md`](project/reference.md). For *why* the tool is shaped this
 way, see [`project/design.md`](project/design.md).
@@ -79,9 +84,9 @@ supports = ["cmake", "meson"]
 Now:
 
 ```sh
-project update hello      # clone if missing, otherwise refresh git
-project build  hello      # configure + build with clang, debug by default
-project info   hello      # what is it, where does it build, what branch is it on
+update  hello      # clone if missing, otherwise refresh git
+build   hello      # configure + build with clang, debug by default
+project hello      # what is it, where does it build, what branch is it on
 ```
 
 `build` translates the toolchain into cmake's native flags for you — you never
@@ -92,23 +97,23 @@ write `CMAKE_C_COMPILER` yourself.
 ## Building: types, toolchains, presets, modes
 
 ```sh
-project build hello -B release                 # build type (lowercase, meson-aligned)
-project build hello -T gcc                     # a different declared toolchain
-project build hello -p asan -p lto             # apply presets (repeatable)
-project build hello --config-only              # (re)configure, don't compile
-project build hello --build-only               # compile, assume already configured
-project build hello --reconfig                 # wipe the build dir and configure fresh
-project build hello --install                  # add an install step
-project build hello --uninstall                # reverse an install (backend-driven)
+build hello -B release                 # build type (lowercase, meson-aligned)
+build hello -T gcc                     # a different declared toolchain
+build hello -p asan -p lto             # apply presets (repeatable)
+build hello --config-only              # (re)configure, don't compile
+build hello --build-only               # compile, assume already configured
+build hello --reconfig                 # wipe the build dir and configure fresh
+build hello --install                  # add an install step
+build hello --uninstall                # reverse an install (backend-driven)
 ```
 
 Pass raw, untouched flags straight through to the underlying tool when you need
 something one-off — these are applied last, at the highest priority:
 
 ```sh
-project build hello --extra-config-args -DFOO=BAR --extra-config-args -DBAZ=1
-project build hello -Xconfig,-DFOO=BAR         # short form, scope = config|build|install
-project build hello -Xbuild,-j8
+build hello --extra-config-args -DFOO=BAR --extra-config-args -DBAZ=1
+build hello -Xconfig,-DFOO=BAR         # short form, scope = config|build|install
+build hello -Xbuild,-j8
 ```
 
 The tool does not interpret these — `-DFOO=BAR` is handed to cmake verbatim.
@@ -119,7 +124,7 @@ Selection order is `env → --toolchain → the project's toolchain field →
 [toolchains]`. Environment wins, so you can flip toolchain for a run:
 
 ```sh
-WITS_PROJECT_TOOLCHAIN=gcc project build hello
+WITS_PROJECT_TOOLCHAIN=gcc build hello
 ```
 
 (Selecting a toolchain always happens so paths like `.../{{toolchain.name}}/...`
@@ -213,7 +218,7 @@ worktree_dir    = "{{repo.path}}.worktrees/{{branch.slug}}"
 
 ```sh
 project context create hello --branch feature-x   # make the worktree
-project build          hello --branch feature-x   # build in it
+build                  hello --branch feature-x   # build in it
 project context prune  hello --branch feature-x   # tear it down when done
 ```
 
@@ -226,8 +231,8 @@ which is exactly what a "clean up after a deleted branch" git hook wants to call
 ## Updating
 
 ```sh
-project update hello       # one project's repos
-project update             # every project
+update hello       # one project's repos
+update             # every project
 ```
 
 `update` is safe by default: if you are on a feature branch, it fast-forwards the
@@ -241,11 +246,11 @@ yourself.
 ## Inspecting and validating
 
 ```sh
-project info                       # one-line summary of every project
-project info hello                 # details for one
-project info hello -b feature-x -B release   # resolved build/install/work dirs for that profile
-project info --check               # validate every project's config (CI)
-project info --check hello         # validate one
+project                       # one-line summary of every project
+project hello                 # details for one
+project hello -b feature-x -B release   # resolved build/install/work dirs for that profile
+project --check               # validate every project's config (CI)
+project --check hello         # validate one
 ```
 
 `info` is pure read — it never builds or switches anything.
@@ -260,9 +265,9 @@ no argument the verbs act on the project you are currently standing in:
 
 ```sh
 cd ~/src/mesa/src/gallium/frontends/lavapipe
-project build             # builds the project owning this directory
-project info .            # details for that project
-project info ~/src/hello  # by path, from anywhere
+build                # builds the project owning this directory
+project .            # details for that project
+project ~/src/hello  # by path, from anywhere
 ```
 
 A token starting with `.`, `/`, or `~` is treated as a path; anything else is a

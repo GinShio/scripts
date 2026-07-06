@@ -11,11 +11,11 @@ language, and the resolution rules. For a gentle introduction read
 ## 1. CLI
 
 ```
-project info    [<name|path>] [--check] [--focus <repo>] [profile flags]
-project build   [<name|path>] [--focus <repo>] [profile flags] [build options]
-project update  [<name|path>]
+project [<name|path>] [--check] [--focus <repo>] [profile flags]
 project context create [<name|path>] --branch <X> [--focus <repo>]
 project context prune  [<name|path>] --branch <X> [--force]
+build   [<name|path>] [--focus <repo>] [profile flags] [build options]
+update  [<name|path>]
 ```
 
 Each verb's positional is a **name or a path**, mutually exclusive:
@@ -69,7 +69,9 @@ interpreted by the tool.
 Modes are mutually exclusive; the default is `auto` (configure if needed, then
 build).
 
-### 1.4 `info`
+### 1.4 `project` (describe / validate)
+
+`project` with no subcommand is the read command:
 
 - No positional: a one-line summary of every project.
 - A name or path (§1): full details for that project, including each repo's

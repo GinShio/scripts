@@ -56,19 +56,30 @@ This principle is why there are no built-in toolchains, no runtime linker
 probing, no path-inferred organisations, and no clever "fix the drifted remote
 URL for you" behaviour. When the tool does less, it surprises less.
 
-### 1.3 CLI surface — four verbs
+### 1.3 CLI surface
+
+The read/act split (§1.1) is carried onto the command line itself: `project` is
+the **read** command, while the mutating actions `build` and `update` are their
+own top-level commands. Only `context` still hangs under `project`, pending a
+decision on where it belongs.
 
 ```
-wf project info    [<name|path>] [--check]   # describe / list / validate (read-only)
-wf project build   [<name|path>]             # configure + build + (un)install
-wf project update  [<name|path>]             # refresh git for a project's repos
+wf project [<name|path>] [--check]                # describe / list / validate (read-only; the default)
 wf project context {create|prune} [<name|path>]   # manage a branch's build context
+wf build   [<name|path>]                          # configure + build + (un)install
+wf update  [<name|path>]                          # refresh git for a project's repos
 ```
 
-`project` earns the busybox applet forms automatically (`wf-project`,
-`project`), like every other `wf` sub-tool. Global `-v/--verbose` and
+Each earns the busybox applet forms automatically (`wf-build`, `build`,
+`wf-project`, …), like every other `wf` sub-tool. Global `-v/--verbose` and
 `-n/--dry-run` are inherited from the `wf` process layer: every mutating action
 respects dry-run, every read still runs.
+
+Splitting the commands this way is not a departure from the "one core, many
+consumers" shape — `build`, `update`, and `project` all sit on the *same*
+read-only core (§1.4); only the CLI grouping changed. `context`'s eventual home
+(a `project` subcommand, its own command, or folded into `build`/`update`) is
+**[open]**.
 
 ### 1.4 Library shape — core plus actions
 
@@ -650,18 +661,18 @@ resolution for an arbitrary branch to clean up after a deleted branch (§8.3).
 
 ### 9.2 CLI contract
 
-- **`project info [<name>]`** — no name lists a summary of every project; a name
-  gives details. With `Profile` flags it shows resolved build/install/work dirs;
-  without them it shows the raw templates. It also lists a project's worktrees and
-  their resolved dirs. Pure read.
-- **`project info --check [<name>]`** — config-legality validation (required
-  fields, valid build system, preset/inheritance cycles, template resolvability,
-  toolchain references exist). No name checks everything (CI use). Kept as a
-  `--check` mode to preserve the verb count.
-- **`project build <name>`** — resolves a full `Profile`, runs the §5 pipeline
-  and the backend emit, honouring the focus repo's branch strategy.
-- **`project update [<name>]`** — the §7 lifecycle over all of the project's
-  repos; no name updates every project.
+- **`project [<name>]`** — the read command. No name lists a summary of every
+  project; a name gives details. With `Profile` flags it shows resolved
+  build/install/work dirs; without them it shows the raw templates. It also lists
+  a project's worktrees and their resolved dirs. Pure read.
+- **`project --check [<name>]`** — config-legality validation (required fields,
+  valid build system, preset/inheritance cycles, template resolvability, toolchain
+  references exist). No name checks everything (CI use). A `--check` mode of the
+  read command rather than a separate verb.
+- **`build <name>`** — resolves a full `Profile`, runs the §5 pipeline and the
+  backend emit, honouring the focus repo's branch strategy.
+- **`update [<name>]`** — the §7 lifecycle over all of the project's repos; no
+  name updates every project.
 - **`project context {create,prune} <name> --branch X`** — §8.3.
 
 Every verb's positional is a **name or a path**, mutually exclusive. A token that
