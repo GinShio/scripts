@@ -18,10 +18,8 @@ use anyhow::{bail, Context, Result};
 
 use crate::core::template::{Engine, Value};
 
-use super::backend;
 use super::model::{
-    infer_kind, BranchStrategy, BuildOptions, LogicalConfig, Profile, RawPreset, RawToolchain,
-    Toolchain,
+    infer_kind, BranchStrategy, LogicalConfig, Profile, RawPreset, RawToolchain, Toolchain,
 };
 use super::workspace::{ProjectData, Workspace};
 
@@ -38,6 +36,10 @@ pub struct Plan {
     pub branch_slug: String,
     pub build_type: String,
     pub generator: Option<String>,
+    /// The resolved build system. Part of the read-only query surface (§11);
+    /// `build` reads it from project config pre-planning (to pick a backend
+    /// before it has a plan), so this copy is currently for consumers/`info`.
+    #[allow(dead_code)]
     pub build_system: Option<String>,
     pub toolchain: Option<Toolchain>,
     pub work_dir: PathBuf,
@@ -50,15 +52,38 @@ pub struct Plan {
     pub context: Value,
 }
 
+/// The one build-system responsibility the pipeline needs: translate a selected
+/// [`Toolchain`]'s canonical fields into a backend's native env/definitions at
+/// L0 (§5.4). This is the *only* seam between the read-only core and the build
+/// systems — the core owns the trait, but the concrete backends that implement
+/// it live entirely in `cmd::build` (§1.4). The core never names a backend, and
+/// callers that only resolve *paths* (`context`, `info`) inject nothing.
+pub trait ToolchainInjector {
+    /// Merge the toolchain's native env/definitions into `cfg`. Runs at L0, so a
+    /// later preset or CLI override of the same key wins.
+    fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig);
+}
+
 /// Inputs that vary per invocation but are not part of the file model.
+///
+/// Deliberately *not* `build::BuildOptions`: the pipeline only ever needs the
+/// verbatim L3 overrides (§5.5), not the build action's `mode`/`install`/
+/// `target`, so callers that just resolve paths (`context`, `info --check`)
+/// can leave those empty instead of fabricating a whole `BuildOptions`.
 pub struct PlanInput<'a> {
     pub profile: &'a Profile,
-    pub options: &'a BuildOptions,
     /// The target branch (from `--branch` or the caller's git read).
     pub branch: &'a str,
     /// Whether to inject the toolchain's env/definitions (skipped when trusting
     /// an already-configured build dir; §5.3). Selection still happens.
     pub inject_toolchain: bool,
+    /// The build system's toolchain translator (§5.4). `None` for path-only
+    /// resolves; L0 is skipped when it is absent even if `inject_toolchain`.
+    pub injector: Option<&'a dyn ToolchainInjector>,
+    /// L3 — verbatim overrides, applied last, at the highest priority.
+    pub extra_config_args: &'a [String],
+    pub extra_build_args: &'a [String],
+    pub extra_install_args: &'a [String],
 }
 
 pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Result<Plan> {
@@ -140,12 +165,11 @@ pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Res
     // --- Pipeline ----------------------------------------------------------
     let mut logical = LogicalConfig::default();
 
-    // L0 — toolchain injection.
+    // L0 — toolchain injection. The build system's translator (§5.4) is supplied
+    // by the caller; a path-only resolve has none, and simply skips this layer.
     if input.inject_toolchain {
-        if let (Some(tc), Some(system)) = (&toolchain, &build_system) {
-            let be = backend::for_system(system)
-                .with_context(|| format!("unsupported build system '{system}'"))?;
-            be.apply_toolchain(tc, &mut logical);
+        if let (Some(tc), Some(inj)) = (&toolchain, input.injector) {
+            inj.apply_toolchain(tc, &mut logical);
             fold_env(&mut ctx, &logical);
         }
     }
@@ -197,13 +221,13 @@ pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Res
     // L3 — CLI extra args (verbatim, highest priority).
     logical
         .extra_config_args
-        .extend(input.options.extra_config_args.iter().cloned());
+        .extend(input.extra_config_args.iter().cloned());
     logical
         .extra_build_args
-        .extend(input.options.extra_build_args.iter().cloned());
+        .extend(input.extra_build_args.iter().cloned());
     logical
         .extra_install_args
-        .extend(input.options.extra_install_args.iter().cloned());
+        .extend(input.extra_install_args.iter().cloned());
 
     Ok(Plan {
         focus,
@@ -837,7 +861,7 @@ pub fn slugify(branch: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::project::model::{BuildOptions, Profile};
+    use crate::cmd::project::model::Profile;
 
     fn ws_with(body: &str, stem: &str) -> (tempfile::TempDir, Workspace) {
         let dir = tempfile::tempdir().unwrap();
@@ -846,8 +870,21 @@ mod tests {
         (dir, ws)
     }
 
+    /// A stand-in for a real backend, so the pipeline can be tested without any
+    /// build-system dependency: it echoes the toolchain's `cc` into a definition
+    /// (the way a backend would) so we can assert L0 ran. Real per-backend
+    /// translation is tested in `cmd::build`.
+    struct MockInjector;
+    impl ToolchainInjector for MockInjector {
+        fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig) {
+            if let Some(cc) = &tc.cc {
+                cfg.set_definition("MOCK_CC", Value::Str(cc.clone()));
+            }
+        }
+    }
+
     #[test]
-    fn resolves_paths_and_toolchain() {
+    fn resolves_paths_and_injects_toolchain() {
         let body = r#"
             [project]
             build_system = "cmake"
@@ -868,12 +905,15 @@ mod tests {
             build_type: Some("release".into()),
             ..Default::default()
         };
-        let opts = BuildOptions::default();
+        let injector = MockInjector;
         let input = PlanInput {
             profile: &profile,
-            options: &opts,
             branch: "main",
             inject_toolchain: true,
+            injector: Some(&injector),
+            extra_config_args: &[],
+            extra_build_args: &[],
+            extra_install_args: &[],
         };
         let plan = plan(&ws, project, &input).unwrap();
         assert_eq!(plan.work_dir, PathBuf::from("/src/hello"));
@@ -881,14 +921,43 @@ mod tests {
             plan.build_dir.unwrap(),
             PathBuf::from("/src/hello/_build/clang/release")
         );
-        // cmake derives the compiler definition from the toolchain's cc, and
-        // deliberately does *not* pollute the environment with CC/CXX/… .
-        assert!(plan
-            .logical
-            .definitions
-            .iter()
-            .any(|(k, _)| k == "CMAKE_C_COMPILER"));
-        assert_eq!(plan.logical.env_entry("CC"), None);
+        // The injector ran at L0: the selected toolchain's `cc` was translated
+        // into the backend-shaped definition the mock emits.
+        assert!(plan.logical.definitions.iter().any(|(k, _)| k == "MOCK_CC"));
+    }
+
+    #[test]
+    fn no_injector_skips_l0_but_still_resolves_paths() {
+        let body = r#"
+            [project]
+            build_system = "cmake"
+            toolchain = "clang"
+            build_dir = "{{work.dir}}/b"
+
+            [repos.main]
+            path = "/src/hello"
+            main_branch = "main"
+
+            [toolchains.clang]
+            cc = "clang"
+        "#;
+        let (_d, ws) = ws_with(body, "hello");
+        let project = ws.project("hello").unwrap();
+        let profile = Profile::default();
+        let input = PlanInput {
+            profile: &profile,
+            branch: "main",
+            inject_toolchain: true, // requested, but no injector supplied
+            injector: None,
+            extra_config_args: &[],
+            extra_build_args: &[],
+            extra_install_args: &[],
+        };
+        let plan = plan(&ws, project, &input).unwrap();
+        // Toolchain *selection* still happened (paths need the name)…
+        assert_eq!(plan.toolchain.as_ref().unwrap().name, "clang");
+        // …but with no injector, L0 emitted nothing.
+        assert!(plan.logical.definitions.is_empty());
     }
 
     #[test]
@@ -913,12 +982,14 @@ mod tests {
         let (_d, ws) = ws_with(body, "x");
         let project = ws.project("x").unwrap();
         let profile = Profile::default();
-        let opts = BuildOptions::default();
         let input = PlanInput {
             profile: &profile,
-            options: &opts,
             branch: "main",
             inject_toolchain: false,
+            injector: None,
+            extra_config_args: &[],
+            extra_build_args: &[],
+            extra_install_args: &[],
         };
         let plan = plan(&ws, project, &input).unwrap();
         assert!(plan.logical.has_definition("WERROR"));

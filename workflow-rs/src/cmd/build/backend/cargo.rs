@@ -4,16 +4,14 @@
 
 use std::path::Path;
 
-use super::super::model::{BuildMode, LogicalConfig, Toolchain};
-use super::{apply_passthrough, set_universal_env, Backend, EmitContext, Step};
+use crate::cmd::project::model::{LogicalConfig, Toolchain};
+use crate::cmd::project::resolve::ToolchainInjector;
+
+use super::{apply_passthrough, set_universal_env, Backend, BuildMode, EmitContext, Step};
 
 pub struct Cargo;
 
-impl Backend for Cargo {
-    fn name(&self) -> &str {
-        "cargo"
-    }
-
+impl ToolchainInjector for Cargo {
     fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig) {
         set_universal_env(tc, cfg);
         if let Some(launcher) = &tc.launcher {
@@ -23,6 +21,12 @@ impl Backend for Cargo {
             cfg.set_env("RUSTFLAGS", tc.link_flags.join(" "));
         }
         apply_passthrough(tc, cfg);
+    }
+}
+
+impl Backend for Cargo {
+    fn name(&self) -> &str {
+        "cargo"
     }
 
     fn is_configured(&self, _build_dir: &Path) -> bool {

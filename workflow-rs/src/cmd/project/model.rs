@@ -226,8 +226,10 @@ impl BranchStrategy {
 }
 
 /// The axes that affect *resolution* (paths, identity). Built from CLI flags,
-/// never from a file. Separated from [`BuildOptions`] on purpose: these change
-/// what `build_dir`/`work.dir` resolve to, those change only the commands.
+/// never from a file. Separated from `build::BuildOptions` on purpose: these
+/// change what `build_dir`/`work.dir` resolve to; those change only the
+/// commands, and are the build action's own business (§1) — the core neither
+/// defines nor reads them.
 #[derive(Debug, Clone, Default)]
 pub struct Profile {
     pub build_type: Option<String>,
@@ -237,28 +239,6 @@ pub struct Profile {
     pub presets: Vec<String>,
     /// `--focus` override; falls back to `project.focus`, then `"main"`.
     pub focus: Option<String>,
-}
-
-/// What a build *does*, not where it resolves to. Extra args are verbatim and
-/// applied last, at the highest priority.
-#[derive(Debug, Clone, Default)]
-pub struct BuildOptions {
-    pub mode: BuildMode,
-    pub install: bool,
-    pub target: Option<String>,
-    pub extra_config_args: Vec<String>,
-    pub extra_build_args: Vec<String>,
-    pub extra_install_args: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum BuildMode {
-    #[default]
-    Auto,
-    ConfigOnly,
-    BuildOnly,
-    Reconfig,
-    Uninstall,
 }
 
 /// A toolchain after selection: canonical fields plus verbatim pass-through

@@ -1,32 +1,30 @@
-//! `wf project` — build, update, and introspect source projects from one
-//! declarative registry.
+//! `wf project` — the read-only core: describes and resolves projects, and
+//! manages build contexts (`context`).
 //!
-//! The shape mirrors the design: a small read-only **core** (`model`, `workspace`,
-//! `resolve`) that describes and resolves without side effects, and heavier
-//! **actions** (`build`, `update`, `context`) layered on top. The CLI here is a
-//! thin shell over the two. See `docs/project/design.md` for the reasoning.
+//! This module is the one place that knows what a project *is* — `model`,
+//! `workspace`, and `resolve` describe and resolve without side effects — plus
+//! `context`, the one action still nested here since it *is* CLI-nested
+//! (`wf project context`). The mutating actions with their own top-level
+//! commands, `wf build` and `wf update` (`cmd::build`, `cmd::update`), live
+//! outside this module entirely: they are consumers of its public API
+//! ([`resolve_target`], `resolve::plan`, `git`), not peers sharing its
+//! internals. The build systems themselves live with `build` too — the core's
+//! only tie to them is the `resolve::ToolchainInjector` seam. See
+//! `docs/project/design.md` §1.4 for the reasoning.
 
-pub mod backend;
-pub mod build;
 pub mod context;
 pub mod git;
 pub mod model;
 pub mod resolve;
-pub mod update;
 pub mod workspace;
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 
-use model::{BuildMode, BuildOptions, Profile};
+use model::Profile;
 use workspace::{expand_tilde, looks_like_path, ProjectData, Workspace};
 
 /// `wf project` — describe projects (the default), or manage a build context.
-///
-/// The read surface (`project`) and the mutating actions (`wf build`, `wf update`)
-/// are deliberately separate top-level commands (§1); only `context` still hangs
-/// here, pending a decision on where it belongs. All of them share the one
-/// read-only core under this module.
 #[derive(Debug, Args)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct ProjectArgs {
@@ -66,7 +64,7 @@ pub struct ProfileArgs {
 }
 
 impl ProfileArgs {
-    fn to_profile(&self) -> Profile {
+    pub fn to_profile(&self) -> Profile {
         Profile {
             build_type: self.build_type.clone(),
             toolchain: self.toolchain.clone(),
@@ -75,14 +73,6 @@ impl ProfileArgs {
             presets: self.presets.clone(),
             focus: self.focus.clone(),
         }
-    }
-
-    fn any_set(&self) -> bool {
-        self.branch.is_some()
-            || self.build_type.is_some()
-            || self.toolchain.is_some()
-            || self.generator.is_some()
-            || !self.presets.is_empty()
     }
 }
 
@@ -96,54 +86,6 @@ pub struct InfoArgs {
     pub check: bool,
     #[command(flatten)]
     pub profile: ProfileArgs,
-}
-
-#[derive(Debug, Args)]
-pub struct BuildArgs {
-    /// Project name or path (default: the project owning the current directory).
-    #[arg(value_name = "NAME|PATH")]
-    pub target: Option<String>,
-    #[command(flatten)]
-    pub profile: ProfileArgs,
-
-    /// Configure only; do not compile.
-    #[arg(long = "config-only", conflicts_with_all = ["build_only", "reconfig", "uninstall"])]
-    pub config_only: bool,
-    /// Compile only; assume already configured.
-    #[arg(long = "build-only", conflicts_with_all = ["reconfig", "uninstall"])]
-    pub build_only: bool,
-    /// Delete the build dir and configure fresh.
-    #[arg(long, conflicts_with = "uninstall")]
-    pub reconfig: bool,
-    /// Reverse an install (backend-driven).
-    #[arg(long)]
-    pub uninstall: bool,
-    /// Install after building.
-    #[arg(long)]
-    pub install: bool,
-    /// Build a specific target.
-    #[arg(short = 't', long = "target")]
-    pub build_target: Option<String>,
-
-    /// Raw args appended to the configure command (verbatim).
-    #[arg(long = "extra-config-args", num_args = 1.., value_name = "ARG")]
-    pub extra_config_args: Vec<String>,
-    /// Raw args appended to the build command (verbatim).
-    #[arg(long = "extra-build-args", num_args = 1.., value_name = "ARG")]
-    pub extra_build_args: Vec<String>,
-    /// Raw args appended to the install command (verbatim).
-    #[arg(long = "extra-install-args", num_args = 1.., value_name = "ARG")]
-    pub extra_install_args: Vec<String>,
-    /// Shorthand: -Xconfig,ARG / -Xbuild,ARG / -Xinstall,ARG (repeatable).
-    #[arg(short = 'X', value_name = "SCOPE,ARG")]
-    pub extra: Vec<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct UpdateArgs {
-    /// Project name or path (default: the project owning the current directory).
-    #[arg(value_name = "NAME|PATH")]
-    pub target: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -185,25 +127,6 @@ pub fn run(args: &ProjectArgs) -> Result<()> {
     }
 }
 
-/// `wf build` — its own top-level command, over the shared core.
-pub fn run_build(args: &BuildArgs) -> Result<()> {
-    let ws = Workspace::load()?;
-    let project = resolve_target(&ws, args.target.as_deref())?;
-    build::run(
-        &ws,
-        project,
-        &args.profile.to_profile(),
-        &build_options(args)?,
-    )
-}
-
-/// `wf update` — its own top-level command, over the shared core.
-pub fn run_update(args: &UpdateArgs) -> Result<()> {
-    let ws = Workspace::load()?;
-    let project = resolve_target(&ws, args.target.as_deref())?;
-    update::run(&ws, project)
-}
-
 fn run_context(ws: &Workspace, args: &ContextArgs) -> Result<()> {
     let item = match &args.action {
         ContextAction::Create(i) | ContextAction::Prune(i) => i,
@@ -221,7 +144,12 @@ fn run_context(ws: &Workspace, args: &ContextArgs) -> Result<()> {
 }
 
 /// Resolve a name/path positional (or the current directory) to one project.
-fn resolve_target<'a>(ws: &'a Workspace, target: Option<&str>) -> Result<&'a ProjectData> {
+///
+/// Part of `project`'s public API (§1.4 of `docs/project/design.md`): `build`
+/// and `update` are separate top-level commands with no access to anything
+/// private here, so this is how they turn their own `--target`-shaped
+/// positional into a project the same way `info`/`context` do.
+pub fn resolve_target<'a>(ws: &'a Workspace, target: Option<&str>) -> Result<&'a ProjectData> {
     match target {
         Some(t) if looks_like_path(t) => {
             let path = expand_tilde(t);
@@ -236,46 +164,6 @@ fn resolve_target<'a>(ws: &'a Workspace, target: Option<&str>) -> Result<&'a Pro
             )
         }
     }
-}
-
-fn build_options(a: &BuildArgs) -> Result<BuildOptions> {
-    let mode = if a.config_only {
-        BuildMode::ConfigOnly
-    } else if a.build_only {
-        BuildMode::BuildOnly
-    } else if a.reconfig {
-        BuildMode::Reconfig
-    } else if a.uninstall {
-        BuildMode::Uninstall
-    } else {
-        BuildMode::Auto
-    };
-
-    let (mut cfg, mut build, mut install) = (
-        a.extra_config_args.clone(),
-        a.extra_build_args.clone(),
-        a.extra_install_args.clone(),
-    );
-    for x in &a.extra {
-        let (scope, arg) = x
-            .split_once(',')
-            .with_context(|| format!("-X expects SCOPE,ARG (got '{x}')"))?;
-        match scope {
-            "config" => cfg.push(arg.to_owned()),
-            "build" => build.push(arg.to_owned()),
-            "install" => install.push(arg.to_owned()),
-            other => bail!("-X scope must be config|build|install (got '{other}')"),
-        }
-    }
-
-    Ok(BuildOptions {
-        mode,
-        install: a.install,
-        target: a.build_target.clone(),
-        extra_config_args: cfg,
-        extra_build_args: build,
-        extra_install_args: install,
-    })
 }
 
 // --- info ---------------------------------------------------------------------
@@ -350,16 +238,18 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
             .and_then(|p| git::Git::new(p).current_branch())
     });
     match branch {
-        Some(branch) if profile.any_set() || true => {
-            let opts = BuildOptions::default();
+        Some(branch) => {
             let plan = resolve::plan(
                 ws,
                 project,
                 &resolve::PlanInput {
                     profile: &profile.to_profile(),
-                    options: &opts,
                     branch: &branch,
                     inject_toolchain: false,
+                    injector: None,
+                    extra_config_args: &[],
+                    extra_build_args: &[],
+                    extra_install_args: &[],
                 },
             )?;
             println!(
@@ -427,10 +317,11 @@ fn check_one(ws: &Workspace, project: &ProjectData) -> Vec<String> {
     if p.build_dir.is_some() && p.build_system.is_none() {
         issues.push("build_dir is set but build_system is not".into());
     }
+    // Whether a declared `build_system` actually has a backend is `wf build`'s
+    // concern (it errors at run time); the core neither knows nor validates the
+    // set of supported build systems (§1.4). Here we only cross-check the
+    // *declared* facts: a toolchain's own `supports` list against `build_system`.
     if let Some(bs) = &p.build_system {
-        if backend::for_system(bs).is_none() {
-            issues.push(format!("unsupported build_system '{bs}'"));
-        }
         if let Some(tc) = &p.toolchain {
             if let Some(def) = ws.toolchains().get(tc) {
                 if !def.supports.is_empty() && !def.supports.iter().any(|s| s == bs) {
@@ -450,15 +341,17 @@ fn check_one(ws: &Workspace, project: &ProjectData) -> Vec<String> {
         toolchain: p.toolchain.clone(),
         ..Default::default()
     };
-    let opts = BuildOptions::default();
     if let Err(e) = resolve::plan(
         ws,
         project,
         &resolve::PlanInput {
             profile: &profile,
-            options: &opts,
             branch: "main",
             inject_toolchain: true,
+            injector: None,
+            extra_config_args: &[],
+            extra_build_args: &[],
+            extra_install_args: &[],
         },
     ) {
         issues.push(format!("resolution: {e:#}"));

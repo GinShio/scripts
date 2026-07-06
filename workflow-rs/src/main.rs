@@ -59,9 +59,9 @@ enum Commands {
     /// Describe source projects (and manage build contexts via `project context`).
     Project(cmd::project::ProjectArgs),
     /// Configure and build a project.
-    Build(cmd::project::BuildArgs),
+    Build(cmd::build::BuildArgs),
     /// Refresh git for every repo of a project.
-    Update(cmd::project::UpdateArgs),
+    Update(cmd::update::UpdateArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -72,8 +72,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Transcrypt(args) => cmd::transcrypt::run(args),
         Commands::Stack(args) => cmd::stack::run(args),
         Commands::Project(args) => cmd::project::run(args),
-        Commands::Build(args) => cmd::project::run_build(args),
-        Commands::Update(args) => cmd::project::run_update(args),
+        Commands::Build(args) => cmd::build::run(args),
+        Commands::Update(args) => cmd::update::run(args),
     }
 }
 

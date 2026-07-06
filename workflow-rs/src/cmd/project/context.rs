@@ -13,7 +13,7 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 
 use super::git::Git;
-use super::model::{BranchStrategy, BuildOptions, Profile};
+use super::model::{BranchStrategy, Profile};
 use super::resolve::{self, Plan, PlanInput};
 use super::workspace::{ProjectData, Workspace};
 
@@ -108,15 +108,17 @@ fn plan_for(
     profile: &Profile,
     branch: &str,
 ) -> Result<Plan> {
-    let opts = BuildOptions::default();
     resolve::plan(
         ws,
         project,
         &PlanInput {
             profile,
-            options: &opts,
             branch,
             inject_toolchain: false,
+            injector: None,
+            extra_config_args: &[],
+            extra_build_args: &[],
+            extra_install_args: &[],
         },
     )
 }

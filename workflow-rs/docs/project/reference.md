@@ -315,11 +315,14 @@ recursive delete, because an install prefix may be shared.
 ## 8. `info --check` validation
 
 Reports (does not fix): required fields present (`repos.main`, `main_branch` for
-own-git repos, `build_dir`/`build_system` when building); build system is one of
-the supported set; preset inheritance and template reference cycles; template
-resolvability against a representative context; referenced toolchains exist; and,
-when a toolchain declares `supports`, that it covers the project's build system.
-No `<name>` checks every project.
+own-git repos, `build_dir`/`build_system` when building); preset inheritance and
+template reference cycles; template resolvability against a representative
+context; referenced toolchains exist; and, when a toolchain declares `supports`,
+that it covers the project's build system. No `<name>` checks every project.
+
+Whether the declared `build_system` actually has a backend is **not** checked
+here — that is reported by `wf build` at run time, since the read-only core
+deliberately knows nothing of which build systems are implemented.
 
 ---
 

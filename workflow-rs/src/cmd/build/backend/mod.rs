@@ -1,11 +1,19 @@
 //! Build systems — the tool's one extension axis.
 //!
-//! A new build system is a new [`Backend`] impl plus a line in [`for_system`];
-//! the core and the resolver know nothing about any concrete backend. A backend
-//! does exactly three things (§7): translate the *canonical* toolchain vocabulary
-//! into its native form, emit the ordered command steps for a build mode, and
-//! detect prior configuration. The definition→argv *spelling* (`-DK:TYPE=V` vs
-//! `-Dk=v`) is private to each backend, never leaked outward.
+//! These live under `cmd::build`, not `project`: emitting build steps is a
+//! purely build-time concern, so the read-only core never needs to see a
+//! backend (§1.4). The single thing the core *does* need — translating a
+//! toolchain into native env/definitions at L0 (§5.4) — is expressed through
+//! the core-owned [`ToolchainInjector`] seam, which every [`Backend`] also
+//! implements; `build` hands the selected backend to `resolve::plan` as the
+//! injector.
+//!
+//! A new build system is a new [`Backend`] impl (plus a `ToolchainInjector`
+//! impl) and a line in [`for_system`]. A backend does exactly three things
+//! (§7): translate the *canonical* toolchain vocabulary into its native form,
+//! emit the ordered command steps for a build mode, and detect prior
+//! configuration. The definition→argv *spelling* (`-DK:TYPE=V` vs `-Dk=v`) is
+//! private to each backend, never leaked outward.
 
 mod cargo;
 mod cmake;
@@ -15,7 +23,21 @@ use std::path::{Path, PathBuf};
 
 use crate::core::template::Value;
 
-use super::model::{BuildMode, LogicalConfig, Toolchain};
+use crate::cmd::project::model::{LogicalConfig, Toolchain};
+use crate::cmd::project::resolve::ToolchainInjector;
+
+/// Which phase(s) of a build to run. Every backend's `steps()` branches on it;
+/// `build::BuildOptions` carries one of these plus the flags that never reach
+/// the core (e.g. `install`/`target`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BuildMode {
+    #[default]
+    Auto,
+    ConfigOnly,
+    BuildOnly,
+    Reconfig,
+    Uninstall,
+}
 
 /// One command to run. Env is applied by the executor from the resolved
 /// [`LogicalConfig`], so a step is just "what to run, and where".
@@ -57,13 +79,10 @@ pub struct EmitContext<'a> {
     pub install: bool,
 }
 
-pub trait Backend {
+/// A build system. Also a [`ToolchainInjector`] (its L0 translation half), so a
+/// backend can be handed straight to `resolve::plan` as the injector.
+pub trait Backend: ToolchainInjector {
     fn name(&self) -> &str;
-
-    /// Translate the toolchain's canonical fields into this backend's native
-    /// env/definitions, merging into `cfg`. Runs at pipeline L0, so a later
-    /// preset or CLI override of the same key wins.
-    fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig);
 
     /// The ordered command steps for the requested mode.
     fn steps(&self, ctx: &EmitContext<'_>) -> anyhow::Result<Vec<Step>>;

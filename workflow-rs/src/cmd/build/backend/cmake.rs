@@ -4,16 +4,14 @@ use std::path::Path;
 
 use crate::core::template::Value;
 
-use super::super::model::{BuildMode, LogicalConfig, Toolchain};
-use super::{apply_passthrough, cmake_definition, Backend, EmitContext, Step};
+use crate::cmd::project::model::{LogicalConfig, Toolchain};
+use crate::cmd::project::resolve::ToolchainInjector;
+
+use super::{apply_passthrough, cmake_definition, Backend, BuildMode, EmitContext, Step};
 
 pub struct Cmake;
 
-impl Backend for Cmake {
-    fn name(&self) -> &str {
-        "cmake"
-    }
-
+impl ToolchainInjector for Cmake {
     fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig) {
         // cmake is configured entirely through `-D`; it does not need (and can be
         // confused by) `CC`/`CXX`/`AR`/… in the environment, so no universal env
@@ -60,6 +58,12 @@ impl Backend for Cmake {
         }
 
         apply_passthrough(tc, cfg);
+    }
+}
+
+impl Backend for Cmake {
+    fn name(&self) -> &str {
+        "cmake"
     }
 
     fn is_configured(&self, build_dir: &Path) -> bool {
@@ -182,4 +186,26 @@ fn build_type_cmake(bt: &str) -> &str {
 
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn translates_toolchain_to_definitions_without_polluting_env() {
+        let tc = Toolchain {
+            name: "clang".into(),
+            cc: Some("clang".into()),
+            cxx: Some("clang++".into()),
+            ..Default::default()
+        };
+        let mut cfg = LogicalConfig::default();
+        Cmake.apply_toolchain(&tc, &mut cfg);
+
+        // cmake derives the compiler definition from the toolchain's cc…
+        assert!(cfg.definitions.iter().any(|(k, _)| k == "CMAKE_C_COMPILER"));
+        // …and deliberately does *not* set CC/CXX/… in the environment.
+        assert_eq!(cfg.env_entry("CC"), None);
+    }
 }

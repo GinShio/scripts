@@ -3,16 +3,16 @@
 
 use std::path::Path;
 
-use super::super::model::{BuildMode, LogicalConfig, Toolchain};
-use super::{apply_passthrough, meson_definition, set_universal_env, Backend, EmitContext, Step};
+use crate::cmd::project::model::{LogicalConfig, Toolchain};
+use crate::cmd::project::resolve::ToolchainInjector;
+
+use super::{
+    apply_passthrough, meson_definition, set_universal_env, Backend, BuildMode, EmitContext, Step,
+};
 
 pub struct Meson;
 
-impl Backend for Meson {
-    fn name(&self) -> &str {
-        "meson"
-    }
-
+impl ToolchainInjector for Meson {
     fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig) {
         set_universal_env(tc, cfg);
 
@@ -31,6 +31,12 @@ impl Backend for Meson {
         }
 
         apply_passthrough(tc, cfg);
+    }
+}
+
+impl Backend for Meson {
+    fn name(&self) -> &str {
+        "meson"
     }
 
     fn is_configured(&self, build_dir: &Path) -> bool {

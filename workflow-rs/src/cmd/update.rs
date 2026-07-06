@@ -1,4 +1,4 @@
-//! `wf project update` — refresh every repo of a project.
+//! `wf update` — refresh every repo of a project.
 //!
 //! The default action never switches branches or touches the working tree: on a
 //! feature branch it fast-forwards the `main_branch` *ref* with a refspec, which
@@ -14,15 +14,30 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
+use clap::Args;
 
 use crate::core::template::Engine;
 
-use super::git::{self, Git, RestoreGuard};
-use super::model::{infer_kind, Kind};
-use super::resolve;
-use super::workspace::{ProjectData, Workspace};
+use crate::cmd::project::git::{self, Git, RestoreGuard};
+use crate::cmd::project::model::{infer_kind, Kind, RawRepo};
+use crate::cmd::project::resolve;
+use crate::cmd::project::workspace::{ProjectData, Workspace};
 
-pub fn run(_ws: &Workspace, project: &ProjectData) -> Result<()> {
+#[derive(Debug, Args)]
+pub struct UpdateArgs {
+    /// Project name or path (default: the project owning the current directory).
+    #[arg(value_name = "NAME|PATH")]
+    pub target: Option<String>,
+}
+
+/// `wf update` — its own top-level command, over the shared `project` core.
+pub fn run(args: &UpdateArgs) -> Result<()> {
+    let ws = Workspace::load()?;
+    let project = crate::cmd::project::resolve_target(&ws, args.target.as_deref())?;
+    execute(project)
+}
+
+fn execute(project: &ProjectData) -> Result<()> {
     for name in repo_order(project) {
         let repo = &project.repos[&name];
         if infer_kind(&name, repo) == Kind::Subtree {
@@ -104,12 +119,7 @@ fn update_repo(project: &ProjectData, name: &str, git: &Git) -> Result<()> {
     Ok(())
 }
 
-fn default_update(
-    project: &ProjectData,
-    name: &str,
-    git: &Git,
-    repo: &super::model::RawRepo,
-) -> Result<()> {
+fn default_update(project: &ProjectData, name: &str, git: &Git, repo: &RawRepo) -> Result<()> {
     let mb = repo
         .main_branch
         .as_deref()
@@ -148,7 +158,7 @@ fn default_update(
 }
 
 /// Additive remote reconciliation (§3.1): add what's missing, never modify.
-fn ensure_remotes(git: &Git, repo: &super::model::RawRepo) -> Result<()> {
+fn ensure_remotes(git: &Git, repo: &RawRepo) -> Result<()> {
     if let Some(origin) = &repo.remotes.origin {
         git.ensure_remote("origin", origin)?;
         // Mirrors are extra push URLs on origin; git stops defaulting push to the

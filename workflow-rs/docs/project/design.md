@@ -60,8 +60,9 @@ URL for you" behaviour. When the tool does less, it surprises less.
 
 The read/act split (§1.1) is carried onto the command line itself: `project` is
 the **read** command, while the mutating actions `build` and `update` are their
-own top-level commands. Only `context` still hangs under `project`, pending a
-decision on where it belongs.
+own top-level commands. `context` stays nested under `project` — unlike
+`build`/`update` it has no independent identity of its own (it is always about
+*a* project's build context), and it is rare enough not to earn a top-level verb.
 
 ```
 wf project [<name|path>] [--check]                # describe / list / validate (read-only; the default)
@@ -77,21 +78,48 @@ respects dry-run, every read still runs.
 
 Splitting the commands this way is not a departure from the "one core, many
 consumers" shape — `build`, `update`, and `project` all sit on the *same*
-read-only core (§1.4); only the CLI grouping changed. `context`'s eventual home
-(a `project` subcommand, its own command, or folded into `build`/`update`) is
-**[open]**.
+read-only core (§1.4); only the CLI grouping changed. Any future project-related
+verb makes the same choice independently: nest under `project` if it is rare or
+tightly coupled to the read surface, promote to a top-level command if it is
+frequent enough to deserve a terse form (as `build`/`update` were). Because the
+core neither knows nor cares which side of that line a consumer falls on
+(§1.4), the choice is cheap to revisit later.
 
 ### 1.4 Library shape — core plus actions
 
-The CLI grouping is *not* the code grouping. The library is a small pure **core**
-plus three **actions** built on it:
+The CLI grouping is *not* the code grouping, and as of `build`/`update` leaving
+`project`, it *also* is not the crate-module grouping. `project` is a small
+pure **core** (`model`, `workspace`, `resolve`, `git`) plus the one action
+still living inside it, `context`; `build` and `update` are separate top-level
+`cmd` modules that consume `project`'s public API — `resolve_target`,
+`resolve::plan`, `git` — the same way an external tool would:
 
 ```
-project (core)   — model + workspace + resolve + git introspection (read-only)
-   ▲   ▲   ▲        this is the reusable crate API
-   │   │   │
- build update context   — action modules; the only things with side effects
+project (core: model/workspace/resolve/git, read-only) + context (action)
+   ▲          ▲            ▲
+   │          │            │
+cmd::build   cmd::update   (external consumers)   — consume project's public
+ └─ backend                                          API; not siblings inside it
 ```
+
+The build systems (`cmake`/`meson`/`cargo`) live **under `cmd::build`**, not in
+the core, because emitting build steps is a purely build-time concern the core
+never touches. The core has exactly one tie to them: translating a *selected
+toolchain* into a backend's native env/definitions at L0 (§5.4). That tie is a
+one-method seam, `resolve::ToolchainInjector`, **defined by the core but
+implemented by each backend**; `build` hands the chosen backend to
+`resolve::plan` as the injector, and path-only callers (`context`, `info`)
+inject nothing. So `project` exposes no `Backend`, `Step`, `EmitContext`, or
+build-system registry at all — only the abstract seam — and the dependency
+still points one way: `build` → `project`, never back.
+
+`context` did not move out alongside `build`/`update` because it is CLI-nested
+under `project` (§1.3) as well as code-nested — the two questions happened to
+agree here, but they are still independent (§1.3). If `context` (or a future
+action) is ever promoted to a top-level command, it should move to its own
+`cmd` module at the same time, for the same reason `build`/`update` did: an
+action with its own top-level verb has no business reaching into `project`'s
+private internals, only its public API.
 
 ### 1.5 Out of scope
 
@@ -321,8 +349,9 @@ Selection (always) — produces names + paths, no build side effects
 
 Accumulation (single-directional; each layer resolved as it merges)
   L0  toolchain injection        → environment / definitions      [skipped when trusting config, §5.3]
-        backend.apply_toolchain translates the toolchain's canonical fields (§5.4);
-        the toolchain's own environment/definitions are passed through verbatim.
+        the injector (a backend, via the ToolchainInjector seam) translates the
+        toolchain's canonical fields (§5.4); the toolchain's own environment/
+        definitions are passed through verbatim. A path-only resolve injects nothing.
   L1  project config             → merge [environment]/[definitions]/extra_*
   L2  presets                    → default_presets, then applies_when matches, then --preset (§5.5)
   L3  CLI extra args             → --extra-*-args / -Xscope,arg  (verbatim, highest priority)
@@ -577,22 +606,37 @@ skipped, and the program exits non-zero.
 
 ### 8.1 The backend abstraction — the only extension axis
 
-A new build system is a new `Backend` impl plus registration; the core and the
-resolver know nothing about any concrete backend.
+A new build system is a new `Backend` impl plus registration. Backends live
+under `cmd::build` (§1.4), never in the core; the core and the resolver name no
+concrete backend. The abstraction is split so the core depends only on the half
+it needs — the L0 toolchain translation — via the core-owned
+`ToolchainInjector` seam:
 
 ```rust
-trait Backend {
+// in project::resolve (core): the only backend-facing thing the pipeline sees
+trait ToolchainInjector {
+    fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig);   // L0
+}
+
+// in cmd::build: the full build-time abstraction, a ToolchainInjector plus emission
+trait Backend: ToolchainInjector {
     fn name(&self) -> &str;                        // "cmake" | "meson" | "cargo"
-    fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig, profile: &Profile);
-    fn steps(&self, ctx: &EmitContext, mode: BuildMode) -> anyhow::Result<Vec<Step>>;
+    fn steps(&self, ctx: &EmitContext) -> anyhow::Result<Vec<Step>>;
     fn is_configured(&self, build_dir: &Path) -> bool;
 }
 ```
 
-`apply_toolchain` runs at **L0** (so overrides can win, §5.4); `steps` runs at
-emit and owns the definition→argv spelling (cmake's `-DK:TYPE=V` vs meson's
-`-Dk=v`), the command sequence per `BuildMode`, and `is_configured` detection
-(cmake's `CMakeCache.txt`, meson's `coredata.dat`, none for cargo).
+`apply_toolchain` runs at **L0** (so overrides can win, §5.4) and is the *only*
+backend method the core invokes — through the seam, given the concrete backend
+by `build`. `steps` runs at emit and owns the definition→argv spelling (cmake's
+`-DK:TYPE=V` vs meson's `-Dk=v`), the command sequence per `BuildMode`, and
+`is_configured` detection (cmake's `CMakeCache.txt`, meson's `coredata.dat`,
+none for cargo) — none of which the core ever sees.
+
+Whether a declared `build_system` actually *has* a backend is reported by
+`wf build` at run time, not by `wf project --check`: the core does not know the
+set of supported build systems, so `--check` validates only declared-fact
+consistency (e.g. a toolchain's `supports` list vs the `build_system`).
 
 ### 8.2 Modes, install, and uninstall
 
