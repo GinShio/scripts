@@ -1,9 +1,9 @@
 # `wf stack` — Design
 
-> Status: **design draft**, no code yet. This is the agreed shape of the `stack`
-> tool before implementation. Items marked **[open]** still need a decision;
-> everything else is settled and may shift while we implement, but should not be
-> reopened casually.
+> Status: **implemented**. This records the agreed shape of the `stack` tool and
+> the *why* behind it; the code lives in `src/cmd/stack/` and
+> `src/util/{forge,remote}`. Where a detail has since evolved in code, the code
+> is authoritative — the trait sketch in §7.3 has been kept in sync.
 >
 > This file explains *why the tool is shaped the way it is*. The companion usage
 > document (`docs/stack.md`) explains *how to drive it* and carries the full,
@@ -265,13 +265,21 @@ struct MergeRequest {
 }
 
 trait Forge: Send + Sync {
-    fn labels(&self) -> (&'static str, &'static str);          // ("PR","#") / ("MR","!")
-    fn find(&self, head: &str, base: &str, state: StateFilter) -> Result<Option<MergeRequest>>;
+    fn noun(&self) -> &str;                                    // "PR" | "MR"
+    fn find(&self, branch: &str, state: StateFilter) -> Result<Option<MergeRequest>>;
     fn create(&self, req: &NewMr) -> Result<MergeRequest>;
     fn set_base(&self, id: &str, base: &str) -> Result<()>;
     fn set_body(&self, id: &str, body: &str) -> Result<()>;
+    fn apply_attributes(&self, id: &str, attrs: &Attributes) -> Result<()>;
 }
 ```
+
+`find` matches on the **branch alone**, not the base: the base a branch *should*
+target is the topology's business, so the verb compares `MergeRequest.base`
+against the plan itself rather than asking the forge to filter by it (an early
+version filtered by base and missed drifted MRs — the regression that motivated
+this signature). `apply_attributes` is the additive labels/assignees/reviewers
+primitive `decorate` composes.
 
 A host impl (`github`/`gitlab`/`gitea`) is then *only* a mapping: base API URL
 from host, auth header style, endpoint paths, and the JSON↔`MergeRequest`
@@ -287,7 +295,7 @@ that is cleaner than a mode flag:
 - **`submit`** → `find(open)`; if found and its base drifted, `set_base`; if
   none, consult the closed-MR guard below, else `create` with title/body derived
   from the branch's commits (default: the latest commit's subject/body;
-  `--title-source first|last|edit`). The MR's draft state is decided here: an MR
+  `--title-source first|last`). The MR's draft state is decided here: an MR
   whose base is *not* the stack base starts as **draft** by default (a mid-stack
   change should not be reviewed/merged before what it sits on), overridable
   per-invocation with a `--no-draft` flag — a CLI option, not a config key,

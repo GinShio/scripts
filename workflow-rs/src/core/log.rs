@@ -46,7 +46,7 @@ impl log::Log for WfLogger {
         if metadata.level() == log::Level::Debug {
             VERBOSE.load(Ordering::Relaxed)
         } else {
-            metadata.level() <= log::Level::Warn
+            metadata.level() <= log::Level::Info
         }
     }
 
@@ -104,5 +104,36 @@ mod tests {
         assert!(is_verbose() && is_dry_run());
         init(false, false);
         assert!(!is_verbose() && !is_dry_run());
+    }
+
+    /// Info is the commands' normal feedback channel (`pushed X`, `created MR`,
+    /// build steps), so it must be visible without `-v`; only Debug is gated on
+    /// verbose. Guards the regression where `<= Warn` silently swallowed Info.
+    #[test]
+    fn info_is_visible_by_default_and_debug_needs_verbose() {
+        use log::{Level, Log, Metadata};
+        let _guard = test_flag_guard();
+        let meta = |level: Level| Metadata::builder().level(level).build();
+
+        init(false, false);
+        assert!(WF_LOGGER.enabled(&meta(Level::Error)));
+        assert!(WF_LOGGER.enabled(&meta(Level::Warn)));
+        assert!(
+            WF_LOGGER.enabled(&meta(Level::Info)),
+            "info hidden by default"
+        );
+        assert!(
+            !WF_LOGGER.enabled(&meta(Level::Debug)),
+            "debug leaked without -v"
+        );
+
+        init(true, false);
+        assert!(WF_LOGGER.enabled(&meta(Level::Info)));
+        assert!(
+            WF_LOGGER.enabled(&meta(Level::Debug)),
+            "debug missing under -v"
+        );
+
+        init(false, false);
     }
 }

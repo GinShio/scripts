@@ -3,9 +3,10 @@
 //!
 //! The collection grows one subcommand at a time. Keeping everything in one
 //! binary (rather than a pile of scripts) buys a shared core, consistent flags,
-//! and a single thing to build and put on `$PATH`. Today the only inhabitant is
-//! `transcrypt`; the structure here is the whole extension story — add a module
-//! under `cmd/` and a match arm below.
+//! and a single thing to build and put on `$PATH`. The binary now collects
+//! `transcrypt`, `stack`, `project`, `build`, and `update`; the structure here
+//! is the whole extension story — add a module under `cmd/` and a match arm
+//! below.
 //!
 //! There are two equivalent ways to invoke a tool, the way `mount` lets you
 //! write either `mount -t xfs` or `mount.xfs`: the umbrella form `wf foo` and

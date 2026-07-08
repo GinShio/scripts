@@ -17,7 +17,7 @@ use crate::core::log as wf_log;
 use crate::util::forge::{self, Attributes, StateFilter};
 use crate::util::remote::Remotes;
 
-use super::{map_parallel, resolution, DecorateArgs};
+use super::{fail_if_any, map_parallel, resolution, DecorateArgs};
 
 enum Outcome {
     Done(String),
@@ -71,14 +71,18 @@ pub fn run(repo: &Repository, args: &DecorateArgs) -> anyhow::Result<()> {
         (branch.clone(), outcome)
     });
 
+    let mut failures = 0usize;
     for (branch, outcome) in outcomes {
         match outcome {
             Outcome::Done(display) => log::info!("decorated {noun} {display} ({branch})"),
             Outcome::NoMr => log::info!("{branch}: no open {noun}"),
-            Outcome::Failed(e) => log::warn!("{branch}: {e}"),
+            Outcome::Failed(e) => {
+                failures += 1;
+                log::warn!("{branch}: {e}");
+            }
         }
     }
-    Ok(())
+    fail_if_any(failures)
 }
 
 /// One branch (the named one, or the current) by default; the whole in-scope

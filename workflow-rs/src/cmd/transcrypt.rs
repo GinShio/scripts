@@ -20,6 +20,7 @@
 
 use std::io::{Read, Write};
 
+use anyhow::Context;
 use clap::Args;
 
 use crate::core::crypto::{
@@ -98,26 +99,36 @@ fn resolve_crypto_config(
         )
     })?;
 
-    let cipher = resolver
+    // A misconfigured algorithm must fail loudly, not silently fall back to the
+    // default: encrypting under a different cipher than intended is exactly the
+    // kind of quiet wrong-key hazard this tool exists to avoid. An *unset* key
+    // still round-trips, because `get_or_default` hands back the historical
+    // default string, which parses cleanly.
+    let cipher: CipherAlgorithm = resolver
         .get_or_default("cipher", "aes-256-gcm")
         .value
         .parse()
-        .unwrap_or(CipherAlgorithm::Aes256Gcm);
-    let hash = resolver
+        .context("transcrypt.cipher")?;
+    let hash: HashAlgorithm = resolver
         .get_or_default("digest", "sha256")
         .value
         .parse()
-        .unwrap_or(HashAlgorithm::Sha256);
-    let kdf = resolver
+        .context("transcrypt.digest")?;
+    let kdf: KdfAlgorithm = resolver
         .get_or_default("kdf", "pbkdf2")
         .value
         .parse()
-        .unwrap_or(KdfAlgorithm::Pbkdf2);
-    let iterations = resolver
-        .get_or_default("iterations", "")
-        .value
-        .parse()
-        .unwrap_or_else(|_| kdf.default_iterations());
+        .context("transcrypt.kdf")?;
+    // Iterations are numeric, and unset means "use the KDF's default". Only a
+    // *non-empty, unparseable* value is an error.
+    let iterations = {
+        let raw = resolver.get_or_default("iterations", "").value;
+        if raw.is_empty() {
+            kdf.default_iterations()
+        } else {
+            raw.parse().context("transcrypt.iterations")?
+        }
+    };
 
     Ok((password, cipher, hash, kdf, iterations))
 }

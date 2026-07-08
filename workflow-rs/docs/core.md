@@ -47,7 +47,7 @@ talking to its MR API — deliberately do *not* live in `core`. They sit in
 their own and `core` is kept to the floor. See `docs/stack/design.md` for that
 layer's shape.
 
-## `cli` — layered config resolution
+## `resolver` — layered config resolution
 
 A setting like the encryption password can live in an environment variable or in
 git config, and we want one predictable precedence order with no bootstrap loop
@@ -77,3 +77,35 @@ observably identical once encrypted — fine here, and the price of a filter tha
 doesn't fight git. The derivation also folds in the file path as the AEAD's
 additional data, binding a ciphertext to its location so a moved blob fails to
 authenticate instead of silently decrypting.
+
+## `log` — two global switches and a stream split
+
+`--verbose` and `--dry-run` are genuinely global to a run, and threading them
+through every call site would be noise, so they live in two process-wide atomics
+set once at startup. Everything else here follows from that.
+
+The one decision worth recording is the split of streams. Ordinary log lines go
+to **stderr**; the dry-run preview of a command that *would* run goes to
+**stdout**. That way `wf … -n` can be captured or piped as a clean plan without
+log chatter mixed in. The level policy matches the split's intent: `info` — the
+normal per-action feedback (`pushed X`, `created MR`, each build step) — is
+shown by default, and only `debug` is gated behind `--verbose`. (Getting that
+gate wrong once made every command silent on success; it is now pinned by a
+test.)
+
+## `template` — a zero-domain `{{ }}` / `[[ ]]` engine
+
+Project config is full of values that reference other values — a `build_dir`
+built from `{{work.dir}}` and `{{build_type}}`, an environment entry computed
+from another. Rather than bake that into the project layer, the substitution
+engine is a floor primitive that knows nothing about projects: it resolves
+`{{ dotted.path }}` lookups and `[[ arithmetic ]]` expressions against an opaque
+`Value` tree.
+
+Two decisions carry the weight. Resolution is **lazy** — a context entry may
+itself be a template that references another — so the order entries appear in a
+map never matters; each is resolved on demand and memoised. And because laziness
+invites loops, the engine keeps a path stack and turns a self-reference cycle
+into a hard error rather than a stack overflow. Unknown paths and type
+mismatches are likewise hard failures, so a typo surfaces at resolution instead
+of silently rendering empty.

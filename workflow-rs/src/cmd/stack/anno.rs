@@ -15,7 +15,7 @@ use crate::util::forge::{self, MergeRequest, StateFilter};
 use crate::util::remote::Remotes;
 
 use super::topology::Topology;
-use super::{map_parallel, resolution, ScopeArgs};
+use super::{fail_if_any, map_parallel, resolution, ScopeArgs};
 
 const HEADER: &str = "<!-- wf stack: generated navigation, do not edit below -->";
 const FOOTER: &str = "<!-- wf stack: end navigation -->";
@@ -41,18 +41,22 @@ pub fn run(repo: &Repository, scope: &ScopeArgs) -> anyhow::Result<()> {
         (branch.clone(), forge.find(branch, StateFilter::Open))
     });
     let mut mrs: HashMap<String, MergeRequest> = HashMap::new();
+    let mut failures = 0usize;
     for (branch, result) in found {
         match result {
             Ok(Some(mr)) => {
                 mrs.insert(branch, mr);
             }
             Ok(None) => log::info!("{branch}: no open {noun}"),
-            Err(e) => log::warn!("{branch}: {e}"),
+            Err(e) => {
+                failures += 1;
+                log::warn!("{branch}: {e}");
+            }
         }
     }
     if mrs.is_empty() {
         log::info!("no open {noun}s to annotate");
-        return Ok(());
+        return fail_if_any(failures);
     }
 
     // Cache discovered numbers into the machete annotations so later runs (and a
@@ -85,7 +89,7 @@ pub fn run(repo: &Repository, scope: &ScopeArgs) -> anyhow::Result<()> {
 
     if updates.is_empty() {
         log::info!("descriptions already up to date");
-        return Ok(());
+        return fail_if_any(failures);
     }
 
     let results = map_parallel(&updates, |item| {
@@ -99,11 +103,14 @@ pub fn run(repo: &Repository, scope: &ScopeArgs) -> anyhow::Result<()> {
     for (item, result) in updates.iter().zip(results) {
         match result {
             Ok(()) => log::info!("updated {noun} {} ({})", item.3, item.0),
-            Err(e) => log::warn!("{}: {e}", item.0),
+            Err(e) => {
+                failures += 1;
+                log::warn!("{}: {e}", item.0);
+            }
         }
     }
 
-    Ok(())
+    fail_if_any(failures)
 }
 
 /// Render the full navigation block for one branch's MR: one "Stack List"

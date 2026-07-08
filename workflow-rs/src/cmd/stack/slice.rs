@@ -26,6 +26,16 @@ use super::resolution;
 use super::topology::Topology;
 
 pub fn run(repo: &Repository, base: Option<&str>) -> anyhow::Result<()> {
+    // `slice` is driven by an interactive `git rebase -i`; there is nothing to
+    // preview and no safe way to run it non-interactively, so under `-n` it does
+    // nothing rather than write temp files and then misreport an empty result.
+    if crate::core::log::is_dry_run() {
+        log::info!(
+            "slice drives an interactive rebase and cannot be previewed; skipping under --dry-run"
+        );
+        return Ok(());
+    }
+
     let base = match base {
         Some(b) => b.to_owned(),
         None => resolution::base_branch(repo)?,

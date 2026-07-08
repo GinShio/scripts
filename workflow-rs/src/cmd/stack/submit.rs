@@ -17,7 +17,7 @@ use crate::core::log as wf_log;
 use crate::util::forge::{self, Forge, NewMr, StateFilter};
 use crate::util::remote::Remotes;
 
-use super::{map_parallel, resolution, SubmitArgs, TitleSource};
+use super::{fail_if_any, map_parallel, resolution, SubmitArgs, TitleSource};
 
 /// What a branch needs, decided from its current remote MR state.
 enum Decision {
@@ -49,6 +49,7 @@ pub fn run(repo: &Repository, args: &SubmitArgs) -> anyhow::Result<()> {
     // Phase 2 — sort into the two execution lanes.
     let mut fixes = Vec::new();
     let mut creates = Vec::new();
+    let mut failures = 0usize;
     for (branch, base, decision) in decisions {
         match decision {
             Ok(Decision::AlreadyOpen(display)) => {
@@ -59,7 +60,10 @@ pub fn run(repo: &Repository, args: &SubmitArgs) -> anyhow::Result<()> {
             Ok(Decision::SkipClosed(display)) => log::info!(
                 "{branch}: a closed {noun} {display} sits at this commit; not reopening (use --force)"
             ),
-            Err(e) => log::warn!("{branch}: {e}"),
+            Err(e) => {
+                failures += 1;
+                log::warn!("{branch}: {e}");
+            }
         }
     }
 
@@ -74,7 +78,10 @@ pub fn run(repo: &Repository, args: &SubmitArgs) -> anyhow::Result<()> {
     for ((branch, base, _, display), result) in fixes.iter().zip(fix_results) {
         match result {
             Ok(()) => log::info!("retargeted {noun} {display} ({branch}) -> {base}"),
-            Err(e) => log::warn!("{branch}: {e}"),
+            Err(e) => {
+                failures += 1;
+                log::warn!("{branch}: {e}");
+            }
         }
     }
 
@@ -96,11 +103,14 @@ pub fn run(repo: &Repository, args: &SubmitArgs) -> anyhow::Result<()> {
         };
         match forge.create(&req) {
             Ok(mr) => log::info!("created {noun} {} ({branch}): {}", mr.display, mr.web_url),
-            Err(e) => log::warn!("failed to create {noun} for {branch}: {e}"),
+            Err(e) => {
+                failures += 1;
+                log::warn!("failed to create {noun} for {branch}: {e}");
+            }
         }
     }
 
-    Ok(())
+    fail_if_any(failures)
 }
 
 /// Decide a branch's fate from its remote MR state. An open MR is either correct

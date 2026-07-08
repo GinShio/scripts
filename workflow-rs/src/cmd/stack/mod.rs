@@ -198,3 +198,17 @@ where
     }
     out
 }
+
+/// Fold an accumulated per-item failure count into the command's exit status.
+///
+/// The MR verbs (`submit`, `anno`, `decorate`) log a warning and carry on when
+/// one branch fails, so a single bad MR never strands the rest of the batch. But
+/// the *command* must still exit non-zero when anything failed — otherwise a
+/// script sees success while MRs silently went untouched. This is the shared
+/// tail that makes that true, matching `sync`'s all-or-nothing exit.
+pub(crate) fn fail_if_any(failures: usize) -> anyhow::Result<()> {
+    if failures > 0 {
+        anyhow::bail!("{failures} branch(es) failed");
+    }
+    Ok(())
+}

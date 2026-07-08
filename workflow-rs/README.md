@@ -11,7 +11,9 @@ contains what is actually finished. Today that is:
 |---|---|
 | [`wf transcrypt`](docs/transcrypt.md) | Transparent file encryption wired into git's clean/smudge filters |
 | [`wf stack`](docs/stack.md) | Manage a stack of branches as a set of merge requests (push, open/retarget MRs, navigation) |
-| [`wf project`](docs/project.md) | Describe/validate source projects from one declarative registry; `wf build` and `wf update` build and refresh them (cmake/meson/cargo) |
+| [`wf project`](docs/project.md) | Describe/validate source projects from one declarative registry (also manages build contexts via `project context`) |
+| [`wf build`](docs/project.md) | Configure and build a project on top of that registry (cmake/meson/cargo) |
+| [`wf update`](docs/project.md) | Refresh git for every repo of a project |
 
 When the next tool lands it gets a row here and a module under `src/cmd/`; there
 is no plugin system to learn and nothing is carried around for commands that
