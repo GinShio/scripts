@@ -47,6 +47,24 @@ talking to its MR API — deliberately do *not* live in `core`. They sit in
 their own and `core` is kept to the floor. See `docs/stack/design.md` for that
 layer's shape.
 
+## `config` — finding a tool's config tree
+
+There are two entirely different "config" questions, and conflating them is how a
+config system rots. This module owns the coarse one: *where is the config
+directory, and what `*.toml` files are in it?* — as opposed to `resolver` below,
+which answers the fine one: *what is the value of one setting?* Keeping them
+apart means the directory search and the file walk stay generic OS-convention
+plumbing with no idea what a "project" or a "toolchain" is.
+
+The search order is the usual env → XDG → HOME ladder, parameterised per tool by
+a `Root { env, xdg, home }` so a second subsystem gets the same behaviour just by
+naming its own variable and subpaths, not by copying the walk. Discovery returns
+every nested `*.toml` in sorted order, and a missing root is an empty list rather
+than an error — an uninstalled tool simply has nothing to load. What a subsystem
+then *does* with those files — route each by section (as `project` does) or
+deep-merge them into one document — is its own business; this layer only finds
+them.
+
 ## `resolver` — layered config resolution
 
 A setting like the encryption password can live in an environment variable or in

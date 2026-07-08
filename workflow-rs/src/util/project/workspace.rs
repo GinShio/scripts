@@ -90,7 +90,7 @@ impl Workspace {
 
     /// Load the registry from the resolved config root (§10.1).
     pub fn load() -> Result<Self> {
-        let root = resolve_config_root()?;
+        let root = crate::core::config::resolve_root(&CONFIG_ROOT)?;
         Self::load_from(&root)
     }
 
@@ -102,10 +102,8 @@ impl Workspace {
             orgs: BTreeMap::new(),
         };
 
-        let mut files = Vec::new();
-        scan_toml(root, &mut files)
+        let files = crate::core::config::discover_toml(root)
             .with_context(|| format!("scanning config root {}", root.display()))?;
-        files.sort();
 
         for file in &files {
             ws.ingest(file)
@@ -211,42 +209,13 @@ impl Workspace {
     }
 }
 
-/// Resolve the single config root: `$WITS_PROJECT_CONFIG` (must exist if set),
-/// then the first existing of `$XDG_CONFIG_HOME/wits/project` and
-/// `$HOME/.wits/project`.
-pub fn resolve_config_root() -> Result<PathBuf> {
-    if let Some(env) = std::env::var_os("WITS_PROJECT_CONFIG") {
-        let path = PathBuf::from(env);
-        if !path.is_dir() {
-            bail!(
-                "WITS_PROJECT_CONFIG points at {} which is not a directory",
-                path.display()
-            );
-        }
-        return Ok(path);
-    }
-
-    let mut candidates = Vec::new();
-    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        candidates.push(PathBuf::from(xdg).join("wits").join("project"));
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(PathBuf::from(home).join(".wits").join("project"));
-    }
-    for candidate in &candidates {
-        if candidate.is_dir() {
-            return Ok(candidate.clone());
-        }
-    }
-    bail!(
-        "no project config root found (looked for {})",
-        candidates
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-}
+/// Where `project` keeps its config tree (§10.1): `$WITS_PROJECT_CONFIG`, then
+/// `$XDG_CONFIG_HOME/wits/project`, then `$HOME/.wits/project`.
+const CONFIG_ROOT: crate::core::config::Root<'static> = crate::core::config::Root {
+    env: "WITS_PROJECT_CONFIG",
+    xdg: "wits/project",
+    home: ".wits/project",
+};
 
 /// Classify a CLI positional as a filesystem path rather than a name: `.`/`..`
 /// or a leading `.`, `/`, or `~` (§1). Everything else is a name.
@@ -265,21 +234,6 @@ pub fn expand_tilde(path: &str) -> PathBuf {
         }
     }
     PathBuf::from(path)
-}
-
-fn scan_toml(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            scan_toml(&path, out)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-            out.push(path);
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

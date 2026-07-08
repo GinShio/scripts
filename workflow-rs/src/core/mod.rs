@@ -11,6 +11,7 @@
 //! git surface, file-based config), it gets added alongside that command so it
 //! can be designed against a real caller rather than a guess.
 
+pub mod config;
 pub mod crypto;
 pub mod git;
 pub mod log;
