@@ -1,12 +1,14 @@
 //! Build systems — the tool's one extension axis.
 //!
-//! These live under `cmd::build`, not `project`: emitting build steps is a
-//! purely build-time concern, so the read-only core never needs to see a
-//! backend (§1.4). The single thing the core *does* need — translating a
-//! toolchain into native env/definitions at L0 (§5.4) — is expressed through
-//! the core-owned [`ToolchainInjector`] seam, which every [`Backend`] also
-//! implements; `build` hands the selected backend to `resolve::plan` as the
-//! injector.
+//! These live under `util`, alongside the read-only project core they build on,
+//! not inside a command: a backend is a self-contained subsystem `cmd::build`
+//! *composes*, not part of the CLI itself. Emitting build steps is a purely
+//! build-time concern, so the read-only core never needs to see a backend
+//! (§1.4): the dependency runs one way, `build_system` → `project`. The single
+//! thing the core *does* need — translating a toolchain into native
+//! env/definitions at L0 (§5.4) — is expressed through the core-owned
+//! [`ToolchainInjector`] seam, which every [`Backend`] also implements;
+//! `cmd::build` hands the selected backend to `resolve::plan` as the injector.
 //!
 //! A new build system is a new [`Backend`] impl (plus a `ToolchainInjector`
 //! impl) and a line in [`for_system`]. A backend does exactly three things
@@ -23,8 +25,8 @@ use std::path::{Path, PathBuf};
 
 use crate::core::template::Value;
 
-use crate::cmd::project::model::{LogicalConfig, Toolchain};
-use crate::cmd::project::resolve::ToolchainInjector;
+use crate::util::project::model::{LogicalConfig, Toolchain};
+use crate::util::project::resolve::ToolchainInjector;
 
 /// Which phase(s) of a build to run. Every backend's `steps()` branches on it;
 /// `build::BuildOptions` carries one of these plus the flags that never reach

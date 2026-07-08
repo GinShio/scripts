@@ -87,31 +87,37 @@ core neither knows nor cares which side of that line a consumer falls on
 
 ### 1.4 Library shape — core plus actions
 
-The CLI grouping is *not* the code grouping, and as of `build`/`update` leaving
-`project`, it *also* is not the crate-module grouping. `project` is a small
-pure **core** (`model`, `workspace`, `resolve`, `git`) plus the one action
-still living inside it, `context`; `build` and `update` are separate top-level
-`cmd` modules that consume `project`'s public API — `resolve_target`,
+The CLI grouping is *not* the code grouping, and it is *also* not the same as
+the crate-module grouping. `project`'s read-only **core** (`model`, `workspace`,
+`resolve`, `git`) is a self-contained subsystem, so it lives under `util` as
+`util::project`, not inside a command; the build systems live beside it as
+`util::build_system`. The `cmd` layer is then thin CLI shells: `cmd::project`
+(describe / `--check`, plus the CLI-nested `context` action), `cmd::build`, and
+`cmd::update` all consume the core's public API — `resolve_target`,
 `resolve::plan`, `git` — the same way an external tool would:
 
 ```
-project (core: model/workspace/resolve/git, read-only) + context (action)
-   ▲          ▲            ▲
-   │          │            │
-cmd::build   cmd::update   (external consumers)   — consume project's public
- └─ backend                                          API; not siblings inside it
+                        util::project
+          (read-only core: model / workspace / resolve / git)
+            ▲             ▲             ▲                ▲
+            │             │             │                │ implements
+      cmd::project   cmd::build    cmd::update    util::build_system
+      (info/check,       │                        (cmake/meson/cargo)
+       context)          └──────────── also uses ─────────┘
 ```
 
-The build systems (`cmake`/`meson`/`cargo`) live **under `cmd::build`**, not in
-the core, because emitting build steps is a purely build-time concern the core
-never touches. The core has exactly one tie to them: translating a *selected
-toolchain* into a backend's native env/definitions at L0 (§5.4). That tie is a
-one-method seam, `resolve::ToolchainInjector`, **defined by the core but
-implemented by each backend**; `build` hands the chosen backend to
-`resolve::plan` as the injector, and path-only callers (`context`, `info`)
-inject nothing. So `project` exposes no `Backend`, `Step`, `EmitContext`, or
-build-system registry at all — only the abstract seam — and the dependency
-still points one way: `build` → `project`, never back.
+The build systems (`cmake`/`meson`/`cargo`) live in `util::build_system`,
+beside the core rather than inside any command, because emitting build steps is
+a purely build-time concern the core never touches. The core has exactly one
+tie to them: translating a *selected toolchain* into a backend's native
+env/definitions at L0 (§5.4). That tie is a one-method seam,
+`resolve::ToolchainInjector`, **defined by the core (`util::project`) but
+implemented by each backend (`util::build_system`)**; `cmd::build` resolves the
+chosen backend and hands it to `resolve::plan` as the injector, while path-only
+callers (`context`, `info`) inject nothing. So `util::project` exposes no
+`Backend`, `Step`, `EmitContext`, or build-system registry at all — only the
+abstract seam — and the dependency still points one way: `build_system` →
+`project`, and each `cmd` shell → the core, never back into a command.
 
 `context` did not move out alongside `build`/`update` because it is CLI-nested
 under `project` (§1.3) as well as code-nested — the two questions happened to
@@ -607,18 +613,18 @@ skipped, and the program exits non-zero.
 ### 8.1 The backend abstraction — the only extension axis
 
 A new build system is a new `Backend` impl plus registration. Backends live
-under `cmd::build` (§1.4), never in the core; the core and the resolver name no
-concrete backend. The abstraction is split so the core depends only on the half
-it needs — the L0 toolchain translation — via the core-owned
+in `util::build_system` (§1.4), never in the core; the core and the resolver
+name no concrete backend. The abstraction is split so the core depends only on
+the half it needs — the L0 toolchain translation — via the core-owned
 `ToolchainInjector` seam:
 
 ```rust
-// in project::resolve (core): the only backend-facing thing the pipeline sees
+// in util::project::resolve (core): the only backend-facing thing the pipeline sees
 trait ToolchainInjector {
     fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig);   // L0
 }
 
-// in cmd::build: the full build-time abstraction, a ToolchainInjector plus emission
+// in util::build_system: the full build-time abstraction, a ToolchainInjector plus emission
 trait Backend: ToolchainInjector {
     fn name(&self) -> &str;                        // "cmake" | "meson" | "cargo"
     fn steps(&self, ctx: &EmitContext) -> anyhow::Result<Vec<Step>>;

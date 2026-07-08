@@ -4,8 +4,8 @@ use std::path::Path;
 
 use crate::core::template::Value;
 
-use crate::cmd::project::model::{LogicalConfig, Toolchain};
-use crate::cmd::project::resolve::ToolchainInjector;
+use crate::util::project::model::{LogicalConfig, Toolchain};
+use crate::util::project::resolve::ToolchainInjector;
 
 use super::{apply_passthrough, cmake_definition, Backend, BuildMode, EmitContext, Step};
 

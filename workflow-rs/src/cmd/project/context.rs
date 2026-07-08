@@ -12,10 +12,10 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use super::git::Git;
-use super::model::{BranchStrategy, Profile};
-use super::resolve::{self, Plan, PlanInput};
-use super::workspace::{ProjectData, Workspace};
+use crate::util::project::git::Git;
+use crate::util::project::model::{BranchStrategy, Profile};
+use crate::util::project::resolve::{self, Plan, PlanInput};
+use crate::util::project::workspace::{ProjectData, Workspace};
 
 pub fn create(
     ws: &Workspace,

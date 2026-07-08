@@ -56,7 +56,8 @@ pub struct Plan {
 /// [`Toolchain`]'s canonical fields into a backend's native env/definitions at
 /// L0 (§5.4). This is the *only* seam between the read-only core and the build
 /// systems — the core owns the trait, but the concrete backends that implement
-/// it live entirely in `cmd::build` (§1.4). The core never names a backend, and
+/// it live entirely in `crate::util::build_system` (§1.4). The core never names
+/// a backend, and
 /// callers that only resolve *paths* (`context`, `info`) inject nothing.
 pub trait ToolchainInjector {
     /// Merge the toolchain's native env/definitions into `cfg`. Runs at L0, so a
@@ -861,7 +862,7 @@ pub fn slugify(branch: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::project::model::Profile;
+    use crate::util::project::model::Profile;
 
     fn ws_with(body: &str, stem: &str) -> (tempfile::TempDir, Workspace) {
         let dir = tempfile::tempdir().unwrap();
@@ -873,7 +874,7 @@ mod tests {
     /// A stand-in for a real backend, so the pipeline can be tested without any
     /// build-system dependency: it echoes the toolchain's `cc` into a definition
     /// (the way a backend would) so we can assert L0 ran. Real per-backend
-    /// translation is tested in `cmd::build`.
+    /// translation is tested in `crate::util::build_system`.
     struct MockInjector;
     impl ToolchainInjector for MockInjector {
         fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig) {

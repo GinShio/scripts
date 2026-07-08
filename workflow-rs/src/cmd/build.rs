@@ -5,11 +5,12 @@
 //! built on `project`'s read-only core: `project` is the component that knows
 //! what a project *is*; this module only knows how to *build* one.
 //!
-//! The build systems live here too (the `backend` submodule): they are purely a
-//! build-time concern, so `project` need not expose them (§1.4). The one thing
-//! the core resolver still needs — translating a toolchain into native
-//! env/definitions at L0 (§5.4) — it gets through the `ToolchainInjector` seam,
-//! which each backend implements and `build` hands to `resolve::plan`.
+//! The build systems live in [`crate::util::build_system`], beside the
+//! read-only core they build on: they are purely a build-time concern, so
+//! `project` need not expose them (§1.4). The one thing the core resolver still
+//! needs — translating a toolchain into native env/definitions at L0 (§5.4) —
+//! it gets through the `ToolchainInjector` seam, which each backend implements
+//! and `build` hands to `resolve::plan`.
 //!
 //! Under the worktree strategy the target worktree must already exist (created
 //! by `project context create`); `build` never makes one implicitly. Under the
@@ -17,20 +18,18 @@
 //! repo to it behind a [`RestoreGuard`], so the working tree is always returned
 //! to where it started — even on failure.
 
-mod backend;
-
 use anyhow::{bail, Context, Result};
 use clap::Args;
 
 use crate::core::process::Command;
 
-use crate::cmd::project::git::{Git, RestoreGuard};
-use crate::cmd::project::model::{BranchStrategy, Profile};
-use crate::cmd::project::resolve::{self, Plan, PlanInput, ToolchainInjector};
-use crate::cmd::project::workspace::{ProjectData, Workspace};
 use crate::cmd::project::ProfileArgs;
-
-use backend::{Backend, BuildMode, EmitContext};
+use crate::util::build_system::{for_system, Backend, BuildMode, EmitContext};
+use crate::util::project::git::{Git, RestoreGuard};
+use crate::util::project::model::{BranchStrategy, Profile};
+use crate::util::project::resolve::{self, Plan, PlanInput, ToolchainInjector};
+use crate::util::project::resolve_target;
+use crate::util::project::workspace::{ProjectData, Workspace};
 
 #[derive(Debug, Args)]
 pub struct BuildArgs {
@@ -91,7 +90,7 @@ pub struct BuildOptions {
 /// `wf build` — its own top-level command, over the shared `project` core.
 pub fn run(args: &BuildArgs) -> Result<()> {
     let ws = Workspace::load()?;
-    let project = crate::cmd::project::resolve_target(&ws, args.target.as_deref())?;
+    let project = resolve_target(&ws, args.target.as_deref())?;
     execute(
         &ws,
         project,
@@ -160,7 +159,7 @@ fn execute(
     // (`build_system` is not profile-overridable, so this matches `plan`.)
     let backend = match project.project.build_system.as_deref() {
         Some(bs) => Some(
-            backend::for_system(bs).with_context(|| format!("unsupported build system '{bs}'"))?,
+            for_system(bs).with_context(|| format!("unsupported build system '{bs}'"))?,
         ),
         None => None,
     };

@@ -18,10 +18,11 @@ use clap::Args;
 
 use crate::core::template::Engine;
 
-use crate::cmd::project::git::{self, Git, RestoreGuard};
-use crate::cmd::project::model::{infer_kind, Kind, RawRepo};
-use crate::cmd::project::resolve;
-use crate::cmd::project::workspace::{ProjectData, Workspace};
+use crate::util::project::git::{self, Git, RestoreGuard};
+use crate::util::project::model::{infer_kind, Kind, RawRepo};
+use crate::util::project::resolve;
+use crate::util::project::resolve_target;
+use crate::util::project::workspace::{ProjectData, Workspace};
 
 #[derive(Debug, Args)]
 pub struct UpdateArgs {
@@ -33,7 +34,7 @@ pub struct UpdateArgs {
 /// `wf update` — its own top-level command, over the shared `project` core.
 pub fn run(args: &UpdateArgs) -> Result<()> {
     let ws = Workspace::load()?;
-    let project = crate::cmd::project::resolve_target(&ws, args.target.as_deref())?;
+    let project = resolve_target(&ws, args.target.as_deref())?;
     execute(project)
 }
 

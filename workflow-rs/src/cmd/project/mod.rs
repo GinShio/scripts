@@ -1,28 +1,21 @@
-//! `wf project` — the read-only core: describes and resolves projects, and
-//! manages build contexts (`context`).
+//! `wf project` — the CLI shell over the read-only project core.
 //!
-//! This module is the one place that knows what a project *is* — `model`,
-//! `workspace`, and `resolve` describe and resolve without side effects — plus
-//! `context`, the one action still nested here since it *is* CLI-nested
-//! (`wf project context`). The mutating actions with their own top-level
-//! commands, `wf build` and `wf update` (`cmd::build`, `cmd::update`), live
-//! outside this module entirely: they are consumers of its public API
-//! ([`resolve_target`], `resolve::plan`, `git`), not peers sharing its
-//! internals. The build systems themselves live with `build` too — the core's
-//! only tie to them is the `resolve::ToolchainInjector` seam. See
-//! `docs/project/design.md` §1.4 for the reasoning.
+//! Describes projects (the default) or validates their configuration
+//! (`--check`), and nests one action, `context` (`wf project context`), since
+//! that action *is* CLI-nested. Everything about what a project *is* — the
+//! model, the workspace registry, resolution, and the project-shaped git
+//! surface — lives in the read-only core at [`crate::util::project`]; this
+//! module is one of its consumers, alongside the separate `wf build` and
+//! `wf update` commands. See `docs/project/design.md` §1.4.
 
 pub mod context;
-pub mod git;
-pub mod model;
-pub mod resolve;
-pub mod workspace;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
 
-use model::Profile;
-use workspace::{expand_tilde, looks_like_path, ProjectData, Workspace};
+use crate::util::project::model::Profile;
+use crate::util::project::workspace::{ProjectData, Workspace};
+use crate::util::project::{git, resolve, resolve_target};
 
 /// `wf project` — describe projects (the default), or manage a build context.
 #[derive(Debug, Args)]
@@ -140,29 +133,6 @@ fn run_context(ws: &Workspace, args: &ContextArgs) -> Result<()> {
     match &args.action {
         ContextAction::Create(_) => context::create(ws, project, &profile, &item.branch),
         ContextAction::Prune(_) => context::prune(ws, project, &profile, &item.branch, item.force),
-    }
-}
-
-/// Resolve a name/path positional (or the current directory) to one project.
-///
-/// Part of `project`'s public API (§1.4 of `docs/project/design.md`): `build`
-/// and `update` are separate top-level commands with no access to anything
-/// private here, so this is how they turn their own `--target`-shaped
-/// positional into a project the same way `info`/`context` do.
-pub fn resolve_target<'a>(ws: &'a Workspace, target: Option<&str>) -> Result<&'a ProjectData> {
-    match target {
-        Some(t) if looks_like_path(t) => {
-            let path = expand_tilde(t);
-            ws.project_for_path(&path)
-                .with_context(|| format!("no project owns the path {}", path.display()))
-        }
-        Some(t) => ws.project(t),
-        None => {
-            let cwd = std::env::current_dir()?;
-            ws.project_for_path(&cwd).context(
-                "not inside any known project; pass a name or run from inside a project's checkout",
-            )
-        }
     }
 }
 
