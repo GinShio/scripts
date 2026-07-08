@@ -1,4 +1,4 @@
-# `wf project` — Reference
+# `wits project` — Reference
 
 The exhaustive reference: every configuration key, every CLI flag, the template
 language, and the resolution rules. For a gentle introduction read
@@ -32,7 +32,7 @@ Each verb's positional is a **name or a path**, mutually exclusive:
 
 ### 1.1 Global flags
 
-`-v/--verbose` and `-n/--dry-run` are inherited from the `wf` process layer and
+`-v/--verbose` and `-n/--dry-run` are inherited from the `wits` process layer and
 described in [`../project.md`](../project.md) and the top-level README.
 
 ### 1.2 Profile flags (affect resolution — build & info)
@@ -321,7 +321,7 @@ context; referenced toolchains exist; and, when a toolchain declares `supports`,
 that it covers the project's build system. No `<name>` checks every project.
 
 Whether the declared `build_system` actually has a backend is **not** checked
-here — that is reported by `wf build` at run time, since the read-only core
+here — that is reported by `wits build` at run time, since the read-only core
 deliberately knows nothing of which build systems are implemented.
 
 ---

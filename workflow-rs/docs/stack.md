@@ -1,9 +1,9 @@
-# `wf stack`
+# `wits stack`
 
 Turn a chain of local branches into a set of merge requests that reviewers can
 actually navigate — and keep them in sync as you reshape the stack. You do the
 local work however you like (`git rebase`, `git-branchless`, plain commits);
-`wf stack` handles the remote half: pushing the branches, opening an MR for each
+`wits stack` handles the remote half: pushing the branches, opening an MR for each
 against the right base, and writing a navigation block into every MR so a
 reviewer can walk the whole stack.
 
@@ -18,13 +18,13 @@ re-run it freely; each only reconciles its own slice of the world.
 
 | Verb | Owns | Touches |
 |---|---|---|
-| `wf stack sync` | branch **content** on the remote | git only (push) |
-| `wf stack submit` | MR **existence** and **base** | the forge API |
-| `wf stack anno` | MR **descriptions** | the forge API |
+| `wits stack sync` | branch **content** on the remote | git only (push) |
+| `wits stack submit` | MR **existence** and **base** | the forge API |
+| `wits stack anno` | MR **descriptions** | the forge API |
 
-Plus a few helpers: `wf stack slice` cuts commits into the stack in the first
-place, `wf stack decorate` adds labels/reviewers/assignees to an MR, and
-`wf stack tree` edits the stack's structure.
+Plus a few helpers: `wits stack slice` cuts commits into the stack in the first
+place, `wits stack decorate` adds labels/reviewers/assignees to an MR, and
+`wits stack tree` edits the stack's structure.
 
 The dependency tree itself lives in `.git/machete` (the same format
 `git-machete` uses): one branch per line, indentation meaning "sits on top of".
@@ -69,7 +69,7 @@ export GITHUB_TOKEN=ghp_xxx     # GITLAB_TOKEN / GITEA_TOKEN / FORGEJO_TOKEN / C
 
 ### Remotes: `origin` and `upstream`
 
-`wf stack` reads two remotes by role:
+`wits stack` reads two remotes by role:
 
 - **`origin`** — where it pushes, and the source side of every MR. You need push
   rights here.
@@ -98,8 +98,8 @@ It opens an interactive rebase todo seeded with your commits and a commented
 branch suggestion under each:
 
 ```sh
-wf stack slice              # slices <base>..HEAD
-wf stack slice --base main
+wits stack slice              # slices <base>..HEAD
+wits stack slice --base main
 ```
 
 ```
@@ -129,12 +129,12 @@ edit the lines you want to change.
 ```sh
 # Append: you've added commits on top of a finished stack. Slice from the tip,
 # so only the new commits are in play; uncomment a name for each.
-wf stack slice --base feature-c
+wits stack slice --base feature-c
 
 # Insert/rebuild: slice from the line's base. The existing branches are already
 # active in order — just uncomment the new middle branch (and reorder commits as
 # needed). The downstream branch is moved under it automatically, no leftovers.
-wf stack slice
+wits stack slice
 ```
 
 ## The everyday loop
@@ -142,9 +142,9 @@ wf stack slice
 After reworking your commits:
 
 ```sh
-wf stack sync       # push every branch in the stack to origin
-wf stack submit     # open MRs that don't exist; fix bases that moved
-wf stack anno       # refresh the navigation block in each MR description
+wits stack sync       # push every branch in the stack to origin
+wits stack submit     # open MRs that don't exist; fix bases that moved
+wits stack anno       # refresh the navigation block in each MR description
 ```
 
 Run them in that order the first time; afterwards run whichever matches what
@@ -166,16 +166,16 @@ Pass `--all` to act on every stack recorded in `.git/machete`, regardless of
 where you're standing.
 
 ```sh
-wf stack sync --all
-wf stack submit --all
+wits stack sync --all
+wits stack submit --all
 ```
 
 You can also name a branch to anchor on, instead of checking it out — useful for
 driving another stack from a worktree or a dirty tree:
 
 ```sh
-wf stack submit feature-api     # submit the whole stack around feature-api
-wf stack sync feature-api       # push that stack, without switching to it
+wits stack submit feature-api     # submit the whole stack around feature-api
+wits stack sync feature-api       # push that stack, without switching to it
 ```
 
 The branch is a **scope anchor**, not the single target: the whole stack around
@@ -196,7 +196,7 @@ before the change it sits on. The MR at the bottom of the stack (targeting the
 base branch) is opened ready. To open everything ready for review:
 
 ```sh
-wf stack submit --no-draft
+wits stack submit --no-draft
 ```
 
 ### MR title and body
@@ -205,7 +205,7 @@ A new MR's title and body come from one of the branch's commits — the newest b
 default. Change which one:
 
 ```sh
-wf stack submit --title-source first   # oldest commit instead
+wits stack submit --title-source first   # oldest commit instead
 ```
 
 (Existing MRs are never re-titled; this only seeds creation.)
@@ -219,14 +219,14 @@ is treated as its own one-node stack sitting on the base branch — so `sync` an
 ```sh
 git switch -c quick-fix
 # ... commit ...
-wf stack sync && wf stack submit
+wits stack sync && wits stack submit
 ```
 
 `anno` skips a lone branch: a single MR has no neighbours to navigate to.
 
 ## Labels, reviewers, and assignees
 
-`wf stack decorate` adds labels, assignees, and reviewers to an MR. It is
+`wits stack decorate` adds labels, assignees, and reviewers to an MR. It is
 **additive** — it only adds what you name and never removes anything — so it
 never undoes a project's own label/reviewer bots, and re-running is safe.
 
@@ -234,9 +234,9 @@ Because these differ from one MR to the next, `decorate` works on **one MR at a
 time** by default (the named branch, or the current one):
 
 ```sh
-wf stack decorate feature-api --label api --reviewer alice --assignee @me
-wf stack decorate              --label wip            # the current branch's MR
-wf stack decorate --all        --label stacked        # the same label on every MR in the stack
+wits stack decorate feature-api --label api --reviewer alice --assignee @me
+wits stack decorate              --label wip            # the current branch's MR
+wits stack decorate --all        --label stacked        # the same label on every MR in the stack
 ```
 
 `--label`, `--reviewer`, and `--assignee` are each repeatable; `@me` means you.
@@ -248,10 +248,10 @@ exactly equivalent to a default:
 
 ```sh
 # a repo's dev script
-wf stack sync && wf stack submit && wf stack anno
-wf stack decorate feature-api --label api --reviewer alice
-wf stack decorate feature-ui  --label ui  --reviewer bob
-wf stack decorate --all       --label stacked
+wits stack sync && wits stack submit && wits stack anno
+wits stack decorate feature-api --label api --reviewer alice
+wits stack decorate feature-ui  --label ui  --reviewer bob
+wits stack decorate --all       --label stacked
 ```
 
 Attribute changes are best-effort: an unknown label or a reviewer the platform
@@ -259,15 +259,15 @@ won't accept is warned about and skipped, without failing the rest.
 
 ## Maintaining the stack structure
 
-`slice` writes the stack; `wf stack tree` is for editing it afterwards. Removing
+`slice` writes the stack; `wits stack tree` is for editing it afterwards. Removing
 a branch never throws away what's stacked above it — its children splice up to
 its parent, and the next `submit` retargets their base.
 
 ```sh
-wf stack tree prune              # drop entries whose branch no longer exists
-wf stack tree rm feature-b       # remove one branch (its children move up)
-wf stack tree rm feature-b --delete   # ...and delete the git branch too
-wf stack tree mv feature-c --onto main   # restack a branch (its substack moves with it)
+wits stack tree prune              # drop entries whose branch no longer exists
+wits stack tree rm feature-b       # remove one branch (its children move up)
+wits stack tree rm feature-b --delete   # ...and delete the git branch too
+wits stack tree mv feature-c --onto main   # restack a branch (its substack moves with it)
 ```
 
 `tree mv` updates the *shape* only; rebase the branch onto its new parent
@@ -283,7 +283,7 @@ tasks), so the clean integrations are either to run it at the end of a
 branch-cleanup script:
 
 ```sh
-git branch -d old-feature && wf stack tree prune
+git branch -d old-feature && wits stack tree prune
 ```
 
 or on a timer (cron / systemd / launchd) the same way you'd schedule any
@@ -297,14 +297,14 @@ what it *would* do, then prints the pushes, MR creations, base changes, and
 description edits instead of performing them:
 
 ```sh
-wf stack submit -n
-wf stack sync -n -v        # -v also shows the underlying git commands
+wits stack submit -n
+wits stack sync -n -v        # -v also shows the underlying git commands
 ```
 
 ## Invocation forms
 
-Like every `wf` tool, `stack` has direct forms via symlink — `wf-stack`,
-`wf.stack`, or a bare `stack` (see the top-level [README](../README.md)).
+Like every `wits` tool, `stack` has direct forms via symlink — `wits-stack`,
+`wits.stack`, or a bare `stack` (see the top-level [README](../README.md)).
 
 ## Configuration reference
 
@@ -322,7 +322,7 @@ All keys live under git config's `workflow.*` namespace.
 
 There is intentionally **no** base-branch config key: the base is resolved from
 the merge target's remote HEAD, then `main`/`master`/`trunk`. (A future
-`wf project` will supply it from project identity.)
+`wits project` will supply it from project identity.)
 
 Per-run choices — drafts (`--no-draft`), title source (`--title-source`), force
 (`--force`), scope (`--all`) — are flags, not config, because they describe one
@@ -343,7 +343,7 @@ are in the [behaviour reference](stack/behavior.md).
 |---|---|
 | `no API token for …` | Set `workflow.platform.<host>.token` or the platform's `*_TOKEN` env var. |
 | `could not detect the forge for host '…'` | Self-hosted behind a custom domain: set `workflow.platform.<host>.service`. |
-| `submit` fails to create an MR ("head not found" or similar) | The branch isn't on `origin` yet — run `wf stack sync` first. |
+| `submit` fails to create an MR ("head not found" or similar) | The branch isn't on `origin` yet — run `wits stack sync` first. |
 | A closed MR isn't reopened | Intended: a closed/merged MR at the current commit is left alone. Pass `--force` to recreate. |
 | `on the base branch '…'` | You're standing on `main`. Check out a stack branch (or use `--all`). |
 | `detached HEAD` | Check out a branch, or use `--all` to act on all recorded stacks. |

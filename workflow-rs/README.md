@@ -1,52 +1,62 @@
-# `wf`
+# `wits`
 
 A single binary that collects my personal workflow tools behind one command
 tree. The point of a collection (rather than a directory of loose scripts) is a
-shared core, consistent flags, and one thing to build and put on `$PATH`.
+shared library, consistent flags, and one thing to build and put on `$PATH`.
 
 The collection grows one subcommand at a time, and this repository only ever
 contains what is actually finished. Today that is:
 
 | Command | Purpose |
 |---|---|
-| [`wf transcrypt`](docs/transcrypt.md) | Transparent file encryption wired into git's clean/smudge filters |
-| [`wf stack`](docs/stack.md) | Manage a stack of branches as a set of merge requests (push, open/retarget MRs, navigation) |
-| [`wf project`](docs/project.md) | Describe/validate source projects from one declarative registry (also manages build contexts via `project context`) |
-| [`wf build`](docs/project.md) | Configure and build a project on top of that registry (cmake/meson/cargo) |
-| [`wf update`](docs/project.md) | Refresh git for every repo of a project |
+| [`wits transcrypt`](docs/transcrypt.md) | Transparent file encryption wired into git's clean/smudge filters |
+| [`wits stack`](docs/stack.md) | Manage a stack of branches as a set of merge requests (push, open/retarget MRs, navigation) |
+| [`wits project`](docs/project.md) | Describe/validate source projects from one declarative registry (also manages build contexts via `project context`) |
+| [`wits build`](docs/project.md) | Configure and build a project on top of that registry (cmake/meson/cargo) |
+| [`wits update`](docs/project.md) | Refresh git for every repo of a project |
 
-When the next tool lands it gets a row here and a module under `src/cmd/`; there
-is no plugin system to learn and nothing is carried around for commands that
-don't exist yet.
+Built-in commands live in the `wits` binary (a module under
+`crates/wits/src/cmd/` plus a match arm). Anything else is a **plugin**: `wits
+foo` runs a `wits-foo` executable from your `$PATH`, git-style, so a
+domain-specific workflow plugs in without being compiled into `wits`.
 
-## Building
+## Install
+
+`wits` is a Cargo workspace: the `wits` binary plus a shared `wits-util` library
+(and any plugin crates). `cargo install` cannot create the applet symlinks the
+dispatch relies on, so use the bundled script:
 
 ```sh
-cargo build --release   # binary at target/release/wf
-cargo test
+./install.sh                 # build --release, install into ~/.local/bin
+./install.sh --prefix ~/bin  # somewhere else
+./install.sh --dry-run       # show what it would do, change nothing
 ```
+
+It installs the `wits` binary, a `wits-<sub>` symlink for every built-in, and
+any plugin binaries the workspace built. To build without installing: `cargo
+build --release` (binary at `target/release/wits`); `cargo test` runs the suite.
 
 ## Invocation forms
 
-Any sub-tool `foo` can be called several equivalent ways:
+A built-in `foo` can be called two ways:
 
 ```sh
-wf foo ...     # umbrella form
-wf-foo ...     # direct form (a symlink to wf)
-wf.foo ...     # same thing with a dot
-foo ...        # or a bare name, your choice
+wits foo ...     # umbrella form
+wits-foo ...     # direct form (a symlink to wits, created by install.sh)
 ```
 
-The direct forms are just a symlink whose name `wf` reads from `argv[0]` and
-treats as the subcommand — so it's the same binary, no second process, no extra
-copy on disk. A leading `wf-` or `wf.` is stripped; pick whichever name you like
-at install time:
+The direct form is a symlink whose name `wits` reads from `argv[0]` and splices
+back in as the subcommand — same binary, no second process. Applet names come
+straight from the subcommand list, so a new built-in earns its symlink for free.
 
-```sh
-ln -s wf ~/.local/bin/wf.foo
-```
+## Plugins
 
-A new command earns its direct forms automatically; nothing to register.
+When `foo` is not a built-in, `wits foo` execs a `wits-foo` executable found on
+`$PATH` — the convention git and cargo use. A plugin is therefore any executable
+named `wits-<name>`, in any language; an in-tree Rust plugin can additionally
+depend on `wits-util` to reuse the process/git/config/template floor rather than
+reinventing it. `wits help` lists the built-ins plus the plugins it discovers on
+`$PATH`. The full contract is in [docs/plugins.md](docs/plugins.md).
 
 ## Global flags
 

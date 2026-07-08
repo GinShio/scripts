@@ -1,4 +1,4 @@
-# `wf project` — Design
+# `wits project` — Design
 
 > Status: **implemented (v1)**. This is the agreed shape of the `project` tool
 > and the reasoning behind it. Items marked **[open]** still need a decision;
@@ -11,7 +11,7 @@
 > reference. Neither restates the other — rationale lives here, behaviour-for-users
 > lives there.
 
-This is the reference design for the `project` sub-tool of `wf`. It records the
+This is the reference design for the `project` sub-tool of `wits`. It records the
 shape we agreed on and the reasoning behind each decision, so later work has one
 place to consult rather than rediscovering the trade-offs.
 
@@ -38,7 +38,7 @@ The design draws two hard lines.
 A small, pure, **read-only core** describes and resolves; heavier **action**
 modules build, update, and manage per-branch build contexts on top of it. The
 core has no side effects beyond reading config and git state, so scripts and
-other tools (notably `wf stack`, §9) can consume it freely; the actions'
+other tools (notably `wits stack`, §9) can consume it freely; the actions'
 complexity never leaks back into it.
 
 ### 1.2 We are a mechanism, not a policy engine
@@ -65,15 +65,15 @@ own top-level commands. `context` stays nested under `project` — unlike
 *a* project's build context), and it is rare enough not to earn a top-level verb.
 
 ```
-wf project [<name|path>] [--check]                # describe / list / validate (read-only; the default)
-wf project context {create|prune} [<name|path>]   # manage a branch's build context
-wf build   [<name|path>]                          # configure + build + (un)install
-wf update  [<name|path>]                          # refresh git for a project's repos
+wits project [<name|path>] [--check]                # describe / list / validate (read-only; the default)
+wits project context {create|prune} [<name|path>]   # manage a branch's build context
+wits build   [<name|path>]                          # configure + build + (un)install
+wits update  [<name|path>]                          # refresh git for a project's repos
 ```
 
-Each earns the busybox applet forms automatically (`wf-build`, `build`,
-`wf-project`, …), like every other `wf` sub-tool. Global `-v/--verbose` and
-`-n/--dry-run` are inherited from the `wf` process layer: every mutating action
+Each earns the busybox applet forms automatically (`wits-build`, `build`,
+`wits-project`, …), like every other `wits` sub-tool. Global `-v/--verbose` and
+`-n/--dry-run` are inherited from the `wits` process layer: every mutating action
 respects dry-run, every read still runs.
 
 Splitting the commands this way is not a departure from the "one core, many
@@ -90,31 +90,31 @@ core neither knows nor cares which side of that line a consumer falls on
 The CLI grouping is *not* the code grouping, and it is *also* not the same as
 the crate-module grouping. `project`'s read-only **core** (`model`, `workspace`,
 `resolve`, `git`) is a self-contained subsystem, so it lives under `util` as
-`util::project`, not inside a command; the build systems live beside it as
-`util::build_system`. The `cmd` layer is then thin CLI shells: `cmd::project`
+`wits_util::project`, not inside a command; the build systems live beside it as
+`wits_util::build_system`. The `cmd` layer is then thin CLI shells: `cmd::project`
 (describe / `--check`, plus the CLI-nested `context` action), `cmd::build`, and
 `cmd::update` all consume the core's public API — `resolve_target`,
 `resolve::plan`, `git` — the same way an external tool would:
 
 ```
-                        util::project
+                        wits_util::project
           (read-only core: model / workspace / resolve / git)
             ▲             ▲             ▲                ▲
             │             │             │                │ implements
-      cmd::project   cmd::build    cmd::update    util::build_system
+      cmd::project   cmd::build    cmd::update    wits_util::build_system
       (info/check,       │                        (cmake/meson/cargo)
        context)          └──────────── also uses ─────────┘
 ```
 
-The build systems (`cmake`/`meson`/`cargo`) live in `util::build_system`,
+The build systems (`cmake`/`meson`/`cargo`) live in `wits_util::build_system`,
 beside the core rather than inside any command, because emitting build steps is
 a purely build-time concern the core never touches. The core has exactly one
 tie to them: translating a *selected toolchain* into a backend's native
 env/definitions at L0 (§5.4). That tie is a one-method seam,
-`resolve::ToolchainInjector`, **defined by the core (`util::project`) but
-implemented by each backend (`util::build_system`)**; `cmd::build` resolves the
+`resolve::ToolchainInjector`, **defined by the core (`wits_util::project`) but
+implemented by each backend (`wits_util::build_system`)**; `cmd::build` resolves the
 chosen backend and hands it to `resolve::plan` as the injector, while path-only
-callers (`context`, `info`) inject nothing. So `util::project` exposes no
+callers (`context`, `info`) inject nothing. So `wits_util::project` exposes no
 `Backend`, `Step`, `EmitContext`, or build-system registry at all — only the
 abstract seam — and the dependency still points one way: `build_system` →
 `project`, and each `cmd` shell → the core, never back into a command.
@@ -482,7 +482,7 @@ arbitrary expression: predictable, and easy to validate ahead of time.
 
 ## 6. Templates, Profile, and path resolution
 
-### 6.1 Template engine (minimal, `core::template`)
+### 6.1 Template engine (minimal, `wits_util::template`)
 
 Config is **TOML only**. The engine is a zero-domain `{{ }}` / `[[ ]]` evaluator,
 reusable and unit-testable in isolation:
@@ -613,18 +613,18 @@ skipped, and the program exits non-zero.
 ### 8.1 The backend abstraction — the only extension axis
 
 A new build system is a new `Backend` impl plus registration. Backends live
-in `util::build_system` (§1.4), never in the core; the core and the resolver
+in `wits_util::build_system` (§1.4), never in the core; the core and the resolver
 name no concrete backend. The abstraction is split so the core depends only on
 the half it needs — the L0 toolchain translation — via the core-owned
 `ToolchainInjector` seam:
 
 ```rust
-// in util::project::resolve (core): the only backend-facing thing the pipeline sees
+// in wits_util::project::resolve (core): the only backend-facing thing the pipeline sees
 trait ToolchainInjector {
     fn apply_toolchain(&self, tc: &Toolchain, cfg: &mut LogicalConfig);   // L0
 }
 
-// in util::build_system: the full build-time abstraction, a ToolchainInjector plus emission
+// in wits_util::build_system: the full build-time abstraction, a ToolchainInjector plus emission
 trait Backend: ToolchainInjector {
     fn name(&self) -> &str;                        // "cmake" | "meson" | "cargo"
     fn steps(&self, ctx: &EmitContext) -> anyhow::Result<Vec<Step>>;
@@ -640,7 +640,7 @@ by `build`. `steps` runs at emit and owns the definition→argv spelling (cmake'
 none for cargo) — none of which the core ever sees.
 
 Whether a declared `build_system` actually *has* a backend is reported by
-`wf build` at run time, not by `wf project --check`: the core does not know the
+`wits build` at run time, not by `wits project --check`: the core does not know the
 set of supported build systems, so `--check` validates only declared-fact
 consistency (e.g. a toolchain's `supports` list vs the `build_system`).
 
@@ -696,7 +696,7 @@ ws.project_for_path(&path);           // reverse lookup: which project owns this
 
 let p = ws.project(...)?;
 p.repos();  p.build_repo();           // all repos / the focus repo
-p.main_branch();                      // e.g. wf stack's base-branch resolution
+p.main_branch();                      // e.g. wits stack's base-branch resolution
 p.git_state();                        // branch, commit, dirty, submodules (read-only)
 p.work_dir(&profile);                 // resolved work.dir (worktree or in-place)
 p.build_dir(&profile);  p.install_dir(&profile);
@@ -704,7 +704,7 @@ p.resolve("{{ ... }}", &profile);     // expose the resolver to callers
 p.validate();                         // structural issues (info --check)
 ```
 
-Two real consumers shaped this surface: **`wf stack`** needs
+Two real consumers shaped this surface: **`wits stack`** needs
 `project_for_path → main_branch` to resolve its base branch from a checkout's
 path (see `docs/stack/design.md` §5.1); **git hooks** need `build_dir`/`work_dir`
 resolution for an arbitrary branch to clean up after a deleted branch (§8.3).
@@ -750,7 +750,7 @@ Exactly one config-root, resolved in priority order:
 $WITS_PROJECT_CONFIG (env)  >  $XDG_CONFIG_HOME/wits/project  >  $HOME/.wits/project
 ```
 
-A fixed user location (rather than a `$PWD`-relative one) is deliberate: `wf
+A fixed user location (rather than a `$PWD`-relative one) is deliberate: `wits
 stack`'s path reverse-lookup and hook-driven cleanup must find *the same* project
 registry regardless of the current directory. Environment is the single explicit
 override, consistent with §5.5.

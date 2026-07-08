@@ -1,4 +1,4 @@
-# `wf stack` — Design
+# `wits stack` — Design
 
 > Status: **implemented**. This records the agreed shape of the `stack` tool and
 > the *why* behind it; the code lives in `src/cmd/stack/` and
@@ -54,12 +54,12 @@ re-run only that step. The three remote verbs map cleanly onto three distinct
 intents.
 
 ```
-wf stack sync    [scope]   # push branches to origin (git only; no forge)
-wf stack submit  [scope]   # reconcile MRs: create missing, fix drifted bases
-wf stack anno    [scope]   # rewrite MR descriptions with stack navigation
-wf stack decorate [branch] # add labels/assignees/reviewers to an MR (additive)
-wf stack slice  [--base B] # interactively cut HEAD's commits into a stack
-wf stack tree   {prune|rm|mv}  # direct edits to the stack's structure
+wits stack sync    [scope]   # push branches to origin (git only; no forge)
+wits stack submit  [scope]   # reconcile MRs: create missing, fix drifted bases
+wits stack anno    [scope]   # rewrite MR descriptions with stack navigation
+wits stack decorate [branch] # add labels/assignees/reviewers to an MR (additive)
+wits stack slice  [--base B] # interactively cut HEAD's commits into a stack
+wits stack tree   {prune|rm|mv}  # direct edits to the stack's structure
 ```
 
 `decorate` is single-MR by default (attributes differ per MR; `--all` applies one
@@ -122,7 +122,7 @@ anchor would be ambiguous. Anchor and `--all` are mutually exclusive; a named
 anchor must resolve to a real branch (local ref or a file entry) so a typo fails
 loudly instead of resolving to an empty synthetic stack.
 
-Global `-v/--verbose` and `-n/--dry-run` come from the `wf` process layer for
+Global `-v/--verbose` and `-n/--dry-run` come from the `wits` process layer for
 free; every mutating git/forge call respects dry-run, every read still runs.
 
 ## 3. Code organization (brief)
@@ -199,7 +199,7 @@ branch. `anno` **skips** it: a lone MR has no neighbours to navigate to, so a
 navigation block would be pure noise. This single-node path requires zero machete
 setup and is the common case for an ordinary one-off MR.
 
-## 6. Git access (`core::git`)
+## 6. Git access (`wits_util::git`)
 
 Driven through the `git` CLI, deliberately — the same fidelity argument this
 codebase already makes for config reads. A user's real git behaviour is the sum
@@ -219,7 +219,7 @@ Force-*with-lease* rather than plain force: a stack is rewritten constantly, so
 non-fast-forward pushes are normal, but `--force-with-lease` still refuses to
 clobber a remote that someone else advanced — the one safety we actually want.
 
-## 7. Remotes, roles, and forges (`util::remote`, `util::forge`)
+## 7. Remotes, roles, and forges (`wits_util::remote`, `wits_util::forge`)
 
 ### 7.1 Two roles, made explicit
 
@@ -237,7 +237,7 @@ cross-project dance (create on the source project with a numeric
 `target_project_id`; the MR then lives in the target, where reads and edits go).
 The forge layer hides this — the verbs never know whether a fork is involved.
 
-### 7.2 URL parsing and detection (`util::remote`)
+### 7.2 URL parsing and detection (`wits_util::remote`)
 
 Parse the messy reality of remote URLs into `host / owner / repo` plus a detected
 service: scp-syntax (`git@host:owner/repo`), full URIs, SSH alias resolution via
@@ -318,7 +318,7 @@ stacks skip all of that and pay no extra request.
 Transport is **direct REST** over `ureq` + `serde_json` — no dependency on an
 installed `gh`/`glab`, and identical behaviour on every host. A small private
 helper inside `forge` does "method + path + json → json", applying the host's
-auth header; it does not become a public `util::http` because nothing else needs
+auth header; it does not become a public `wits_util::http` because nothing else needs
 it yet.
 
 Token resolution, most specific first:

@@ -1,4 +1,4 @@
-# `wf stack` — Behaviour reference
+# `wits stack` — Behaviour reference
 
 The authoritative description of *how the verbs decide what to do*, including the
 awkward cases — forks, multi-round edits, deleted branches. The usage guide
@@ -153,7 +153,7 @@ default, `--title-source first` for the oldest. Existing MRs are never re-titled
 
 Rewrite each operable MR's description with a generated navigation block,
 preserving the human-written remainder. The block is one delimited region
-(`<!-- wf stack: generated navigation … -->` … `<!-- wf stack: end navigation -->`)
+(`<!-- wits stack: generated navigation … -->` … `<!-- wits stack: end navigation -->`)
 containing one or more `### Stack List` sections. Discovered MR numbers are
 cached back into the machete annotations.
 
@@ -207,7 +207,7 @@ main -> A -> B(fork) -> C(fork) -> E
 ### Rendered output (B's description, B current)
 
 ```markdown
-<!-- wf stack: generated navigation, do not edit below -->
+<!-- wits stack: generated navigation, do not edit below -->
 
 ### Stack List
 
@@ -229,7 +229,7 @@ main -> A -> B(fork) -> C(fork) -> E
   * [4/4] PR #14
     `D` ← `F`
 
-<!-- wf stack: end navigation -->
+<!-- wits stack: end navigation -->
 ```
 
 ---
@@ -324,7 +324,7 @@ want to change.
 
 ---
 
-## 9. Editing the structure (`wf stack tree`)
+## 9. Editing the structure (`wits stack tree`)
 
 `slice` builds the forest from a rebase; `tree` is the set of direct edits for
 everything else. The rule shared by all of them: **removing a branch never

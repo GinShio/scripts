@@ -1,9 +1,12 @@
-# The shared core
+# The shared floor
 
-`src/core/` holds the primitives the commands lean on. This document records
-*why* each one exists and the one decision in it that isn't obvious — the kind
-of thing that is invisible in the code and expensive to rediscover. For the
-mechanics, read the module; for the API, read the signatures.
+The `wits-util` crate (`crates/wits-util/`) is the shared library behind the
+`wits` binary and its plugins. Its modules are flat, but there is a gradient:
+this document covers the thin *floor* — `process`, `git`, `config`, `resolver`,
+`crypto`, `log`, `template` — the primitives the commands and subsystems lean on.
+It records *why* each one exists and the one decision in it that isn't obvious —
+the kind of thing that is invisible in the code and expensive to rediscover. For
+the mechanics, read the module; for the API, read the signatures.
 
 ## `process` — running commands, with dry-run baked in
 
@@ -43,7 +46,7 @@ lease still refuses to clobber a remote someone else moved.
 
 The larger git-hosting concerns — parsing remote URLs, detecting a forge,
 talking to its MR API — deliberately do *not* live in `core`. They sit in
-`util/` (`util::remote`, `util::forge`), because they carry real domain logic of
+`util/` (`wits_util::remote`, `wits_util::forge`), because they carry real domain logic of
 their own and `core` is kept to the floor. See `docs/stack/design.md` for that
 layer's shape.
 
@@ -104,7 +107,7 @@ set once at startup. Everything else here follows from that.
 
 The one decision worth recording is the split of streams. Ordinary log lines go
 to **stderr**; the dry-run preview of a command that *would* run goes to
-**stdout**. That way `wf … -n` can be captured or piped as a clean plan without
+**stdout**. That way `wits … -n` can be captured or piped as a clean plan without
 log chatter mixed in. The level policy matches the split's intent: `info` — the
 normal per-action feedback (`pushed X`, `created MR`, each build step) — is
 shown by default, and only `debug` is gated behind `--verbose`. (Getting that

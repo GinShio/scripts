@@ -1,4 +1,4 @@
-# `wf transcrypt`
+# `wits transcrypt`
 
 Transparent file encryption, wired into git's filter system. Once set up,
 committing a marked file stores ciphertext and checking it out restores
@@ -11,11 +11,11 @@ sitting in the history in the clear.
 
 Git supports, per path, a *clean* filter (applied to content going into the
 index) and a *smudge* filter (applied to content coming out to the working
-tree). `wf transcrypt` is both ends:
+tree). `wits transcrypt` is both ends:
 
-- `wf transcrypt clean <file>` — plaintext on stdin, base64 ciphertext on stdout.
-- `wf transcrypt smudge <file>` — base64 ciphertext on stdin, plaintext on stdout.
-- `wf transcrypt textconv <file>` — decrypts a file for `git diff`, so diffs read
+- `wits transcrypt clean <file>` — plaintext on stdin, base64 ciphertext on stdout.
+- `wits transcrypt smudge <file>` — base64 ciphertext on stdin, plaintext on stdout.
+- `wits transcrypt textconv <file>` — decrypts a file for `git diff`, so diffs read
   as plaintext instead of as two blobs of base64.
 
 You almost never run these by hand. You register them once, tell git which paths
@@ -25,7 +25,7 @@ your behalf.
 ## Getting started
 
 This walks through encrypting a `secrets/` directory in an existing repository,
-using the default context. You need the `wf` binary on your `$PATH`.
+using the default context. You need the `wits` binary on your `$PATH`.
 
 ### 1. Set a password
 
@@ -51,10 +51,10 @@ These four settings tell git what to run. Put them in the repo's `.git/config`,
 or in your global `~/.gitconfig` if you want every repo to share them:
 
 ```sh
-git config filter.transcrypt.clean    'wf transcrypt clean %f'
-git config filter.transcrypt.smudge   'wf transcrypt smudge %f'
+git config filter.transcrypt.clean    'wits transcrypt clean %f'
+git config filter.transcrypt.smudge   'wits transcrypt smudge %f'
 git config filter.transcrypt.required true
-git config diff.transcrypt.textconv   'wf transcrypt textconv'
+git config diff.transcrypt.textconv   'wits transcrypt textconv'
 ```
 
 `%f` is git's placeholder for the file's path — passing it matters, because the
@@ -94,10 +94,10 @@ git cat-file -p HEAD:secrets/api.env
 cat secrets/api.env
 
 # the resolved configuration, and where each value was read from
-wf transcrypt status
+wits transcrypt status
 ```
 
-`wf transcrypt status` is also the first thing to run when something looks off —
+`wits transcrypt status` is also the first thing to run when something looks off —
 it shows each setting and whether it came from the environment, git config, or a
 built-in default.
 
@@ -142,14 +142,14 @@ rule. The filter command carries the context through `-C`:
 ```sh
 git config transcrypt.prod.password 'a different password'
 
-git config filter.transcrypt-prod.clean    'wf transcrypt -C prod clean %f'
-git config filter.transcrypt-prod.smudge   'wf transcrypt -C prod smudge %f'
+git config filter.transcrypt-prod.clean    'wits transcrypt -C prod clean %f'
+git config filter.transcrypt-prod.smudge   'wits transcrypt -C prod smudge %f'
 git config filter.transcrypt-prod.required true
-git config diff.transcrypt-prod.textconv   'wf transcrypt -C prod textconv'
+git config diff.transcrypt-prod.textconv   'wits transcrypt -C prod textconv'
 
 echo 'prod-secrets/** filter=transcrypt-prod diff=transcrypt-prod' >> .gitattributes
 
-wf transcrypt -C prod status
+wits transcrypt -C prod status
 ```
 
 The context name is yours to choose; `transcrypt-prod` is just the git filter's
@@ -223,4 +223,4 @@ under the wrong password trips the loud failure above.
 | Working-tree files are base64 gibberish | The password isn't set in this clone, so `smudge` passed the ciphertext through. Set the password, then `rm` and re-checkout the paths. |
 | Checkout fails with an authentication error | Wrong password (or the file was moved to a path that doesn't match how it was encrypted). Fix the password, or set `TRANSCRYPT_ALLOW_RAW_FALLBACK=1` to check out the raw bytes and investigate. |
 | Old files won't decrypt after you changed `cipher`/`kdf`/`digest` | Those settings are part of how each file was sealed. Restore the previous values, or decrypt with the old settings and re-encrypt with the new ones. |
-| `wf transcrypt status` shows a value you didn't expect | Check the source column — an environment variable will quietly override git config. The resolution order above explains who wins. |
+| `wits transcrypt status` shows a value you didn't expect | Check the source column — an environment variable will quietly override git config. The resolution order above explains who wins. |

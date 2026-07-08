@@ -1,13 +1,13 @@
-# `wf project`
+# `wits project`
 
 Build, update, and introspect the source projects you work on, from one
 declarative registry that knows *what each project is* — where its repos live,
 which branches, which toolchain, how to build it — and drives cmake / meson /
 cargo on your behalf without you re-typing the same flags.
 
-Three commands share that registry: **`wf project`** describes and validates
-(read-only), **`wf build`** configures and builds, and **`wf update`** refreshes
-git. (`wf project context` manages per-branch worktrees.) This page is the
+Three commands share that registry: **`wits project`** describes and validates
+(read-only), **`wits build`** configures and builds, and **`wits update`** refreshes
+git. (`wits project context` manages per-branch worktrees.) This page is the
 **usage guide** for all of them.
 
 For
@@ -276,7 +276,7 @@ while the other verbs use the current directory.
 
 ## Global flags
 
-Inherited from `wf` (see the top-level README):
+Inherited from `wits` (see the top-level README):
 
 | Flag | Meaning |
 |---|---|
