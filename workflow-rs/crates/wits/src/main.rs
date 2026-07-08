@@ -65,7 +65,8 @@ enum Commands {
     /// Refresh git for every repo of a project.
     Update(cmd::update::UpdateArgs),
 
-    /// Print the built-in subcommand names, one per line (used by `install.sh`).
+    /// Print the built-in subcommand names, one per line — a runtime cross-check
+    /// of the applet set.
     #[command(name = "__applets", hide = true)]
     Applets,
 

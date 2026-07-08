@@ -57,8 +57,9 @@ clap.workspace = true
 Add it to the workspace `members` in the root [Cargo.toml](../Cargo.toml). Now
 `wits_util::{process, git, config, template, ...}` are all available — the same
 subprocess/dry-run discipline, config-tree discovery, and template engine the
-core commands use. `install.sh` copies every `wits-*` binary the workspace builds
-into the install prefix, so the plugin ships alongside `wits`.
+core commands use. Extend the workspace's `meson.build` to build and install the
+plugin binary the same way `wits` is, so `meson install` ships it alongside
+`wits`.
 
 An out-of-tree plugin needs none of this: it only has to be named `wits-<name>`
 and be on `$PATH`.

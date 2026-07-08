@@ -20,21 +20,24 @@ Built-in commands live in the `wits` binary (a module under
 foo` runs a `wits-foo` executable from your `$PATH`, git-style, so a
 domain-specific workflow plugs in without being compiled into `wits`.
 
-## Install
+## Build and install
 
-`wits` is a Cargo workspace: the `wits` binary plus a shared `wits-util` library
-(and any plugin crates). `cargo install` cannot create the applet symlinks the
-dispatch relies on, so use the bundled script:
+`wits` is a Cargo workspace (the `wits` binary + the shared `wits-util` library,
+plus any plugin crates). **Meson** drives the build and install; **cargo** does
+the Rust compilation underneath. That split is deliberate: some dependencies
+ship native-code build scripts (notably `ring`, via the forge's HTTPS client)
+that Meson's native Rust support cannot build without hand-porting, so cargo owns
+compilation while Meson owns install/packaging.
 
 ```sh
-./install.sh                 # build --release, install into ~/.local/bin
-./install.sh --prefix ~/bin  # somewhere else
-./install.sh --dry-run       # show what it would do, change nothing
+meson setup build              # configure (needs meson >= 0.61, cargo, ninja)
+meson compile -C build         # runs `cargo build --release` under the hood
+meson install -C build         # installs wits + wits-<sub> symlinks into <prefix>/bin
 ```
 
-It installs the `wits` binary, a `wits-<sub>` symlink for every built-in, and
-any plugin binaries the workspace built. To build without installing: `cargo
-build --release` (binary at `target/release/wits`); `cargo test` runs the suite.
+Pass `--prefix ~/.local` to `meson setup` to install under your home; Meson
+honours `DESTDIR` for packaging. For plain development, `cargo build`/`cargo
+test` work as usual (binary at `target/release/wits`), no Meson required.
 
 ## Invocation forms
 
@@ -42,7 +45,7 @@ A built-in `foo` can be called two ways:
 
 ```sh
 wits foo ...     # umbrella form
-wits-foo ...     # direct form (a symlink to wits, created by install.sh)
+wits-foo ...     # direct form (a symlink to wits, created by `meson install`)
 ```
 
 The direct form is a symlink whose name `wits` reads from `argv[0]` and splices
