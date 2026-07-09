@@ -485,9 +485,11 @@ impl Forge for GitLab {
             return Ok(());
         }
         let draft_url = self.draft_notes_url(id);
+        let mut drafted = 0usize;
         // The summary rides as a general draft note.
         if let Some(s) = &review.summary {
             request("POST", &draft_url, &self.auth, Some(&json!({ "note": s })))?;
+            drafted += 1;
         }
         for c in &review.comments {
             let body = match &c.placement {
@@ -508,14 +510,13 @@ impl Forge for GitLab {
                 }
             };
             request("POST", &draft_url, &self.auth, Some(&body))?;
+            drafted += 1;
         }
-        // Publish every draft note at once — one notification.
-        request(
-            "POST",
-            &format!("{draft_url}/bulk_publish"),
-            &self.auth,
-            None,
-        )?;
+        // Publish every draft note at once — one notification. Skip when there
+        // was nothing to draft (a bare approve), so we never publish an empty set.
+        if drafted > 0 {
+            request("POST", &format!("{draft_url}/bulk_publish"), &self.auth, None)?;
+        }
         // Approve is a distinct endpoint; request-changes/comment have no native
         // action beyond the notes just published.
         if review.verdict == Some(Verdict::Approve) {

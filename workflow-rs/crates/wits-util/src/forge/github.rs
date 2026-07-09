@@ -436,11 +436,15 @@ impl Forge for GitHub {
 
         // All comments ride one commit_id — the reviewed snapshot's head. When
         // that is behind the MR's current head, GitHub marks them outdated, which
-        // is exactly the intent (we anchor to what was reviewed).
-        let mut body = json!({ "commit_id": review.version.head_sha, "comments": comments });
-        if let Some(v) = review.verdict {
-            body["event"] = json!(verdict_event(v));
-        }
+        // is exactly the intent (we anchor to what was reviewed). `event` must
+        // always be set: without it GitHub files the review as *pending* rather
+        // than posting it, so a verdict-less review defaults to COMMENT.
+        let event = review.verdict.map(verdict_event).unwrap_or("COMMENT");
+        let mut body = json!({
+            "commit_id": review.version.head_sha,
+            "comments": comments,
+            "event": event,
+        });
         if let Some(s) = &review.summary {
             body["body"] = json!(s);
         }
