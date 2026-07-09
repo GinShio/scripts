@@ -42,6 +42,17 @@ pub struct Commit {
     pub body: String,
 }
 
+/// One entry of a `diff --name-status` over a range: a file the MR touched, its
+/// change kind, and its former path when the change was a rename.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChange {
+    pub path: String,
+    pub old_path: Option<String>,
+    /// The porcelain status letter — `A`dded, `M`odified, `D`eleted, `R`enamed,
+    /// `C`opied. Kept as a char because that is exactly git's own vocabulary.
+    pub status: char,
+}
+
 /// A handle to a repository on disk. Holds no resources and is cheap to clone;
 /// it's really just the path every `git` invocation runs against.
 #[derive(Debug, Clone)]
@@ -103,6 +114,13 @@ impl Repository {
     /// own per-repository state files.
     pub fn git_dir(&self) -> Option<PathBuf> {
         self.query(&["rev-parse", "--absolute-git-dir"])
+            .map(PathBuf::from)
+    }
+
+    /// The working tree's top-level directory, or `None` outside a work tree
+    /// (e.g. a bare repo). The natural anchor for deriving a sibling worktree.
+    pub fn toplevel(&self) -> Option<PathBuf> {
+        self.query(&["rev-parse", "--show-toplevel"])
             .map(PathBuf::from)
     }
 
@@ -210,6 +228,138 @@ impl Repository {
                 message: result.stderr.trim().to_owned(),
             })
         }
+    }
+
+    // -- Review support -------------------------------------------------------
+    //
+    // Fetching an MR's objects and holding them alive with our own refs. These
+    // are the acquisition step `review` depends on: they run even under dry-run
+    // (like every other read), because a dry-run that can't see the world tells
+    // you nothing, and pinning a ref is our own local bookkeeping, not a change
+    // to the remote or the user's branches.
+
+    /// Fetch a remote ref into a local ref, forcing the update. Used to pull an
+    /// MR head (`refs/pull/<n>/head`) into a `refs/wits/review/*` pin.
+    pub fn fetch_ref(
+        &self,
+        remote: &str,
+        remote_ref: &str,
+        local_ref: &str,
+    ) -> Result<(), GitError> {
+        let refspec = format!("+{remote_ref}:{local_ref}");
+        let result = self
+            .git()
+            .args(["fetch", "--no-tags", remote, &refspec])
+            .force_run()
+            .exec()?;
+        if result.is_success() {
+            Ok(())
+        } else {
+            Err(GitError::Failed {
+                operation: format!("fetch {remote_ref} from {remote}"),
+                message: result.stderr.trim().to_owned(),
+            })
+        }
+    }
+
+    /// Best-effort fetch of a bare object (e.g. an MR's base SHA, which may not
+    /// be an ancestor of the head we already pulled) into a local ref. Servers
+    /// that forbid fetching an arbitrary SHA make this fail; that is fine — the
+    /// caller treats the object as simply unavailable.
+    pub fn try_fetch_object(&self, remote: &str, sha: &str, local_ref: &str) -> bool {
+        self.git()
+            .args(["fetch", "--no-tags", remote, &format!("+{sha}:{local_ref}")])
+            .force_run()
+            .exec()
+            .map(|r| r.is_success())
+            .unwrap_or(false)
+    }
+
+    /// Point a ref at an object (our own `refs/wits/review/*` bookkeeping).
+    pub fn update_ref(&self, name: &str, target: &str) -> Result<(), GitError> {
+        let result = self
+            .git()
+            .args(["update-ref", name, target])
+            .force_run()
+            .exec()?;
+        if result.is_success() {
+            Ok(())
+        } else {
+            Err(GitError::Failed {
+                operation: format!("update-ref {name}"),
+                message: result.stderr.trim().to_owned(),
+            })
+        }
+    }
+
+    /// Delete a ref. Mutating on purpose — this is `prune`'s cleanup, which a
+    /// `-n` run should preview rather than perform.
+    pub fn delete_ref(&self, name: &str) -> Result<(), GitError> {
+        let result = self.git().args(["update-ref", "-d", name]).exec()?;
+        if result.is_success() {
+            Ok(())
+        } else {
+            Err(GitError::Failed {
+                operation: format!("delete ref {name}"),
+                message: result.stderr.trim().to_owned(),
+            })
+        }
+    }
+
+    /// Every ref under `prefix` (e.g. `refs/wits/review/`) mapped to its target
+    /// object id. The record of which snapshots we have pinned.
+    pub fn refs_under(&self, prefix: &str) -> Vec<(String, String)> {
+        let Some(out) = self.query(&["for-each-ref", "--format=%(refname) %(objectname)", prefix])
+        else {
+            return Vec::new();
+        };
+        out.lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(name, oid)| (name.to_owned(), oid.to_owned()))
+            .collect()
+    }
+
+    /// The files a range (`base..head`) touched, rename-aware. Empty when the
+    /// range can't be computed (e.g. the base object isn't present locally),
+    /// which the caller treats as "unknown" rather than "nothing changed".
+    pub fn changed_files(&self, range: &str) -> Vec<FileChange> {
+        let Some(out) = self.query(&["diff", "--name-status", "-M", range]) else {
+            return Vec::new();
+        };
+        out.lines()
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                let status = fields.next()?.chars().next()?;
+                match status {
+                    'R' | 'C' => {
+                        let old = fields.next()?.to_owned();
+                        let new = fields.next()?.to_owned();
+                        Some(FileChange {
+                            path: new,
+                            old_path: Some(old),
+                            status,
+                        })
+                    }
+                    _ => Some(FileChange {
+                        path: fields.next()?.to_owned(),
+                        old_path: None,
+                        status,
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    /// A textual diff for a range, optionally narrowed to one path — the
+    /// `diff --patch` convenience for a terminal or for debugging, never the
+    /// editor's render path.
+    pub fn diff_patch(&self, range: &str, path: Option<&str>) -> Option<String> {
+        let mut args = vec!["diff", range];
+        if let Some(p) = path {
+            args.push("--");
+            args.push(p);
+        }
+        self.query(&args)
     }
 }
 

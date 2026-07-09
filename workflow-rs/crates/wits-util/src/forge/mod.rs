@@ -18,8 +18,14 @@
 pub mod gitea;
 pub mod github;
 pub mod gitlab;
+pub mod review;
 
 use serde_json::Value;
+
+pub use review::{
+    DiffVersion, FeedQuery, FeedStates, MrDetails, MrSummary, RemoteComment, RemotePlacement,
+    RemoteThread, ReviewSubmission, Side, SubmitComment, SubmitPlacement, Verdict,
+};
 
 use crate::git::Repository;
 use crate::remote::{Remotes, Service};
@@ -131,6 +137,57 @@ pub trait Forge: Send + Sync {
     /// best-effort: a sub-item that fails (an unknown label, a self-review the
     /// platform forbids) is logged and skipped rather than aborting the rest.
     fn apply_attributes(&self, id: &str, attrs: &Attributes) -> anyhow::Result<()>;
+
+    // -- Review half ---------------------------------------------------------
+    //
+    // These carry default `bail` bodies so a forge without a review backend
+    // (Gitea today) keeps compiling and fails loudly only when review is
+    // actually asked of it. GitHub and GitLab override them.
+
+    /// The MRs matching a feed's filter, pushed down to the platform's
+    /// list/search query and paginated server-side.
+    fn list_mrs(&self, _query: &FeedQuery) -> anyhow::Result<Vec<MrSummary>> {
+        anyhow::bail!("`wits review` has no backend for this forge yet")
+    }
+
+    /// One MR's metadata and current diff-version SHAs, addressed by its number.
+    fn mr_details(&self, _id: &str) -> anyhow::Result<MrDetails> {
+        anyhow::bail!("`wits review` has no backend for this forge yet")
+    }
+
+    /// The fetchable ref that exposes an MR's head on the target remote (e.g.
+    /// `pull/<n>/head`), so its objects can be pulled even across a fork.
+    fn mr_ref(&self, _id: &str) -> anyhow::Result<String> {
+        anyhow::bail!("`wits review` has no backend for this forge yet")
+    }
+
+    /// The review discussion currently on the MR, with each thread's resolved
+    /// and outdated flags.
+    fn list_threads(&self, _id: &str) -> anyhow::Result<Vec<RemoteThread>> {
+        anyhow::bail!("`wits review` has no backend for this forge yet")
+    }
+
+    /// Flush a batched review — verdict, summary, and new inline/file comments —
+    /// as one review where the platform allows it.
+    fn submit_review(&self, _id: &str, _review: &ReviewSubmission) -> anyhow::Result<()> {
+        anyhow::bail!("`wits review` has no backend for this forge yet")
+    }
+
+    /// Post an MR-level conversation comment (no code anchor).
+    fn comment_mr(&self, _id: &str, _body: &str) -> anyhow::Result<()> {
+        anyhow::bail!("`wits review` has no backend for this forge yet")
+    }
+
+    /// Reply to an existing thread.
+    fn reply(&self, _id: &str, _thread: &str, _body: &str) -> anyhow::Result<()> {
+        anyhow::bail!("`wits review` has no backend for this forge yet")
+    }
+
+    /// Resolve or unresolve a thread. Deferred to future on GitHub (GraphQL-only,
+    /// see the design doc); v1 supports it on GitLab.
+    fn resolve(&self, _id: &str, _thread: &str, _resolved: bool) -> anyhow::Result<()> {
+        anyhow::bail!("resolving threads is not supported for this forge yet")
+    }
 }
 
 // ----------------------------------------------------------------------------

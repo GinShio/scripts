@@ -7,6 +7,7 @@
 
 pub mod build;
 pub mod project;
+pub mod review;
 pub mod stack;
 pub mod transcrypt;
 pub mod update;

@@ -17,8 +17,9 @@
 use serde_json::{json, Value};
 
 use super::{
-    encode, pick, request, Attributes, Auth, Forge, MergeRequest, MrState, NewMr, StateFilter,
-    SELF_REF,
+    encode, pick, request, Attributes, Auth, DiffVersion, FeedQuery, Forge, MergeRequest,
+    MrDetails, MrState, MrSummary, NewMr, RemoteComment, RemotePlacement, RemoteThread,
+    ReviewSubmission, Side, StateFilter, SubmitPlacement, Verdict, SELF_REF,
 };
 use crate::remote::RemoteInfo;
 
@@ -110,6 +111,54 @@ impl GitLab {
             }
         }
     }
+
+    /// The authenticated user's username, for resolving `@me` in a feed filter.
+    fn current_username(&self) -> anyhow::Result<String> {
+        let v = request("GET", &format!("{}/user", self.api_base), &self.auth, None)?;
+        v["username"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("could not read the authenticated user"))
+    }
+
+    /// A feed filter value, with `@me` expanded to the authenticated username.
+    fn filter_user(&self, name: &str) -> anyhow::Result<String> {
+        if name == SELF_REF {
+            self.current_username()
+        } else {
+            Ok(name.to_owned())
+        }
+    }
+
+    /// The MR-scoped draft-notes endpoint (always on the target project).
+    fn draft_notes_url(&self, id: &str) -> String {
+        format!("{}/{id}/draft_notes", self.mrs_url())
+    }
+}
+
+/// Build the `position` object a GitLab diff note needs. The three version SHAs
+/// pin the comment to the exact diff it was written against; when that is behind
+/// the MR's current state the note simply lands on that older version.
+fn diff_position(
+    version: &DiffVersion,
+    path: &str,
+    old_path: Option<&str>,
+    side: Side,
+    line: u32,
+) -> Value {
+    let mut pos = json!({
+        "position_type": "text",
+        "base_sha": version.base_sha,
+        "start_sha": version.start_sha,
+        "head_sha": version.head_sha,
+        "new_path": path,
+        "old_path": old_path.unwrap_or(path),
+    });
+    match side {
+        Side::New => pos["new_line"] = json!(line),
+        Side::Old => pos["old_line"] = json!(line),
+    }
+    pos
 }
 
 /// Numeric ids of the users currently in `field` (`assignees`/`reviewers`) on an
@@ -130,6 +179,56 @@ fn project_id(api_base: &str, auth: &Auth, encoded_path: &str) -> anyhow::Result
     v["id"]
         .as_u64()
         .ok_or_else(|| anyhow::anyhow!("could not read numeric id of project from {url}"))
+}
+
+fn parse_summary(v: &Value) -> Option<MrSummary> {
+    let iid = v["iid"].as_u64()?;
+    let state = match v["state"].as_str().unwrap_or("opened") {
+        "merged" => MrState::Merged,
+        "opened" | "locked" => MrState::Open,
+        _ => MrState::Closed,
+    };
+    let draft = v["draft"]
+        .as_bool()
+        .or_else(|| v["work_in_progress"].as_bool())
+        .unwrap_or(false);
+    let labels = v["labels"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|l| l.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(MrSummary {
+        id: iid.to_string(),
+        display: format!("!{iid}"),
+        state,
+        draft,
+        title: v["title"].as_str().unwrap_or_default().to_owned(),
+        author: v["author"]["username"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        base: v["target_branch"].as_str().unwrap_or_default().to_owned(),
+        source: v["source_branch"].as_str().unwrap_or_default().to_owned(),
+        head_sha: v["sha"].as_str().map(str::to_owned),
+        updated_at: v["updated_at"].as_str().unwrap_or_default().to_owned(),
+        labels,
+        web_url: v["web_url"].as_str().unwrap_or_default().to_owned(),
+    })
+}
+
+fn parse_note(n: &Value) -> RemoteComment {
+    RemoteComment {
+        id: n["id"].as_u64().unwrap_or(0).to_string(),
+        author: n["author"]["username"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        body: n["body"].as_str().unwrap_or_default().to_owned(),
+        created_at: n["created_at"].as_str().unwrap_or_default().to_owned(),
+    }
 }
 
 fn parse_mr(v: &Value) -> Option<MergeRequest> {
@@ -260,6 +359,190 @@ impl Forge for GitLab {
         }
         let url = format!("{}/{}", self.mrs_url(), id);
         request("PUT", &url, &self.auth, Some(&Value::Object(body)))?;
+        Ok(())
+    }
+
+    fn list_mrs(&self, query: &FeedQuery) -> anyhow::Result<Vec<MrSummary>> {
+        let per_page = query.limit.clamp(1, 100);
+        let mut url = format!(
+            "{}?state=opened&order_by=updated_at&sort=desc&per_page={per_page}",
+            self.mrs_url()
+        );
+        // Drafts are opened MRs; `wip` narrows within that.
+        match (query.states.open, query.states.draft) {
+            (true, false) => url += "&wip=no",
+            (false, true) => url += "&wip=yes",
+            _ => {}
+        }
+        // Multiple labels are AND on GitLab too (all must be present).
+        if !query.labels.is_empty() {
+            url += &format!("&labels={}", encode(&query.labels.join(",")));
+        }
+        if !query.exclude_labels.is_empty() {
+            url += &format!("&not[labels]={}", encode(&query.exclude_labels.join(",")));
+        }
+        if let Some(a) = &query.author {
+            url += &format!("&author_username={}", encode(&self.filter_user(a)?));
+        }
+        if let Some(a) = &query.assignee {
+            url += &format!("&assignee_username={}", encode(&self.filter_user(a)?));
+        }
+        if let Some(r) = &query.reviewer {
+            url += &format!("&reviewer_username={}", encode(&self.filter_user(r)?));
+        }
+        if let Some(u) = &query.updated_after {
+            url += &format!("&updated_after={}", encode(u));
+        }
+        if let Some(s) = &query.search {
+            url += &format!("&search={}", encode(s));
+        }
+        let v = request("GET", &url, &self.auth, None)?;
+        Ok(v.as_array()
+            .map(|arr| arr.iter().filter_map(parse_summary).collect())
+            .unwrap_or_default())
+    }
+
+    fn mr_details(&self, id: &str) -> anyhow::Result<MrDetails> {
+        let v = request("GET", &format!("{}/{id}", self.mrs_url()), &self.auth, None)?;
+        let summary =
+            parse_summary(&v).ok_or_else(|| anyhow::anyhow!("unexpected MR response: {v}"))?;
+        let dr = &v["diff_refs"];
+        let version = DiffVersion {
+            base_sha: dr["base_sha"].as_str().unwrap_or_default().to_owned(),
+            start_sha: dr["start_sha"].as_str().unwrap_or_default().to_owned(),
+            head_sha: dr["head_sha"].as_str().unwrap_or_default().to_owned(),
+        };
+        Ok(MrDetails { summary, version })
+    }
+
+    fn mr_ref(&self, id: &str) -> anyhow::Result<String> {
+        Ok(format!("refs/merge-requests/{id}/head"))
+    }
+
+    fn list_threads(&self, id: &str) -> anyhow::Result<Vec<RemoteThread>> {
+        let url = format!("{}/{id}/discussions?per_page=100", self.mrs_url());
+        let v = request("GET", &url, &self.auth, None)?;
+        let mut threads = Vec::new();
+        let Some(arr) = v.as_array() else {
+            return Ok(threads);
+        };
+        for d in arr {
+            let notes = d["notes"].as_array().cloned().unwrap_or_default();
+            // System notes (label/state events) are not review discussion.
+            let real: Vec<&Value> = notes
+                .iter()
+                .filter(|n| !n["system"].as_bool().unwrap_or(false))
+                .collect();
+            let Some(first) = real.first() else {
+                continue;
+            };
+            let placement = if first["position"].is_object() {
+                let p = &first["position"];
+                let (side, line) = if let Some(l) = p["new_line"].as_u64() {
+                    (Side::New, l as u32)
+                } else if let Some(l) = p["old_line"].as_u64() {
+                    (Side::Old, l as u32)
+                } else {
+                    (Side::New, 0)
+                };
+                RemotePlacement::Line {
+                    path: p["new_path"]
+                        .as_str()
+                        .or_else(|| p["old_path"].as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    old_path: p["old_path"].as_str().map(str::to_owned),
+                    side,
+                    line,
+                    commit: p["head_sha"].as_str().map(str::to_owned),
+                }
+            } else {
+                RemotePlacement::Mr
+            };
+            let resolvable: Vec<&&Value> = real
+                .iter()
+                .filter(|n| n["resolvable"].as_bool().unwrap_or(false))
+                .collect();
+            let resolved = !resolvable.is_empty()
+                && resolvable
+                    .iter()
+                    .all(|n| n["resolved"].as_bool().unwrap_or(false));
+            threads.push(RemoteThread {
+                id: d["id"].as_str().unwrap_or_default().to_owned(),
+                resolved,
+                // GitLab exposes no cheap per-note outdated flag; left false in
+                // v1 (see the review docs' capability matrix).
+                outdated: false,
+                placement,
+                comments: real.iter().map(|&n| parse_note(n)).collect(),
+            });
+        }
+        Ok(threads)
+    }
+
+    fn submit_review(&self, id: &str, review: &ReviewSubmission) -> anyhow::Result<()> {
+        if review.is_empty() {
+            return Ok(());
+        }
+        let draft_url = self.draft_notes_url(id);
+        // The summary rides as a general draft note.
+        if let Some(s) = &review.summary {
+            request("POST", &draft_url, &self.auth, Some(&json!({ "note": s })))?;
+        }
+        for c in &review.comments {
+            let body = match &c.placement {
+                SubmitPlacement::Line {
+                    path,
+                    old_path,
+                    side,
+                    line,
+                    ..
+                } => json!({
+                    "note": c.body,
+                    "position": diff_position(&review.version, path, old_path.as_deref(), *side, *line),
+                }),
+                // GitLab has no file-level anchor; fall back to a general note
+                // that names the file (documented).
+                SubmitPlacement::File { path, .. } => {
+                    json!({ "note": format!("`{path}`:\n\n{}", c.body) })
+                }
+            };
+            request("POST", &draft_url, &self.auth, Some(&body))?;
+        }
+        // Publish every draft note at once — one notification.
+        request(
+            "POST",
+            &format!("{draft_url}/bulk_publish"),
+            &self.auth,
+            None,
+        )?;
+        // Approve is a distinct endpoint; request-changes/comment have no native
+        // action beyond the notes just published.
+        if review.verdict == Some(Verdict::Approve) {
+            let url = format!("{}/{id}/approve", self.mrs_url());
+            request("POST", &url, &self.auth, None)?;
+        }
+        Ok(())
+    }
+
+    fn comment_mr(&self, id: &str, body: &str) -> anyhow::Result<()> {
+        let url = format!("{}/{id}/notes", self.mrs_url());
+        request("POST", &url, &self.auth, Some(&json!({ "body": body })))?;
+        Ok(())
+    }
+
+    fn reply(&self, id: &str, thread: &str, body: &str) -> anyhow::Result<()> {
+        let url = format!("{}/{id}/discussions/{thread}/notes", self.mrs_url());
+        request("POST", &url, &self.auth, Some(&json!({ "body": body })))?;
+        Ok(())
+    }
+
+    fn resolve(&self, id: &str, thread: &str, resolved: bool) -> anyhow::Result<()> {
+        let url = format!(
+            "{}/{id}/discussions/{thread}?resolved={resolved}",
+            self.mrs_url()
+        );
+        request("PUT", &url, &self.auth, None)?;
         Ok(())
     }
 }

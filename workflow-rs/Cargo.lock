@@ -1229,7 +1229,10 @@ dependencies = [
  "anyhow",
  "clap",
  "log",
+ "serde",
+ "serde_json",
  "tempfile",
+ "toml",
  "wits-util",
 ]
 

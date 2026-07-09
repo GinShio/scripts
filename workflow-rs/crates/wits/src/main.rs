@@ -58,6 +58,8 @@ enum Commands {
     Transcrypt(cmd::transcrypt::TranscryptArgs),
     /// Manage a stack of branches as a set of merge requests.
     Stack(cmd::stack::StackArgs),
+    /// Review merge requests locally: fetch, comment, and submit across forges.
+    Review(cmd::review::ReviewArgs),
     /// Describe source projects (and manage build contexts via `project context`).
     Project(cmd::project::ProjectArgs),
     /// Configure and build a project.
@@ -89,6 +91,7 @@ fn main() -> anyhow::Result<()> {
     match &cli.command {
         Commands::Transcrypt(args) => cmd::transcrypt::run(args),
         Commands::Stack(args) => cmd::stack::run(args),
+        Commands::Review(args) => cmd::review::run(args),
         Commands::Project(args) => cmd::project::run(args),
         Commands::Build(args) => cmd::build::run(args),
         Commands::Update(args) => cmd::update::run(args),
