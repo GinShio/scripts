@@ -1,18 +1,16 @@
 # `wits review` — Design
 
-> Status: **agreed design, not yet implemented.** This records the shape we
-> settled on and the *why* behind it, so the eventual code has a fixed target and
-> a future reader can reconstruct the reasoning. Where the code, once written,
-> departs from this document, the code becomes authoritative and this file is
-> updated to match — as `docs/stack/design.md` is for `stack`.
+> Status: **implemented.** This records the agreed shape and the *why* behind it;
+> the code lives in `crates/wits/src/cmd/review/` and the review half of
+> `crates/wits-util/src/forge/`. Where a detail evolved during implementation the
+> code is authoritative and this file has been kept in step (see §17 for what v1
+> deliberately scoped out).
 >
-> This file explains *why the tool is shaped the way it is*. When it exists, the
-> companion usage document (`docs/review.md`) will explain *how to drive it* and
-> carry the full, reader-facing reference (every flag, every config key). Neither
-> restates the other; behaviour-for-users goes there, rationale goes here.
->
-> `review` is deliberately **not** added to the top-level README's command table
-> until it is implemented — that table lists only finished tools.
+> This file explains *why the tool is shaped the way it is*. The companion usage
+> document (`docs/review.md`) explains *how to drive it* and carries the full,
+> reader-facing reference; the editor contract is in `docs/review/json.md` and the
+> on-disk store in `docs/review/store.md`. Neither restates the other;
+> behaviour-for-users goes there, rationale goes here.
 
 ---
 
@@ -69,7 +67,7 @@ wits review fetch  [mr | feed | --all]     # idempotent: first pull or refresh; 
 wits review submit [mr | --stack]          # flush the recorded draft actions, batched
 
 # Authoring — record actions into the local draft; no network.
-wits review comment <mr> (--line P:L[:side] | --file P | --mr | --reply ID | --edit ID) [FILE]
+wits review comment <mr> (--line P:L[:side] | --file P | --mr-level | --reply ID | --edit ID) [FILE]
 wits review verdict <mr> {approve|request-changes|comment} [FILE]
 wits review drop    <id>
 wits review resolve   <thread>             # GitLab only in v1 (§10)
@@ -347,10 +345,13 @@ is a named set of faceted filters:
 
 - **Fields:** `state` (defaults to `open+draft`; `merged`/`closed` are not
   fetched), `label`, `author`, `assignee`, `reviewer`.
-- **Semantics:** multiple values within one field are **OR**; different fields
-  are **AND** (`reviewer=@me` *and* `label∈{vulkan}` *and* `state∈{open,draft}`).
-  This is the faceted model `gh pr list` / `glab mr list` and the forges' own
-  search use; a full expression language would be over-built for the need.
+- **Semantics:** different fields are **AND** (`reviewer=@me` *and*
+  `label∈{…}` *and* `state∈{open,draft}`). This is the faceted model
+  `gh pr list` / `glab mr list` and the forges' own search use; a full expression
+  language would be over-built for the need. (In v1 multiple *labels* are AND-ed
+  on both GitHub and GitLab — that is the platforms' behaviour for one list/search
+  query; the earlier hope of within-field OR for labels isn't natively available
+  and client-side union was rejected for scale.)
 - **Negation:** per-field `!=` is supported (`label != wip`), which is the one
   extension that pays for itself (dropping bot/WIP noise).
 - **Escape hatch:** a `search = "..."` string is passed straight to the
@@ -561,17 +562,29 @@ dropping the refs of terminal MRs and letting git GC the objects.
 - **Folding `review` into `wits stack`.** Rejected: it is its own subcommand with
   its own verbs; it only *reuses* `stack`'s resolution.
 
-## 17. Open questions / future
+## 17. What v1 scoped out, and future work
+
+Delivered in v1: forge-first acquisition with object pinning, the
+snapshot/anchor/thread/draft model, the cache+draft store on the
+env→XDG_STATE→GIT_DIR ladder, config-driven feeds, the `--json` contract
+(`schema` 1), worktree/in-place materialization with stack navigation, `prune`,
+and the GitHub + GitLab review backends.
+
+Deliberately deferred, and honest about it:
 
 - **future** GitHub thread resolve/unresolve, once a minimal GraphQL path is
-  worth adding (deferred from v1, §10).
-- **future** Gitea/Forgejo/Codeberg review backends (v1 is GitHub + GitLab; the
-  trait leaves the seam).
+  worth adding (v1 is REST-only, so resolve works on GitLab only — §10).
+- **future** editing or deleting an *already-published* comment; v1's `--edit`
+  and `drop` act on pending draft actions only.
+- **future** per-comment historical version tracking so an outdated draft submits
+  against the exact snapshot each comment was written on; v1 submits against the
+  currently-held snapshot and warns when a comment's stamped SHA differs (§6).
+- **future** the incremental-sync cursor for feeds (v1 pulls the most-recently
+  updated MRs up to `limit`; the `updated_after` plumbing exists but is unused —
+  §9), and a feed cache-expiry policy.
+- **future** Gitea/Forgejo/Codeberg review backends (the trait leaves the seam,
+  §10).
 - **future** a `serve` daemon over the `--json` contract for large-MR latency and
   live outdate/CI push (§12).
 - **future** CI status surfaced into `show` (shared with `stack`'s own deferred CI
   read-back).
-- **open** the exact JSON schema is sketched (§12), not frozen; it is the next
-  thing to nail down before implementation.
-- **open** feed cache expiry policy and the incremental-sync cursor's precise
-  shape (§9).

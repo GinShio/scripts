@@ -11,6 +11,7 @@ contains what is actually finished. Today that is:
 |---|---|
 | [`wits transcrypt`](docs/transcrypt.md) | Transparent file encryption wired into git's clean/smudge filters |
 | [`wits stack`](docs/stack.md) | Manage a stack of branches as a set of merge requests (push, open/retarget MRs, navigation) |
+| [`wits review`](docs/review.md) | Review merge requests locally across forges: fetch, comment, verdict, and submit as one batch |
 | [`wits project`](docs/project.md) | Describe/validate source projects from one declarative registry (also manages build contexts via `project context`) |
 | [`wits build`](docs/project.md) | Configure and build a project on top of that registry (cmake/meson/cargo) |
 | [`wits update`](docs/project.md) | Refresh git for every repo of a project |
