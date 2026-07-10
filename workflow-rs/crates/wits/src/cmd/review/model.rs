@@ -1,16 +1,16 @@
-//! The review model: the serde types that back both the on-disk store and the
-//! `--json` contract.
+//! The review model: the JSON types that back the three-file store and the
+//! `--json` read contract.
 //!
-//! These deliberately double as the store *and* the editor payload. The
-//! on-disk layout is a private implementation detail (the editor reads only
-//! through `--json`), but keeping one set of types means the thing we persist
-//! and the thing we emit can never drift. Everything is versioned by
-//! [`SCHEMA`] so the payload can evolve.
+//! Every MR is described by three files (see `docs/review/store.md`), all JSON
+//! because they are API-shaped data:
 //!
-//! Two lifetimes, kept apart on purpose (see `docs/review/design.md` §7): the
-//! [`RemoteCache`] is the forge's state as we last saw it — refetchable, safe to
-//! overwrite whole — while the [`Draft`] is the precious, unsubmitted set of
-//! actions the reviewer is building.
+//! - [`Info`]    — the MR's necessary metadata and diff state (drives the inbox).
+//! - [`Comments`] — everything that happened on the forge (a refetchable cache).
+//! - [`Local`]   — your unsubmitted actions, edited by hand or an editor; this
+//!   is the sole *write* interface, so its shape is a public, versioned contract.
+//!
+//! There are no authoring commands: to review, you edit `local.json`, then
+//! `submit` merges, posts, and clears it. Everything is versioned by [`SCHEMA`].
 
 use serde::{Deserialize, Serialize};
 
@@ -18,12 +18,10 @@ use wits_util::forge::{
     DiffVersion, MrState, MrSummary, RemoteComment, RemotePlacement, RemoteThread, Side, Verdict,
 };
 
-/// The version of the store/JSON schema. Bumped when a payload shape changes so
-/// a reader can refuse or migrate an older store.
+/// The store/JSON schema version. Bumped on an incompatible shape change.
 pub const SCHEMA: u32 = 1;
 
-/// The normalized state string used in JSON, folding draft-ness into the word a
-/// reviewer thinks in.
+/// The normalized state word used in JSON, folding draft-ness in.
 pub fn state_word(state: MrState, draft: bool) -> &'static str {
     match state {
         MrState::Open if draft => "draft",
@@ -33,7 +31,8 @@ pub fn state_word(state: MrState, draft: bool) -> &'static str {
     }
 }
 
-/// The inbox/detail view of one MR's metadata.
+/// One MR's necessary metadata — the inbox row, and the header of the detail
+/// view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MrInfo {
     pub id: String,
@@ -44,7 +43,7 @@ pub struct MrInfo {
     pub author: String,
     pub base: String,
     pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub head_sha: Option<String>,
     pub updated_at: String,
     pub labels: Vec<String>,
@@ -70,9 +69,36 @@ impl From<MrSummary> for MrInfo {
     }
 }
 
-/// Where a comment sits. The `commit` is the reviewed SHA the anchor belongs to
-/// — carried so an outdated comment submits against what was reviewed rather
-/// than being silently re-based onto the tip.
+/// A commit in the reviewed range.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredCommit {
+    pub sha: String,
+    pub subject: String,
+}
+
+/// A file the MR touched.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredFile {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub old_path: Option<String>,
+    pub status: String,
+}
+
+/// `info.json` — the MR's necessary metadata and diff state. Refetched by
+/// `fetch`; safe to hand-tweak. A feed refresh fills only `mr`, leaving the
+/// diff state empty until a full `fetch <mr>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Info {
+    pub schema: u32,
+    pub mr: MrInfo,
+    pub version: DiffVersion,
+    pub fetched_at: String,
+    pub commits: Vec<StoredCommit>,
+    pub files: Vec<StoredFile>,
+}
+
+/// Where a comment sits, in the read/output view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Placement {
@@ -92,7 +118,6 @@ pub enum Placement {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         commit: Option<String>,
     },
-    /// The MR conversation, with no code anchor.
     Mr,
 }
 
@@ -119,8 +144,7 @@ impl From<RemotePlacement> for Placement {
     }
 }
 
-/// One comment in a thread — origin-tagged (`local`/`remote`) and state-tagged
-/// (`pending`/`published`) so the editor can render each appropriately.
+/// One comment in a thread, in the read/output view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
@@ -145,8 +169,7 @@ impl Comment {
     }
 }
 
-/// A discussion thread as presented to the editor: remote threads carry their
-/// forge id and flags; a purely local pending thread carries a `local:` id.
+/// A discussion thread in the read/output view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
     pub id: String,
@@ -170,131 +193,143 @@ impl From<RemoteThread> for Thread {
     }
 }
 
-/// One commit in the reviewed range.
+/// `comments.json` — the forge's discussion, as last fetched. A pure cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredCommit {
-    pub sha: String,
-    pub subject: String,
-}
-
-/// One file the MR touched.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StoredFile {
-    pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub old_path: Option<String>,
-    pub status: String,
-}
-
-/// The forge's state for one MR as we last observed it — a cache, refetchable at
-/// will and safe to overwrite whole.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RemoteCache {
+pub struct Comments {
     pub schema: u32,
-    pub mr: MrInfo,
-    pub version: DiffVersion,
-    pub fetched_at: String,
-    pub commits: Vec<StoredCommit>,
-    pub files: Vec<StoredFile>,
     pub threads: Vec<Thread>,
 }
 
-/// One recorded, not-yet-submitted review action.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "kebab-case")]
-pub enum Action {
-    /// A new thread (line/file/mr).
-    Comment {
-        id: String,
-        placement: Placement,
-        body: String,
-    },
-    /// A reply to an existing remote thread.
-    Reply {
-        id: String,
-        /// The remote thread id (bare, without the `remote:` prefix).
-        thread: String,
-        body: String,
-    },
-    /// Resolve or unresolve a remote thread (GitLab in v1).
-    Resolve { thread: String, resolved: bool },
-}
-
-impl Action {
-    /// The addressable id of an action that has one (comments and replies).
-    pub fn id(&self) -> Option<&str> {
-        match self {
-            Action::Comment { id, .. } | Action::Reply { id, .. } => Some(id),
-            Action::Resolve { .. } => None,
+impl Default for Comments {
+    fn default() -> Self {
+        Comments {
+            schema: SCHEMA,
+            threads: Vec::new(),
         }
     }
 }
 
-/// The one mutable local document: the unsubmitted review for a single MR.
+/// One recorded action in `local.json`. Flat on purpose, so it is pleasant to
+/// hand-edit: a comment infers its placement from which fields are present —
+/// `file`+`line` is a line comment, `file` alone is file-level, neither is an
+/// MR-level conversation comment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "kebab-case")]
+pub enum Action {
+    Comment {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        file: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        line: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        side: Option<Side>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        start_line: Option<u32>,
+        body: String,
+    },
+    Reply {
+        thread: String,
+        body: String,
+    },
+    Resolve {
+        thread: String,
+        resolved: bool,
+    },
+}
+
+impl Action {
+    /// The output placement for a comment action, stamped with the reviewed
+    /// `head`. Non-comment actions have no placement.
+    pub fn placement(&self, head: &str) -> Option<Placement> {
+        let commit = (!head.is_empty()).then(|| head.to_owned());
+        match self {
+            Action::Comment {
+                file: Some(path),
+                line: Some(line),
+                side,
+                start_line,
+                ..
+            } => Some(Placement::Line {
+                path: path.clone(),
+                old_path: None,
+                side: side.unwrap_or(Side::New),
+                line: *line,
+                start_line: *start_line,
+                commit,
+            }),
+            Action::Comment {
+                file: Some(path), ..
+            } => Some(Placement::File {
+                path: path.clone(),
+                commit,
+            }),
+            Action::Comment { .. } => Some(Placement::Mr),
+            _ => None,
+        }
+    }
+}
+
+/// `local.json` — your unsubmitted review: an optional verdict and summary, and
+/// an append-style list of actions. Edited by hand or an editor; `submit` merges
+/// and flushes it. This shape is the public write contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Draft {
+pub struct Local {
     pub schema: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub verdict: Option<Verdict>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub summary: Option<String>,
+    #[serde(default)]
     pub actions: Vec<Action>,
-    /// Monotonic local-id counter; never reused after a drop, reset when the
-    /// draft is cleared.
-    pub seq: u64,
 }
 
-impl Default for Draft {
+impl Default for Local {
     fn default() -> Self {
-        Draft {
+        Local {
             schema: SCHEMA,
             verdict: None,
             summary: None,
             actions: Vec::new(),
-            seq: 0,
         }
     }
 }
 
-impl Draft {
-    /// Allocate the next local id (`local:N`).
-    pub fn next_id(&mut self) -> String {
-        self.seq += 1;
-        format!("local:{}", self.seq)
-    }
-
+impl Local {
     pub fn is_empty(&self) -> bool {
         self.verdict.is_none() && self.summary.is_none() && self.actions.is_empty()
     }
 
-    /// Remove the action with `id`; returns whether one was found.
-    pub fn remove(&mut self, id: &str) -> bool {
-        let before = self.actions.len();
-        self.actions.retain(|a| a.id() != Some(id));
-        self.actions.len() != before
-    }
-
-    /// Set the body of the comment/reply action with `id`; returns whether found.
-    pub fn edit_body(&mut self, id: &str, new_body: String) -> bool {
-        for action in &mut self.actions {
-            match action {
-                Action::Comment { id: aid, body, .. } | Action::Reply { id: aid, body, .. }
-                    if aid == id =>
-                {
-                    *body = new_body;
-                    return true;
-                }
-                _ => {}
+    /// Merge and de-duplicate the recorded actions, in place: drop exact repeats
+    /// (a comment written twice), and collapse repeated resolutions of one
+    /// thread to the last stated intent. Order is otherwise preserved.
+    pub fn normalize(&mut self) {
+        // Last-wins per resolved thread: find the final resolve for each thread.
+        let mut last_resolve: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+        for a in &self.actions {
+            if let Action::Resolve { thread, resolved } = a {
+                last_resolve.insert(thread.clone(), *resolved);
             }
         }
-        false
-    }
 
-    /// Record a resolve/unresolve, collapsing repeats on the same thread to the
-    /// latest intent.
-    pub fn set_resolved(&mut self, thread: String, resolved: bool) {
-        self.actions
-            .retain(|a| !matches!(a, Action::Resolve { thread: t, .. } if *t == thread));
-        self.actions.push(Action::Resolve { thread, resolved });
+        let mut seen: Vec<Action> = Vec::new();
+        let mut resolved_emitted: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for a in self.actions.drain(..) {
+            match &a {
+                Action::Resolve { thread, .. } => {
+                    if resolved_emitted.insert(thread.clone()) {
+                        let resolved = last_resolve[thread];
+                        seen.push(Action::Resolve {
+                            thread: thread.clone(),
+                            resolved,
+                        });
+                    }
+                }
+                _ if seen.contains(&a) => {}
+                _ => seen.push(a),
+            }
+        }
+        self.actions = seen;
     }
 }

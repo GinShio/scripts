@@ -22,11 +22,11 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
     let ctx = local(repo)?;
     let id = resolve_target(&ctx, args)?;
 
-    let cache = ctx
+    let info = ctx
         .store
-        .load_cache(&id)
+        .load_info(&id)
         .with_context(|| format!("MR {id} isn't fetched — run `wits review fetch {id}` first"))?;
-    let head = cache.version.head_sha;
+    let head = info.version.head_sha;
     if head.is_empty() {
         bail!("MR {id} has no fetched snapshot — run `wits review fetch {id}` for full detail");
     }
@@ -75,8 +75,8 @@ fn resolve_target(ctx: &Local, args: &CheckoutArgs) -> Result<String> {
         .store
         .current()
         .context("no current review to navigate from; check out an MR first")?;
-    let caches = ctx.store.list_cached();
-    let (chain, pos) = super::stack_chain(&caches, &current);
+    let infos = ctx.store.list_infos();
+    let (chain, pos) = super::stack_chain(&infos, &current);
     let target = if args.next {
         chain.get(pos + 1)
     } else {
@@ -99,38 +99,33 @@ fn default_worktree_dir(toplevel: &std::path::Path, repo: &str, id: &str) -> Pat
 
 pub fn run_prune(repo: &Repository, args: &PruneArgs) -> Result<()> {
     let ctx = local(repo)?;
-    let now = now_secs();
-    let cutoff = args.older_than.map(|days| days * 86_400);
+    // The dormancy cutoff, as a Unix instant: an MR last fetched before it is
+    // stale. `--older-than` is a day count or an ISO-8601 date.
+    let cutoff = args.older_than.as_deref().map(parse_cutoff).transpose()?;
 
     let mut pruned = 0;
-    for cache in ctx.store.list_cached() {
-        let id = &cache.mr.id;
-        let terminal = matches!(cache.mr.state.as_str(), "merged" | "closed");
-        let stale = cutoff.is_some_and(|window| {
-            cache
-                .fetched_at
-                .parse::<u64>()
+    for info in ctx.store.list_infos() {
+        let id = &info.mr.id;
+        let terminal = matches!(info.mr.state.as_str(), "merged" | "closed");
+        let stale = cutoff.is_some_and(|before| {
+            info.fetched_at
+                .parse::<i64>()
                 .ok()
-                .is_some_and(|at| now.saturating_sub(at) > window)
+                .is_some_and(|at| at < before)
         });
         if !terminal && !stale {
             continue;
         }
 
-        // Drop the snapshot pins so git can GC the objects, then the cache and
-        // any (now moot) draft.
+        // Drop the snapshot pins so git can GC the objects, then the whole
+        // per-MR directory.
         for (name, _) in ctx.repo.refs_under(&refs::mr_prefix(id)) {
             if let Err(e) = ctx.repo.delete_ref(&name) {
                 log::warn!("MR {id}: could not delete {name}: {e}");
             }
         }
-        ctx.store.delete_cache(id)?;
-        ctx.store.delete_draft(id)?;
-        let why = if terminal {
-            cache.mr.state.as_str()
-        } else {
-            "dormant"
-        };
+        ctx.store.delete_mr(id)?;
+        let why = if terminal { info.mr.state.as_str() } else { "dormant" };
         log::info!("pruned MR {id} ({why})");
         pruned += 1;
     }
@@ -143,10 +138,39 @@ pub fn run_prune(repo: &Repository, args: &PruneArgs) -> Result<()> {
     Ok(())
 }
 
-fn now_secs() -> u64 {
+/// Interpret `--older-than` as a number of days or an ISO-8601 date, returning
+/// the Unix instant before which an MR counts as dormant.
+fn parse_cutoff(spec: &str) -> Result<i64> {
+    if let Ok(days) = spec.parse::<i64>() {
+        return Ok(now_secs() - days.saturating_mul(86_400));
+    }
+    let epoch_day = iso_date_to_epoch_day(spec)
+        .with_context(|| format!("--older-than must be a day count or an ISO date, got '{spec}'"))?;
+    Ok(epoch_day * 86_400)
+}
+
+/// Days since the Unix epoch for a `YYYY-MM-DD` date (Hinnant's days_from_civil),
+/// so an ISO date needs no date crate.
+fn iso_date_to_epoch_day(date: &str) -> Option<i64> {
+    let mut parts = date.split('-');
+    let y: i64 = parts.next()?.trim().parse().ok()?;
+    let m: i64 = parts.next()?.parse().ok()?;
+    let d: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
+        .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
 

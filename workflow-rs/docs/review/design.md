@@ -54,62 +54,51 @@ already supplied by `Forge::noun`.)
 
 ## 2. CLI surface
 
-The verbs collapse to a small set once one principle is applied: **only two verbs
-touch the network.** Everything a reviewer does — comment, reply, edit, drop,
-set a verdict, resolve a thread — is recorded as a *pending action* in a local
-draft, and nothing reaches the forge until `submit` flushes the draft in one
-batch. This is what keeps a review from spraying a notification per keystroke,
-and it is the same "reconcile, don't stream" discipline `stack` uses.
+The verb set is small because of two principles: **only two verbs touch the
+network** (`fetch` reads, `submit` writes), and **authoring is not a command at
+all** — you edit a plain `local.json` draft (§5.4), which is the sole place the
+tool reads authored intent from. There is no `comment`/`verdict`/`resolve` verb;
+that keeps a review from spraying a notification per keystroke, keeps the write
+surface a single well-specified file, and matches the "plain-text formats"
+preference. It is the `prr` model, generalized to threads, outdating, and stacks.
 
 ```
 # Network — the only two verbs that talk to the forge.
-wits review fetch  [mr | feed | --all]     # idempotent: first pull or refresh; pins objects
-wits review submit [mr | --stack]          # flush the recorded draft actions, batched
+wits review fetch  [mr | --feed name]   # one MR (full), a feed (light), or every feed (bare)
+wits review submit [mr | --stack | --all]   # merge + flush the local.json draft, batched
 
-# Authoring — record actions into the local draft; no network.
-wits review comment <mr> (--line P:L[:side] | --file P | --mr-level | --reply ID | --edit ID) [FILE]
-wits review verdict <mr> {approve|request-changes|comment} [FILE]
-wits review drop    <id>
-wits review resolve   <thread>             # GitLab only in v1 (§10)
-wits review unresolve <thread>
-wits review draft   [mr]                   # inspect what the draft will submit
+# Reading — from the local files, no network; each supports --json.
+wits review show  [mr] [--outdated|--resolved|--unread|--file P]   # inbox, or one MR (merged)
+wits review diff  <mr> [--range S] [--patch|--json]                # diff coordinates
+wits review draft <mr>                                             # echo the pending local.json
 
-# Reading — from local cache, no network; everything supports --json.
-wits review show [mr] [--outdated] [--resolved] [--unread] [--file P]
-wits review diff <mr> [--range S]          # coordinates/anchors; --patch shells to git
-
-# Materialize / navigate / housekeep.
-wits review checkout <mr|stack> [--next|--prev]   # into a worktree or in-place, via project
-wits review prune [--older-than …]
+# Materialize / housekeep.
+wits review checkout <mr> [--next|--prev] [--in-place|--worktree DIR]
+wits review prune [--older-than DAYS|DATE]
 ```
 
-The split earns its keep the same way `stack`'s does: when `submit` fails on the
-third of five MRs you want to know exactly where you were and re-run only that,
-and `fetch`/`show`/`diff` are pure reads you can lean on freely.
+The split earns its keep the way `stack`'s does: when `submit` fails on the third
+of five MRs you want to know exactly where you were and re-run only that, and the
+reads are pure.
 
 Notes on shape, each with its reason:
 
-- **`fetch` subsumes "pull" and "sync".** They are the same operation — bring the
-  local view in line with the forge — differing only in whether it is the first
-  time. Like `git fetch`, it is idempotent; there is no reason for two verbs.
-- **`show` with no MR is the inbox; with an MR it is the detail view.** There is
-  no separate `list`: the inbox is just "show me everything I've fetched", and
-  the human print is secondary to `--json` (§12), which the editor consumes.
-- **Bodies come from a positional `FILE`, defaulting to stdin (`-`).** This is
-  more Unix-idiomatic than a `--body-file` flag and sidesteps the multi-line
-  markdown quoting hell of `-m`. `comment`, `verdict`, and `comment --edit` all
-  read their body this way.
-- **Navigation is a flag on `checkout`, not a verb.** `--next`/`--prev` move
-  along the stack relative to the currently checked-out MR (§13); `show`/`diff`
-  take an explicit `<mr>`, since the editor computes "next" from the `neighbors`
-  block `show` already returns.
-- **`resolve`/`unresolve` and `verdict` are draft actions, not network calls.**
-  They are recorded and applied at `submit`, so the whole review lands as one
-  intent.
+- **Authoring by editing `local.json`, not commands.** The draft is a public,
+  versioned file (§5.4, `docs/review/json.md`); an editor extension writes it,
+  and so can a human. This is the write interface — the store's *read* layout is
+  otherwise private, but this one file is a contract.
+- **`fetch` subsumes "pull" and "sync"** — one idempotent verb like `git fetch`.
+  Bare `fetch` refreshes every configured feed (the RSS "refresh all"); `--feed`
+  one feed; a number/URL one MR in full.
+- **`show` with no MR is the inbox; with an MR it is the merged detail view.** No
+  separate `list`; the human print is secondary to `--json` (§12).
+- **Navigation is a flag on `checkout`.** `--next`/`--prev` walk the stack from
+  the last checkout (§13); `show`/`diff` take an explicit `<mr>`, since the editor
+  computes "next" from the `neighbors` block `show` returns.
 
 Global `-v/--verbose` and `-n/--dry-run` come from the `wits` process layer for
-free; every network call respects dry-run, every read still runs (`submit -n`
-prints "would post these threads with this verdict to this MR").
+free; every network call respects dry-run (`submit -n` prints what it would post),
+every read still runs.
 
 ## 3. Code organization
 
@@ -164,10 +153,9 @@ refs/wits/review/<mr>/<snapshot-sha>-base   # → its base, when not an ancestor
   MR's cached metadata (§7). Three distinct concerns, three distinct sources:
   **refs** = what we pinned; the **remote cache** = the forge's version history;
   the **MR info** = a pointer to the snapshot currently under review.
-- This is unconditional. It does **not** care whether `git-branchless` is
-  installed — a tool's behaviour must not depend on whether another tool happens
-  to exist. When branchless is present we simply coexist with its refs; when it
-  isn't, ours are the whole mechanism.
+- This is unconditional and self-contained: our behaviour must not depend on
+  whether any other tool happens to be installed, so these refs are the whole
+  mechanism, always present.
 
 `prune` (§15) is the other end of this: it deletes these refs when a snapshot is
 no longer needed, letting git GC the objects.
@@ -232,24 +220,30 @@ forge reality, not a preference:
   note with no position). This is "just leave a remark on the MR."
 
 A line/file comment can only land on a file the MR changed; anything else is an
-`mr` comment. IDs are origin-prefixed (`local:3`, `remote:9987`) so the editor
-can address both; local IDs are a per-draft counter (§7).
+`mr` comment. In the read view, ids are origin-prefixed — `remote:9987` for a
+forge thread, `local:<n>` (by position) for a pending one — so the editor can
+render both; you address a remote thread by its id when you write a reply or
+resolve into the draft.
 
-### 5.4 `Draft` — a set of pending actions, not just comments
+### 5.4 `Local` — the editable draft file
 
 ```
-Draft {
+Local {                          // local.json — hand/editor-edited
     verdict: Option<Approve | RequestChanges | Comment>,
-    summary: Option<Body>,     // the review body; rides with the verdict, no extra notification
-    actions: Vec<Action>,      // AddComment | Reply | Edit | Drop | Resolve | Unresolve
+    summary: Option<Body>,       // the review body; rides with the verdict, no extra notification
+    actions: [ Comment | Reply | Resolve ],   // append-style
 }
 ```
 
-The draft is the **only** mutable local state, and it holds *intent*, not just
-new comments: editing or dropping an already-published comment, replying to a
-remote thread, resolving a discussion — all are actions recorded here and applied
-at `submit`. One draft per MR (so reviewing a stack means several drafts); the
-verdict is one per MR.
+The draft is the **only** thing you write, and you write it *as a file*, not
+through commands (§2). Each `Comment` action is flat and infers its placement
+from the fields present (`file`+`line` → line, `file` → file, neither → mr), so
+it is pleasant to hand-edit; `Reply` and `Resolve` name a remote thread. One
+draft per MR (reviewing a stack means several); the verdict is one per MR. At
+`submit` the actions are merged and de-duplicated (exact repeats dropped, a
+thread's repeated resolutions collapsed to the last), posted, and cleared —
+failures stay in the file to retry. Editing or deleting an *already-published*
+comment is out of v1 scope (§17); the draft is only your unsubmitted intent.
 
 ## 6. Outdating — anchor to what you reviewed, let the forge mark it
 
@@ -272,30 +266,34 @@ Moving a stale local draft onto the new state is offered only as an explicit,
 opt-in convenience — never the default, never a correctness dependency. The
 default is honesty: the comment stays anchored to the code it was written about.
 
-## 7. Local store — a disposable cache and a precious draft
+## 7. Local store — three files per MR
 
-Two kinds of data with opposite lifetimes must not share a representation, or the
-store rots:
+Each MR is described by three JSON files in its own directory (`<id>/`), split
+by lifetime and by who writes them, so no two concerns share a representation:
 
-- **`remote/mr-<id>.json`** — the forge's state as we last observed it: threads,
-  their authors and resolved/outdated flags, the diff version list, the MR's
-  metadata. This is a **cache**: refetchable at will, safe to overwrite whole,
-  never the source of truth. Everyone else's comments live here.
-- **`draft/mr-<id>.json`** — the pending actions and verdict for one MR (§5.4).
-  This is the **precious** part: it is what would be lost, and it is what "carry
-  my review to another machine" (portability, not collaboration) actually moves.
+- **`info.json`** — the MR's necessary metadata and diff state (summary,
+  `version` SHAs, commits, files). Drives the inbox; refetchable; hand-tweakable.
+- **`comments.json`** — the forge's discussion as last observed. A **cache**:
+  refetchable at will, safe to overwrite whole. Everyone else's comments live
+  here.
+- **`local.json`** — your unsubmitted verdict + actions (§5.4). The **precious**
+  part — the only thing that would be lost, and the only thing "carry my review
+  to another machine" (portability, not collaboration) moves. It exists only
+  while you have a draft.
 
-**Submit clears the draft.** Once a draft is flushed, everything in it is public
-on the forge, so the local draft has nothing left to hold — we clear the
-succeeded actions and re-`fetch` the remote cache, and the just-submitted
-comments come back as ordinary remote threads. This is the `prr` model —
-author a batch, submit, done — and it is why we need **no identity-stitching**
-between a local pending comment and the remote thread it became: after submit,
-there is no local pending comment to stitch. Local IDs are a per-draft counter,
-never reused after a drop (tombstone), reset when the draft clears.
+All three are JSON because they are API-shaped data; only the *config* layer
+(feeds, §8) is TOML. The read layout is otherwise an implementation detail, but
+`local.json` is a public contract because it is the write interface (§2, §12).
 
-The store root follows the env → XDG → GIT_DIR ladder the `config` floor already
-provides, with **state** kept distinct from **config** (§8):
+**Submit clears `local.json`.** Once flushed, everything in it is public on the
+forge, so it has nothing left to hold — landed actions are removed, and once the
+file empties we re-`fetch` so the just-posted comments return as ordinary remote
+threads. This is the `prr` model — author a batch, submit, done — and it is why
+there is **no identity-stitching** between a pending comment and the remote thread
+it became: after submit there is no pending comment to stitch.
+
+The store root follows the env → XDG_STATE → GIT_DIR ladder, with **state** kept
+distinct from **config** (§8):
 
 ```
 WITS_REVIEW_DIR  >  $XDG_STATE_HOME/wits/review  >  $GIT_DIR/wits/review
@@ -352,16 +350,17 @@ is a named set of faceted filters:
   on both GitHub and GitLab — that is the platforms' behaviour for one list/search
   query; the earlier hope of within-field OR for labels isn't natively available
   and client-side union was rejected for scale.)
-- **Negation:** per-field `!=` is supported (`label != wip`), which is the one
-  extension that pays for itself (dropping bot/WIP noise).
+- **Exclusion:** an `exclude-labels` list drops MRs carrying any of them, the one
+  extension that pays for itself (bot/WIP noise).
 - **Escape hatch:** a `search = "..."` string is passed straight to the
   platform's search endpoint for the rare full-text case, so we never invent a
   query syntax.
 
 The load-bearing decision: **filters are pushed down to the forge's list/search
-query and paginated server-side** — never applied client-side after a full fetch.
-And feed refresh is **incremental** (an `updated_at` cursor, only MRs touched
-since the last sync) with a hard cap, or the inbox still explodes on a large repo.
+query and paginated server-side** — never applied client-side after a full fetch,
+with a hard `limit` cap (default 30). A truly incremental `updated_at` cursor
+(only MRs touched since the last sync) is plumbed through the query but unused in
+v1 (§17); the cap alone keeps a large repo's inbox bounded.
 
 `prr` has no filtering (it names specific PRs), so it is no guide here; the real
 analogues are the forge `list` CLIs and an RSS reader's filter rules.
@@ -436,43 +435,28 @@ right:
   drafts in a single pass. There is never a half-cleared draft and never two
   writers racing on the store.
 
-## 12. Editor interface — one contract, and it is `--json`
+## 12. Editor interface — read via `--json`, write by editing `local.json`
 
-The editor is a client of the tool, and the boundary is drawn to keep the store
-free to evolve:
+The editor is a client of the tool, and the boundary is two contracts:
 
-- **The editor reads only through `--json`, never the store files.** The on-disk
-  layout (§7) is a private implementation detail; the stable contract is the JSON
-  emitted by `show`/`diff`/`draft`. Coupling an editor to the disk schema would
-  freeze the schema forever; a `--json` API is cheap and versioned (every payload
-  carries a `schema` integer).
-- **The editor writes only through subcommands.** A comment, an edit, a drop, a
-  verdict — each is an ordinary CLI invocation with the body on stdin. The editor
-  never POSTs a JSON blob in; the write surface stays small, argument-shaped, and
-  trivially fuzzable.
+- **Read through `--json`, never the other store files.** The layout of
+  `info.json`/`comments.json` is a private implementation detail; the stable read
+  contract is the JSON emitted by `show`/`diff`/`draft`, versioned by a `schema`
+  integer. `draft --json` echoes `local.json`.
+- **Write by editing `local.json`.** The one write interface is that file (§5.4,
+  §7): an editor extension serializes the reviewer's actions into it, a human can
+  edit it directly, and its shape is a public, versioned contract. There is no
+  command-shaped write surface — a single well-specified file is smaller, easier
+  to fuzz, and matches the plain-text preference better than a family of verbs.
 - **`show` returns the whole MR in one payload, and filtering is the knob.**
   Even a large MR is a small JSON document and cheap I/O; pagination is not worth
   the complexity. What is worth it is *filtering* — `--outdated`, `--resolved`,
   `--unread`, `--file` — so the editor (or a terminal user) can pull just the
   threads that matter.
 
-Sketch of the two payloads (fields illustrative, `schema`-versioned):
-
-```json
-// show <mr> --json
-{ "schema": 1,
-  "mr":       { "mr": "123", "display": "#123", "title": "…", "state": "open", "draft": false },
-  "snapshot": { "base_sha": "…", "head_sha": "…" },
-  "neighbors":{ "position": 2, "prev_mr": "122", "next_mr": "124", "nodes": ["121","122","123","124"] },
-  "commits":  [ { "sha": "…", "parent": "…", "subject": "…" } ],
-  "files":    [ { "path": "src/x.c", "old_path": null, "status": "modified" } ],
-  "threads":  [ { "id": "remote:9987", "origin": "remote", "resolved": false, "outdated": true,
-                  "placement": { "kind": "line", "path": "src/x.c", "side": "new",
-                                 "line": 42, "range": [40,42], "commit": "A_sha" },
-                  "comments": [ { "id": "remote:5", "author": "alice", "origin": "remote",
-                                  "body": "…", "state": "published", "created_at": "…" } ] } ],
-  "draft":    { "verdict": "comment", "summary": "…" } }
-```
+The exact, field-by-field payloads (`show` detail and inbox, `diff`, and the
+`local.json` write contract) are specified in `docs/review/json.md`; this section
+records only the boundary, not the shapes.
 
 A long-running `serve` daemon speaking JSON-RPC is a **possible future**
 optimization — it would keep parsed diffs, computed anchors, and a warm forge
@@ -494,8 +478,8 @@ without inventing anything the forge can't store.
   refreshed (`fetch`), so a rebase that reshapes the stack is picked up
   explicitly rather than guessed at.
 - **Navigation, not cross-MR comments.** `checkout --next/--prev` walks the chain
-  (relative to a small per-worktree pointer recording the current review, §14),
-  and `show` hands the editor a `neighbors` block so it can do the same. But a
+  (relative to a small per-repo pointer recording the last checkout, §14), and
+  `show` hands the editor a `neighbors` block so it can do the same. But a
   **comment always belongs to exactly one MR** — the forge has no object for a
   comment spanning two MRs, and faking one would be an abstraction with nowhere to
   push. A "stack review" is therefore a connected *session* — per-MR drafts you
@@ -503,23 +487,23 @@ without inventing anything the forge can't store.
   comment surface. Each MR keeps its own verdict, which is usually what you want
   (approve the base, request changes up top).
 
-## 14. Materialization — worktree or in-place, via `project`
+## 14. Materialization — worktree or in-place
 
 To debug/build/fuzz/test an MR's code, the tool must put it somewhere runnable
-without clobbering your current work. `checkout` delegates to `project`'s existing
-policy rather than inventing a third:
+without clobbering your current work. `checkout` reuses `project`'s existing git
+worktree/checkout operations (`wits_util::project::git`) and supports both modes,
+chosen per invocation so neither is forced on the user:
 
-- **Worktree mode:** spin a worktree for the MR (or the stack — one worktree holds
-  a whole chain, the natural granularity), leaving your main tree untouched. This
-  is what lets you review several MRs at once.
-- **In-place mode:** check the snapshot out in the single working tree. This is
-  *supported on purpose* (not everyone uses worktrees), but it moves HEAD and can
-  only host **one** active review at a time, so it is explicit and **hard-guards a
-  dirty tree** — reviewing someone else's MR must never silently bury your work.
+- **Worktree mode (default):** add a worktree for the MR at a sibling path,
+  leaving your main tree untouched — this is what lets you review several MRs at
+  once. `--worktree DIR` overrides the location.
+- **In-place mode (`--in-place`):** check the snapshot out in the single working
+  tree. *Supported on purpose* (not everyone uses worktrees), but it moves HEAD
+  and hosts one review at a time, so it **hard-guards a dirty tree** — reviewing
+  someone else's MR must never silently bury your work.
 
-Naming and reclamation of the worktree/context are `project`'s to own; `review`
-only borrows the context and records, per worktree, which MR/stack is currently
-checked out (so `--next/--prev` has an origin, §13).
+A small per-repo `current` pointer records the last checkout so `--next/--prev`
+has an origin (§13).
 
 ## 15. Lifecycle and `prune`
 
@@ -531,12 +515,12 @@ An MR ends its life two ways, and only one is unambiguous:
   but reachable by an optional `--older-than`.
 
 The cost of *not* pruning is deliberately bounded so that doing nothing is fine:
-the remote cache is kilobytes, and the only real weight is git objects held alive
-by the `refs/wits/review/*` pins (§4). So we pin objects **only for MRs with an
-active local draft or an explicit checkout**; a merely-listed MR pins nothing, and
-a submitted-and-cleared draft releases its ref. `prune` then mirrors
-`stack tree prune`: idempotent, automatable, a no-op when nothing dangles —
-dropping the refs of terminal MRs and letting git GC the objects.
+the JSON files are kilobytes, and the only real weight is git objects held alive
+by the `refs/wits/review/*` pins (§4). Pins are created by a **full** `fetch <mr>`
+only; a merely feed-listed MR pins nothing. `prune` then mirrors
+`stack tree prune`: idempotent, automatable, a no-op when nothing dangles — it
+drops the pins and the store directory of terminal MRs (and, with `--older-than`,
+dormant ones) and lets git GC the objects.
 
 ## 16. Rejected alternatives
 
@@ -565,20 +549,22 @@ dropping the refs of terminal MRs and letting git GC the objects.
 ## 17. What v1 scoped out, and future work
 
 Delivered in v1: forge-first acquisition with object pinning, the
-snapshot/anchor/thread/draft model, the cache+draft store on the
-env→XDG_STATE→GIT_DIR ladder, config-driven feeds, the `--json` contract
-(`schema` 1), worktree/in-place materialization with stack navigation, `prune`,
-and the GitHub + GitLab review backends.
+snapshot/anchor/thread model with a hand-edited `local.json` draft, the
+three-file store on the env→XDG_STATE→GIT_DIR ladder, config-driven feeds, the
+`--json` read contract and the `local.json` write contract (`schema` 1),
+worktree/in-place materialization with stack navigation, `prune` (day count or
+ISO date), and the GitHub + GitLab review backends.
 
 Deliberately deferred, and honest about it:
 
 - **future** GitHub thread resolve/unresolve, once a minimal GraphQL path is
   worth adding (v1 is REST-only, so resolve works on GitLab only — §10).
-- **future** editing or deleting an *already-published* comment; v1's `--edit`
-  and `drop` act on pending draft actions only.
+- **future** editing or deleting an *already-published* comment; the draft is
+  only your *unsubmitted* intent (§5.4).
 - **future** per-comment historical version tracking so an outdated draft submits
   against the exact snapshot each comment was written on; v1 submits against the
-  currently-held snapshot and warns when a comment's stamped SHA differs (§6).
+  currently-held snapshot and warns when a comment was written against a different
+  one (§6).
 - **future** the incremental-sync cursor for feeds (v1 pulls the most-recently
   updated MRs up to `limit`; the `updated_after` plumbing exists but is unused —
   §9), and a feed cache-expiry policy.

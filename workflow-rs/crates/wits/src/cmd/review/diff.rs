@@ -27,13 +27,13 @@ struct DiffView {
 pub fn run(repo: &Repository, args: &DiffArgs) -> Result<()> {
     let ctx = local(repo)?;
     let id = super::parse_mr_handle(&args.mr)?;
-    let cache = ctx.store.load_cache(&id).with_context(|| {
+    let info = ctx.store.load_info(&id).with_context(|| {
         format!("MR {id} isn't in the store yet — run `wits review fetch {id}` first")
     })?;
 
     // `all` is the whole reviewed range; anything else is passed to git verbatim.
     let range = if args.range == "all" {
-        format!("{}..{}", cache.version.base_sha, cache.version.head_sha)
+        format!("{}..{}", info.version.base_sha, info.version.head_sha)
     } else {
         args.range.clone()
     };
@@ -72,8 +72,8 @@ pub fn run(repo: &Repository, args: &DiffArgs) -> Result<()> {
         schema: SCHEMA,
         mr: id,
         range,
-        base_sha: cache.version.base_sha,
-        head_sha: cache.version.head_sha,
+        base_sha: info.version.base_sha,
+        head_sha: info.version.head_sha,
         commits,
         files,
     };

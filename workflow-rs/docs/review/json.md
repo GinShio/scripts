@@ -1,228 +1,243 @@
 # `wits review` — the JSON contract
 
-This is the stable interface between `wits review` and an editor (or any other
-front-end). The rule is simple:
+This is the interface between `wits review` and an editor (or any front-end).
 
-- **Read through `--json`.** `show`, `diff`, and `draft` emit versioned JSON on
-  stdout. This is the *only* supported way to read review state — the on-disk
-  [store](store.md) is a private implementation detail and may change.
-- **Write through subcommands.** To add a comment, set a verdict, resolve a
-  thread, and so on, invoke the ordinary CLI verb; the body is passed on stdin.
-  A front-end never writes the store directly and never POSTs JSON in.
+- **Read** through `--json`: `show`, `diff`, and `draft` emit versioned JSON on
+  stdout.
+- **Write** by editing `local.json` — the draft file whose schema is defined
+  [below](#localjson---the-write-contract). A front-end writes this file; there
+  are no authoring commands.
 
-Every payload carries an integer `schema` (currently `1`); bump-aware clients
-should refuse a schema they don't understand.
+Every payload carries an integer `schema` (currently `1`). A reader that meets a
+schema it doesn't know should refuse rather than guess.
 
-## Conventions used throughout
+## Shared conventions
 
-- **Ids are origin-prefixed.** `remote:<forge-id>` for anything the forge owns;
-  `local:<n>` for a pending draft action. A front-end addresses both forms back
-  to the CLI verbatim (e.g. `--reply remote:9987`, `drop local:2`).
-- **`side`** is `"new"` (the post-image: added and context lines) or `"old"`
-  (the pre-image: a deleted line).
-- **`state`** on an MR is `"open"`, `"draft"`, `"merged"`, or `"closed"`.
-- **`verdict`** is `"approve"`, `"request-changes"`, or `"comment"`.
-- **A comment's `state`** is `"published"` (on the forge) or `"pending"` (local,
-  not yet submitted); its `origin` is `"remote"` or `"local"`.
-- Optional fields are omitted when absent, not emitted as `null`.
+| Concept | Values | Meaning |
+|---|---|---|
+| Id prefix | `remote:<forge-id>` / `local:<n>` | Whether the forge owns the object, or it's a pending draft item. |
+| `side` | `new` / `old` | Post-image (added/context) / pre-image (deleted line). |
+| `state` (MR) | `open` / `draft` / `merged` / `closed` | The MR's lifecycle, draft folded in. |
+| `verdict` | `approve` / `request-changes` / `comment` | The reviewer's disposition. |
+| `origin` (comment) | `remote` / `local` | On the forge / pending in your draft. |
+| `state` (comment) | `published` / `pending` | On the forge / not yet submitted. |
+
+Optional fields are omitted when absent, never emitted as `null`.
+
+---
 
 ## `show <mr> --json` — one MR's review state
 
-The detail view an editor renders. It folds the pending draft into the remote
-threads, so what you get is one merged picture.
+The detail view, with the pending draft folded into the remote discussion.
 
 ```json
 {
   "schema": 1,
-  "mr": {
-    "id": "123",
-    "display": "#123",
-    "state": "open",
-    "draft": false,
-    "title": "Fix the lock ordering",
-    "author": "alice",
-    "base": "main",
-    "source": "fix-lock",
-    "head_sha": "9f8e7d6c…",
-    "updated_at": "2026-07-01T12:00:00Z",
-    "labels": ["bug"],
-    "web_url": "https://github.com/o/r/pull/123"
-  },
-  "snapshot": { "base_sha": "aaaa…", "head_sha": "9f8e7d6c…" },
-  "neighbors": {
-    "position": 1,
-    "prev_mr": "122",
-    "next_mr": "124",
-    "nodes": ["121", "122", "123", "124"]
-  },
-  "commits": [ { "sha": "9f8e7d6c…", "subject": "Fix the lock ordering" } ],
+  "mr": { "...": "MrInfo, see below" },
+  "snapshot": { "base_sha": "aaaa…", "head_sha": "9f8e…" },
+  "neighbors": { "position": 1, "prev_mr": "122", "next_mr": "124",
+                 "nodes": ["121","122","123","124"] },
+  "commits": [ { "sha": "9f8e…", "subject": "Fix the lock ordering" } ],
   "files": [ { "path": "src/x.c", "old_path": "src/old.c", "status": "R" } ],
-  "threads": [
-    {
-      "id": "remote:9987",
-      "origin": "remote",
-      "resolved": false,
-      "outdated": true,
-      "placement": {
-        "kind": "line",
-        "path": "src/x.c",
-        "side": "new",
-        "line": 42,
-        "commit": "1111…"
-      },
-      "comments": [
-        {
-          "id": "remote:5",
-          "author": "bob",
-          "origin": "remote",
-          "body": "This lock is taken twice.",
-          "created_at": "2026-07-01T12:30:00Z",
-          "state": "published"
-        }
-      ]
-    },
-    {
-      "id": "local:1",
-      "origin": "local",
-      "resolved": false,
-      "outdated": false,
-      "placement": { "kind": "line", "path": "src/x.c", "side": "new", "line": 50, "commit": "9f8e7d6c…" },
-      "comments": [
-        { "id": "local:1", "author": "@me", "origin": "local", "body": "Agreed.", "state": "pending" }
-      ]
-    }
-  ],
-  "draft": { "verdict": "request-changes", "summary": "A few blockers.", "pending": 2 }
+  "threads": [ { "...": "Thread, see below" } ],
+  "draft": { "verdict": "request-changes", "summary": "…", "pending": 2 }
 }
 ```
 
-### Fields
+### Top-level fields
 
-| Field | Meaning |
-|---|---|
-| `mr` | MR metadata (see the table below). |
-| `snapshot.base_sha` / `head_sha` | The two SHAs to diff. Render your diff against these. |
-| `neighbors` | The MR's place in its stack. `nodes` is the chain bottom→top; `position` is this MR's index; `prev_mr`/`next_mr` are the down/up neighbours (omitted at the ends). |
-| `commits` | Commits in `base..head`, oldest first — `{ sha, subject }`. |
-| `files` | Files the MR touched — `{ path, old_path?, status }`; `status` is git's letter (`A`/`M`/`D`/`R`/`C`), `old_path` present on a rename/copy. |
-| `threads` | Every discussion (remote + pending), merged. See below. |
-| `draft` | The pending review: `verdict?`, `summary?`, and `pending` (a count of pending actions plus a verdict/summary if set). |
+| Field | Type | Meaning |
+|---|---|---|
+| `schema` | int | Payload version. |
+| `mr` | object | MR metadata (table below). |
+| `snapshot.base_sha` | string | The base SHA of the reviewed diff. |
+| `snapshot.head_sha` | string | The head SHA under review. **Render your diff between these two.** |
+| `neighbors` | object | This MR's place in its stack (table below). |
+| `commits` | array | Commits in `base..head`, oldest first: `{ sha, subject }`. |
+| `files` | array | Files the MR touched: `{ path, old_path?, status }`. `status` is git's letter (`A`/`M`/`D`/`R`/`C`); `old_path` present on a rename/copy. |
+| `threads` | array | Every discussion, remote + pending, merged (table below). |
+| `draft` | object | The pending review: `verdict?`, `summary?`, and `pending` — a count of pending actions (plus one if a verdict/summary is set). |
 
-`mr` object: `id`, `display`, `state`, `draft` (bool), `title`, `author`, `base`
-(target branch), `source` (source branch), `head_sha?`, `updated_at`, `labels`,
-`web_url`.
+### `mr` object
 
-### Threads
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | The MR number (the address you pass to commands). |
+| `display` | string | Human form (`#123` / `!123`). |
+| `state` | string | `open`/`draft`/`merged`/`closed`. |
+| `draft` | bool | Whether the MR is a draft/WIP. |
+| `title`, `author` | string | As on the forge. |
+| `base` | string | Target branch (what it merges into). |
+| `source` | string | Source branch (used to link a stack). |
+| `head_sha` | string? | Current head; omitted if unknown. |
+| `updated_at` | string | ISO-8601 last-update time. |
+| `labels` | array | Label names. |
+| `web_url` | string | The MR's forge URL. |
 
-A thread is `{ id, origin, resolved, outdated, placement, comments }`.
+### `neighbors` object
 
-- A **remote** thread's pending replies appear appended to its `comments` with
-  `origin: "local"`, `state: "pending"`. A pending resolve is reflected in
-  `resolved`.
-- A **local** thread (a new pending comment) has a `local:` id and a single
-  pending comment.
+| Field | Type | Meaning |
+|---|---|---|
+| `nodes` | array | The stack's MR ids, bottom→top. |
+| `position` | int | This MR's index in `nodes`. |
+| `prev_mr` | string? | The MR one step down (omitted at the bottom). |
+| `next_mr` | string? | The MR one step up (omitted at the top). |
+
+### `Thread` object
+
+| Field | Type | Meaning |
+|---|---|---|
+| `id` | string | `remote:<id>` for a forge thread, `local:<n>` for a pending one. |
+| `origin` | string | `remote` / `local`. |
+| `resolved` | bool | Resolved on the forge (reflects a pending resolve too). |
+| `outdated` | bool | The anchored line has left the current diff. |
+| `placement` | object | Where the thread sits (table below). |
+| `comments` | array | The thread's comments; a pending reply is appended with `origin: local`, `state: pending`. |
 
 `placement` is one of:
 
-| `kind` | Fields |
-|---|---|
-| `"line"` | `path`, `side`, `line`, plus optional `old_path`, `start_line` (multi-line start), `commit` (the reviewed SHA). |
-| `"file"` | `path`, optional `commit`. A whole-file comment, no line. |
-| `"mr"` | none. An MR-level conversation comment. |
+| `kind` | Fields | Meaning |
+|---|---|---|
+| `line` | `path`, `side`, `line`, `old_path?`, `start_line?`, `commit?` | A code line. `start_line` marks a multi-line span; `commit` is the reviewed SHA. |
+| `file` | `path`, `commit?` | A whole changed file, no line. |
+| `mr` | — | The MR conversation, no code anchor. |
+
+`Comment` object: `id`, `author`, `origin`, `body`, `created_at?`, `state`.
 
 ### Filters
 
-`--outdated`, `--resolved`, `--unread`, and `--file <path>` narrow `threads`
-(AND-combined). `--unread` keeps threads whose last comment is remote (someone
-else spoke last).
+`--outdated`, `--resolved`, `--unread`, `--file <path>` narrow `threads`
+(AND-combined). `--unread` keeps threads whose last comment is `remote`.
+
+---
 
 ## `show --json` — the inbox
 
-With no MR, `show` lists every fetched MR. Each item is the `mr` object flattened
-at the top level, plus a `review` block:
+With no MR, an array of MRs. Each item is the `mr` object flattened at the top
+level, plus a `review` block.
 
 ```json
 {
   "schema": 1,
   "items": [
-    {
-      "id": "123", "display": "#123", "state": "open", "draft": false,
+    { "id": "123", "display": "#123", "state": "open", "draft": false,
       "title": "Fix the lock ordering", "author": "alice",
       "base": "main", "source": "fix-lock", "head_sha": "9f8e…",
       "updated_at": "2026-07-01T12:00:00Z", "labels": ["bug"],
-      "web_url": "https://github.com/o/r/pull/123",
-      "review": { "pending": 2, "outdated": true, "reviewed_sha": "1111…" }
-    }
+      "web_url": "https://…/123",
+      "review": { "pending": 2 } }
   ]
 }
 ```
 
-`review.pending` is the number of unsubmitted actions (+verdict/summary);
-`review.reviewed_sha` is the snapshot your pending comments were written against;
-`review.outdated` is true when that differs from the MR's current head.
+| Field | Type | Meaning |
+|---|---|---|
+| (mr fields) | — | Same as the `mr` object above, flattened. |
+| `review.pending` | int | Count of unsubmitted actions in this MR's draft (plus one for a set verdict/summary). |
 
 Items are sorted by `updated_at`, newest first.
+
+---
 
 ## `diff <mr> --json` — diff coordinates
 
 ```json
-{
-  "schema": 1,
-  "mr": "123",
-  "range": "aaaa…..9f8e…",
-  "base_sha": "aaaa…",
-  "head_sha": "9f8e…",
+{ "schema": 1, "mr": "123", "range": "aaaa…..9f8e…",
+  "base_sha": "aaaa…", "head_sha": "9f8e…",
   "commits": [ { "sha": "…", "subject": "…" } ],
-  "files": [ { "path": "src/x.c", "status": "M" } ]
-}
+  "files": [ { "path": "src/x.c", "status": "M" } ] }
 ```
 
-The tool does not render diffs — this gives the coordinates (SHAs, commits,
-touched files) so the editor renders its own diff against `base_sha`/`head_sha`
-and knows where a comment may anchor. `--range` changes what `range`/`commits`/
-`files` describe.
+| Field | Type | Meaning |
+|---|---|---|
+| `mr` | string | The MR number. |
+| `range` | string | The resolved range (`all` expands to `base..head`). |
+| `base_sha`, `head_sha` | string | The two SHAs to diff against. |
+| `commits` | array | Commits in the range: `{ sha, subject }`. |
+| `files` | array | Files touched in the range: `{ path, old_path?, status }`. |
+
+The tool renders no diff — this gives the coordinates so the editor renders its
+own against `base_sha`/`head_sha`.
+
+---
 
 ## `draft <mr> --json` — the pending draft
 
-The raw pending review for one MR — useful to a front-end that wants to show or
-diff what will be submitted.
+`draft --json` prints the MR's `local.json` verbatim (see the write contract).
+
+---
+
+## `local.json` — the write contract
+
+This is the file a front-end (or a human) edits to author a review. It is the
+one place `wits review` reads authored intent from, so its shape is a public,
+versioned contract.
 
 ```json
 {
   "schema": 1,
   "verdict": "request-changes",
-  "summary": "A few blockers.",
+  "summary": "A few blockers below.",
   "actions": [
-    { "action": "comment", "id": "local:1",
-      "placement": { "kind": "line", "path": "src/x.c", "side": "new", "line": 50, "commit": "9f8e…" },
-      "body": "Agreed." },
-    { "action": "reply", "id": "local:2", "thread": "9987", "body": "Done." },
+    { "action": "comment", "file": "src/x.c", "line": 42, "body": "Off-by-one." },
+    { "action": "comment", "file": "src/x.c", "line": 42, "start_line": 40, "side": "old", "body": "…" },
+    { "action": "comment", "file": "src/x.c", "body": "File-level note." },
+    { "action": "comment", "body": "MR-level conversation note." },
+    { "action": "reply", "thread": "9987", "body": "Done." },
     { "action": "resolve", "thread": "9987", "resolved": true }
-  ],
-  "seq": 2
+  ]
 }
 ```
 
-`actions` is a tagged union on `action`: `"comment"` (a new thread — its
-`placement` is the same shape as above), `"reply"` (to a remote `thread`, given
-here without the `remote:` prefix), and `"resolve"` (`resolved` bool). `seq` is
-the internal local-id counter.
+### Top level
 
-## The write path (for reference)
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `schema` | int | yes | Contract version (`1`). |
+| `verdict` | string | no | `approve` / `request-changes` / `comment`. Omit for comments-only. |
+| `summary` | string | no | The review's overall body. |
+| `actions` | array | no | The ordered list of things to post. |
 
-A front-end mutates the draft by invoking the CLI, with the body on stdin:
+### `actions[]` — tagged on `action`
 
-| Intent | Command |
+**`comment`** — a new thread. Placement is inferred from which fields are present:
+
+| Fields present | Placement |
 |---|---|
-| New line comment | `wits review comment <mr> --line PATH:LINE[:side] [--start-line N]` |
-| New file comment | `wits review comment <mr> --file PATH` |
-| New conversation comment | `wits review comment <mr> --mr-level` |
-| Reply | `wits review comment <mr> --reply <thread-id>` |
-| Edit a pending body | `wits review comment <mr> --edit <local-id>` |
-| Drop a pending action | `wits review drop <mr> <local-id>` |
-| Set a verdict | `wits review verdict <mr> {approve\|request-changes\|comment}` |
-| Resolve / unresolve | `wits review resolve\|unresolve <mr> <thread-id>` |
+| `file` + `line` | a line comment |
+| `file` only | a file-level comment |
+| neither | an MR-level conversation comment |
 
-Thread ids accept the `remote:` prefix from `show` output or the bare forge id.
-After a mutation, re-run `show`/`draft` to get the updated state — ids are stable
-within a draft (a dropped id is never reused) until `submit` clears it.
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `file` | string | no | Path of a changed file. |
+| `line` | int | no | Line number on `side`. |
+| `side` | string | no | `new` (default) or `old`. |
+| `start_line` | int | no | First line of a multi-line span (with `line` as the end). |
+| `body` | string | yes | The comment text. |
+
+**`reply`** — add to an existing thread.
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `thread` | string | yes | The thread id (bare forge id, or `remote:` form). |
+| `body` | string | yes | The reply text. |
+
+**`resolve`** — set a thread's resolved state (GitLab in v1).
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `thread` | string | yes | The thread id. |
+| `resolved` | bool | yes | `true` to resolve, `false` to unresolve. |
+
+### How `submit` treats it
+
+- **Merge + de-duplicate:** exact-duplicate actions are dropped; repeated
+  `resolve` of one thread collapses to the last stated value.
+- **Batching:** `verdict` + `summary` + all line/file `comment`s post as one
+  review; MR-level comments, replies, and resolves are separate calls.
+- **Anchoring:** line/file comments submit against the reviewed snapshot's head
+  (from `info.json`). Editing after a re-fetch that moved the head triggers a
+  warning; submit before refreshing for exact anchoring.
+- **After submit:** landed actions are removed and `local.json` is deleted once
+  empty; failed actions stay for a retry.

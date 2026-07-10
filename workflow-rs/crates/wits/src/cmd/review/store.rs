@@ -1,14 +1,11 @@
-//! The local store: where review state lives on disk, and how it is addressed.
+//! The local store: three JSON files per MR, and how they are addressed.
 //!
-//! Two documents per MR, with opposite lifetimes (see `model`): a refetchable
-//! `remote/mr-<id>.json` cache and a precious `draft/mr-<id>.json`. The root is
-//! resolved on the `WITS_REVIEW_DIR` → `$XDG_STATE_HOME/wits/review` →
-//! `$GIT_DIR/wits/review` ladder, then keyed by the repo's `host/owner/repo` so
-//! one central root can hold many repos and a store migrates cleanly between
-//! roots.
-//!
-//! The store's on-disk shape is private: editors read through `--json`, never
-//! these files, so this layout is free to change.
+//! Each MR gets a directory holding `info.json` (metadata + diff state),
+//! `comments.json` (the forge's discussion, a cache), and `local.json` (your
+//! unsubmitted actions — the one file you edit). The root is resolved on the
+//! `WITS_REVIEW_DIR` → `$XDG_STATE_HOME/wits/review` → `$GIT_DIR/wits/review`
+//! ladder, then keyed by the repo's `host/owner/repo` so one central root can
+//! hold many repos and a store migrates cleanly between roots.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,14 +15,13 @@ use anyhow::{Context, Result};
 use wits_util::git::Repository;
 use wits_util::remote::RemoteInfo;
 
-use super::model::{Draft, RemoteCache};
+use super::model::{Comments, Info, Local};
 
 /// The per-repo root under which one repo's review state lives.
 pub struct Store {
     root: PathBuf,
 }
 
-/// Resolve the base directory that holds every repo's review state.
 fn base_dir(repo: &Repository) -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("WITS_REVIEW_DIR") {
         return Ok(PathBuf::from(dir));
@@ -40,8 +36,6 @@ fn base_dir(repo: &Repository) -> Result<PathBuf> {
 }
 
 impl Store {
-    /// Open (without creating) the store for one repo, keyed by its target
-    /// remote's identity.
     pub fn open(repo: &Repository, target: &RemoteInfo) -> Result<Store> {
         let root = base_dir(repo)?
             .join(&target.host)
@@ -50,64 +44,89 @@ impl Store {
         Ok(Store { root })
     }
 
-    fn remote_path(&self, id: &str) -> PathBuf {
-        self.root.join("remote").join(format!("mr-{id}.json"))
+    fn mr_dir(&self, id: &str) -> PathBuf {
+        self.root.join(id)
     }
 
-    fn draft_path(&self, id: &str) -> PathBuf {
-        self.root.join("draft").join(format!("mr-{id}.json"))
+    // -- info (metadata + diff state) ----------------------------------------
+
+    pub fn load_info(&self, id: &str) -> Option<Info> {
+        read_json(&self.mr_dir(id).join("info.json"))
     }
 
-    /// Read the cached forge state for one MR, if present.
-    pub fn load_cache(&self, id: &str) -> Option<RemoteCache> {
-        read_json(&self.remote_path(id))
+    pub fn save_info(&self, id: &str, info: &Info) -> Result<()> {
+        write_json(&self.mr_dir(id).join("info.json"), info)
     }
 
-    /// Overwrite the cached forge state for one MR (it is disposable).
-    pub fn save_cache(&self, id: &str, cache: &RemoteCache) -> Result<()> {
-        write_json(&self.remote_path(id), cache)
+    // -- comments (remote discussion cache) ----------------------------------
+
+    pub fn load_comments(&self, id: &str) -> Comments {
+        read_json(&self.mr_dir(id).join("comments.json")).unwrap_or_default()
     }
 
-    /// The draft for one MR, or a fresh empty one when none exists.
-    pub fn load_draft(&self, id: &str) -> Draft {
-        read_json(&self.draft_path(id)).unwrap_or_default()
+    pub fn save_comments(&self, id: &str, comments: &Comments) -> Result<()> {
+        write_json(&self.mr_dir(id).join("comments.json"), comments)
     }
 
-    /// Persist a draft, or delete its file once it has emptied — an empty draft
-    /// is indistinguishable from no draft, and keeping a stale empty file around
-    /// would only be noise.
-    pub fn save_draft(&self, id: &str, draft: &Draft) -> Result<()> {
-        if draft.is_empty() {
-            return self.delete_draft(id);
+    // -- local (the editable draft) ------------------------------------------
+
+    pub fn load_local(&self, id: &str) -> Local {
+        read_json(&self.mr_dir(id).join("local.json")).unwrap_or_default()
+    }
+
+    /// Persist the draft, or delete the file once it has emptied — an empty
+    /// draft and no draft are the same thing.
+    pub fn save_local(&self, id: &str, local: &Local) -> Result<()> {
+        let path = self.mr_dir(id).join("local.json");
+        if local.is_empty() {
+            return remove_if_present(&path);
         }
-        write_json(&self.draft_path(id), draft)
+        write_json(&path, local)
     }
 
-    /// Remove a draft file (no-op when absent).
-    pub fn delete_draft(&self, id: &str) -> Result<()> {
-        let path = self.draft_path(id);
-        if path.exists() {
-            fs::remove_file(&path).with_context(|| format!("removing draft {}", path.display()))?;
+    // -- enumeration & removal -----------------------------------------------
+
+    /// Every MR's `info`, for the inbox and stack reconstruction.
+    pub fn list_infos(&self) -> Vec<Info> {
+        self.mr_ids()
+            .iter()
+            .filter_map(|id| self.load_info(id))
+            .collect()
+    }
+
+    /// The ids of MRs that have a non-empty local draft.
+    pub fn local_ids(&self) -> Vec<String> {
+        self.mr_ids()
+            .into_iter()
+            .filter(|id| self.mr_dir(id).join("local.json").exists())
+            .collect()
+    }
+
+    /// Drop an MR's whole directory — for `prune`.
+    pub fn delete_mr(&self, id: &str) -> Result<()> {
+        let dir = self.mr_dir(id);
+        if dir.exists() {
+            fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
         }
         Ok(())
     }
 
-    /// Remove an MR's cache file (no-op when absent) — for `prune`.
-    pub fn delete_cache(&self, id: &str) -> Result<()> {
-        let path = self.remote_path(id);
-        if path.exists() {
-            fs::remove_file(&path).with_context(|| format!("removing cache {}", path.display()))?;
-        }
-        Ok(())
+    /// The immediate subdirectory names of the repo root — one per MR.
+    fn mr_ids(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(&self.root) else {
+            return Vec::new();
+        };
+        let mut ids: Vec<String> = entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .collect();
+        ids.sort();
+        ids
     }
 
-    /// Every cached MR, for the inbox and for stack reconstruction.
-    pub fn list_cached(&self) -> Vec<RemoteCache> {
-        list_json(&self.root.join("remote"))
-    }
+    // -- current-checkout pointer --------------------------------------------
 
-    /// The MR most recently `checkout`-ed, the origin `checkout --next/--prev`
-    /// navigate from. Stored as one small file per repo.
     pub fn current(&self) -> Option<String> {
         fs::read_to_string(self.root.join("current"))
             .ok()
@@ -118,45 +137,21 @@ impl Store {
     pub fn set_current(&self, id: &str) -> Result<()> {
         fs::create_dir_all(&self.root)
             .with_context(|| format!("creating {}", self.root.display()))?;
-        fs::write(self.root.join("current"), id)
-            .with_context(|| "recording current review".to_string())?;
+        fs::write(self.root.join("current"), id).context("recording current review")?;
         Ok(())
-    }
-
-    /// The ids of every MR with a pending draft.
-    pub fn draft_ids(&self) -> Vec<String> {
-        let dir = self.root.join("draft");
-        let Ok(entries) = fs::read_dir(&dir) else {
-            return Vec::new();
-        };
-        entries
-            .flatten()
-            .filter_map(|e| {
-                let name = e.file_name();
-                let name = name.to_str()?;
-                name.strip_prefix("mr-")?
-                    .strip_suffix(".json")
-                    .map(str::to_owned)
-            })
-            .collect()
     }
 }
 
-/// The git-ref namespace that pins a reviewed snapshot's objects alive. Names
-/// carry only what disambiguates within a clone: the MR number and the SHA.
+/// The git-ref namespace that pins a reviewed snapshot's objects alive.
 pub mod refs {
-    /// The pin for one MR at one snapshot SHA.
     pub fn pin(mr: &str, sha: &str) -> String {
         format!("refs/wits/review/{mr}/{sha}")
     }
 
-    /// The pin for that snapshot's base object, when it isn't an ancestor of the
-    /// head (so it wouldn't otherwise stay reachable).
     pub fn base_pin(mr: &str, sha: &str) -> String {
         format!("refs/wits/review/{mr}/{sha}-base")
     }
 
-    /// The prefix under which all of one MR's pins live.
     pub fn mr_prefix(mr: &str) -> String {
         format!("refs/wits/review/{mr}/")
     }
@@ -176,24 +171,17 @@ fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
     Ok(())
 }
 
-fn list_json<T: serde::de::DeserializeOwned>(dir: &Path) -> Vec<T> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-        .collect();
-    paths.sort();
-    paths.iter().filter_map(|p| read_json(p)).collect()
+fn remove_if_present(path: &Path) -> Result<()> {
+    if path.exists() {
+        fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::review::model::{Action, Draft, Placement};
-    use wits_util::forge::Side;
+    use crate::cmd::review::model::{Action, Local, SCHEMA};
 
     fn store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
@@ -202,46 +190,36 @@ mod tests {
     }
 
     #[test]
-    fn cache_round_trips() {
+    fn info_round_trips_and_lists() {
         let (_g, store) = store();
-        let cache = crate::cmd::review::stub_cache("7", "main", "feat");
-        assert!(store.load_cache("7").is_none());
-        store.save_cache("7", &cache).unwrap();
-        assert_eq!(store.load_cache("7").unwrap().mr.id, "7");
-        assert_eq!(store.list_cached().len(), 1);
+        let info = crate::cmd::review::stub_info("7", "main", "feat");
+        assert!(store.load_info("7").is_none());
+        store.save_info("7", &info).unwrap();
+        assert_eq!(store.load_info("7").unwrap().mr.id, "7");
+        assert_eq!(store.list_infos().len(), 1);
 
-        store.delete_cache("7").unwrap();
-        assert!(store.load_cache("7").is_none());
+        store.delete_mr("7").unwrap();
+        assert!(store.load_info("7").is_none());
+        assert!(store.list_infos().is_empty());
     }
 
     #[test]
-    fn draft_persists_and_vanishes_when_empty() {
+    fn local_persists_and_vanishes_when_empty() {
         let (_g, store) = store();
-        let mut draft = Draft::default();
-        let id = draft.next_id();
-        draft.actions.push(Action::Comment {
-            id: id.clone(),
-            placement: Placement::Line {
-                path: "a.c".into(),
-                old_path: None,
-                side: Side::New,
-                line: 3,
-                start_line: None,
-                commit: Some("deadbeef".into()),
-            },
+        let mut local = Local::default();
+        local.actions.push(Action::Comment {
+            file: Some("a.c".into()),
+            line: Some(3),
+            side: None,
+            start_line: None,
             body: "hi".into(),
         });
-        store.save_draft("7", &draft).unwrap();
+        store.save_local("7", &local).unwrap();
+        assert_eq!(store.load_local("7").actions.len(), 1);
+        assert_eq!(store.local_ids(), ["7"]);
 
-        let loaded = store.load_draft("7");
-        assert_eq!(loaded.actions.len(), 1);
-        assert_eq!(store.draft_ids(), ["7"]);
-
-        // Emptying the draft removes its file.
-        let mut empty = loaded;
-        empty.remove(&id);
-        store.save_draft("7", &empty).unwrap();
-        assert!(store.draft_ids().is_empty());
+        store.save_local("7", &Local { schema: SCHEMA, ..Default::default() }).unwrap();
+        assert!(store.local_ids().is_empty());
     }
 
     #[test]

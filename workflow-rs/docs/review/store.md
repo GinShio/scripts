@@ -1,100 +1,68 @@
 # `wits review` — the store and how to move it
 
-`wits review` keeps its state in plain JSON files and a small set of git refs.
-This document is the reference for that layout: what lives where, what each file
-holds, and how to carry an in-progress review to another machine.
-
-> The store's shape is a private implementation detail as far as *reading* review
-> state goes — editors and scripts read through [`--json`](json.md), never these
-> files. This document exists for the other reasons you'd want to know the
-> layout: debugging, backup, and migration.
+`wits review` keeps its state in JSON files and a few git refs. This is the
+reference for that layout: what lives where, and how to carry an in-progress
+review to another machine.
 
 ## Where the store lives
 
 The base directory is resolved on a three-rung ladder, first hit wins:
 
-1. `$WITS_REVIEW_DIR` — an explicit override.
-2. `$XDG_STATE_HOME/wits/review` — when `XDG_STATE_HOME` is set.
-3. `$GIT_DIR/wits/review` — the default, per-clone, alongside `.git/machete`.
+| Rung | Path |
+|---|---|
+| 1 | `$WITS_REVIEW_DIR` — an explicit override. |
+| 2 | `$XDG_STATE_HOME/wits/review` — when `XDG_STATE_HOME` is set. |
+| 3 | `$GIT_DIR/wits/review` — the default, per-clone, beside `.git/machete`. |
 
-State (this store) is kept separate from config (the feed
-[`review.toml`](../review.md#feeds), which is `$XDG_CONFIG_HOME`-based) — the
-correct split, and it keeps a backup of one from dragging in the other.
-
-Under the base, each repo gets its own subtree, keyed by the target remote's
-identity so one central root (via `WITS_REVIEW_DIR`/`XDG_STATE_HOME`) can hold
-many repos without collision:
+State (this store, `$XDG_STATE_HOME`) is kept separate from config (the feed
+`review.toml`, `$XDG_CONFIG_HOME`). Under the base, each repo has its own subtree
+keyed by the target remote's identity, and each MR has its own directory:
 
 ```
 <base>/<host>/<owner>/<repo>/
-├── remote/
-│   └── mr-<id>.json      # the forge's state, as last fetched (a cache)
-├── draft/
-│   └── mr-<id>.json      # your unsubmitted review (the precious part)
-└── current               # the MR the last `checkout` materialized
+├── <id>/
+│   ├── info.json       # the MR's metadata + diff state
+│   ├── comments.json   # the forge's discussion (a cache)
+│   └── local.json      # your unsubmitted review (only present while drafting)
+├── <id>/ …
+└── current             # the MR the last `checkout` materialized
 ```
 
-For a GitLab nested group the `<owner>` segment itself contains slashes and
-becomes nested directories — that is fine.
+For a GitLab nested group the `<owner>` segment contains slashes and becomes
+nested directories — that is fine.
 
-## `remote/mr-<id>.json` — the cache
+## The three files
 
-The forge's state for one MR as we last saw it: refetchable at will, safe to
-delete or overwrite whole. This is where everyone else's comments live.
+### `info.json` — metadata + diff state
 
-```json
-{
-  "schema": 1,
-  "mr": { "id": "123", "display": "#123", "state": "open", "draft": false,
-          "title": "…", "author": "alice", "base": "main", "source": "fix-lock",
-          "head_sha": "9f8e…", "updated_at": "2026-07-01T12:00:00Z",
-          "labels": [], "web_url": "https://…/123" },
-  "version": { "base_sha": "aaaa…", "start_sha": "aaaa…", "head_sha": "9f8e…" },
-  "fetched_at": "1719830400",
-  "commits": [ { "sha": "…", "subject": "…" } ],
-  "files":   [ { "path": "src/x.c", "old_path": null, "status": "M" } ],
-  "threads": [ /* remote threads — same shape as show's JSON */ ]
-}
-```
+The MR's necessary information: the inbox row and the header/coordinates of the
+detail view. Refetchable; safe to hand-tweak.
 
-- `version` holds the three diff SHAs a comment anchors against (`start`/`base`
-  coincide on GitHub; GitLab uses all three).
-- `fetched_at` is a Unix timestamp, used by `prune --older-than`.
-- `commits`/`files` are derived **locally** from the fetched objects, not taken
-  from the forge.
-- A **feed** fetch writes a light cache (metadata only — empty `threads`,
-  `commits`, `files`, and an empty `version`); a full `fetch <mr>` fills the
-  rest. A light refresh never discards an existing full cache's threads.
+| Field | Meaning |
+|---|---|
+| `schema` | Store version. |
+| `mr` | The MR object (id, display, state, draft, title, author, base, source, head_sha, updated_at, labels, web_url — see [json.md](json.md#mr-object)). |
+| `version` | The diff SHAs a comment anchors against: `base_sha`, `start_sha`, `head_sha` (start/base coincide on GitHub; GitLab uses all three). |
+| `fetched_at` | Unix timestamp of the last fetch (used by `prune --older-than`). |
+| `commits` | Commits in `base..head`, derived **locally** from the fetched objects. |
+| `files` | Files the MR touched, derived locally. |
 
-## `draft/mr-<id>.json` — the draft
+A **feed** fetch fills only `mr`, leaving `version`/`commits`/`files` empty; a
+full `fetch <mr>` fills them.
 
-Your unsubmitted review for one MR: a verdict, an optional summary, and an
-ordered list of pending actions. This is the only state that would be *lost* —
-the cache can always be refetched — so it is the thing migration moves.
+### `comments.json` — the forge's discussion (a cache)
 
-```json
-{
-  "schema": 1,
-  "verdict": "request-changes",
-  "summary": "A few blockers.",
-  "actions": [
-    { "action": "comment", "id": "local:1",
-      "placement": { "kind": "line", "path": "src/x.c", "side": "new", "line": 50, "commit": "9f8e…" },
-      "body": "Agreed." },
-    { "action": "reply",   "id": "local:2", "thread": "9987", "body": "Done." },
-    { "action": "resolve", "thread": "9987", "resolved": true }
-  ],
-  "seq": 2
-}
-```
+`{ "schema": 1, "threads": [ … ] }`, where each thread has the shape in
+[json.md](json.md#thread-object). This is a pure cache: overwrite or delete it
+freely and refetch. Everyone else's comments live here.
 
-`seq` is the monotonic local-id counter (`local:<seq>`), never reused after a
-drop. The file is **deleted** the moment the draft empties — an empty draft and
-no draft are the same thing. `submit` clears the actions it lands; a fully
-flushed draft's file disappears and the MR is re-fetched.
+### `local.json` — your unsubmitted review (the file you edit)
 
-The field shapes match the [`draft --json`](json.md#draft-mr---json---the-pending-draft)
-and [thread](json.md#threads) documentation.
+The one file you write, defined in
+[json.md](json.md#localjson---the-write-contract): an optional `verdict` and
+`summary`, and an append-style `actions` list. It exists only while you have a
+draft — `submit` deletes it once flushed, and an empty draft is the same as no
+file. This is the state that would be *lost*, so it is what migration moves.
 
 ## Git refs — pinning reviewed objects
 
@@ -102,46 +70,42 @@ Fetching an MR pulls its objects and holds them alive with the tool's own refs,
 so a later force-push on the author's side can't garbage-collect the snapshot you
 reviewed:
 
-```
-refs/wits/review/<mr>/<snapshot-sha>        → the reviewed head commit
-refs/wits/review/<mr>/<snapshot-sha>-base   → its base, when not an ancestor of head
-```
+| Ref | Points at |
+|---|---|
+| `refs/wits/review/<mr>/<snapshot-sha>` | the reviewed head commit |
+| `refs/wits/review/<mr>/<snapshot-sha>-base` | its base, when not an ancestor of head |
 
 The names carry only what disambiguates within one clone — the MR number and the
-SHA. These refs *are* the record of which snapshots you have pinned; enumerate
-them with `git for-each-ref refs/wits/review/`. `prune` deletes them (letting git
-collect the objects) once an MR is terminal or dormant. They are created
-unconditionally and owe nothing to `git-branchless` or any other tool.
+SHA. Enumerate them with `git for-each-ref refs/wits/review/`; `prune` deletes
+them (letting git collect the objects) once an MR is terminal or dormant.
 
 ## Moving a review to another machine
 
 "Sharing" here means carrying *your own* in-progress review between *your own*
-machines — the forge is the collaboration layer, not this store.
-
-Because the cache is refetchable, only the **draft** needs to travel:
+machines — the forge is the collaboration layer, not this store. Because
+`info.json`/`comments.json` are refetchable, only `local.json` needs to travel:
 
 ```sh
-# on the first machine — copy the drafts for a repo
-src=$GIT_DIR/wits/review/github.com/me/proj/draft
-cp -r "$src" /media/key/proj-drafts
+# on the first machine — copy the drafts you care about
+base=$(git rev-parse --absolute-git-dir)/wits/review/github.com/me/proj
+cp "$base/123/local.json" /media/key/mr123-local.json
 
-# on the second machine — drop them in and refetch the context
-dst=$GIT_DIR/wits/review/github.com/me/proj
-mkdir -p "$dst" && cp -r /media/key/proj-drafts "$dst/draft"
-wits review fetch 123        # rebuild the cache and pin the objects
-wits review show 123         # your pending comments are back, merged in
+# on the second machine
+base=$(git rev-parse --absolute-git-dir)/wits/review/github.com/me/proj
+mkdir -p "$base/123" && cp /media/key/mr123-local.json "$base/123/local.json"
+wits review fetch 123        # rebuild info/comments and pin the objects
+wits review show 123         # your pending review is back, merged in
 ```
 
-The draft references the reviewed snapshot's SHA, so the second machine must be
-able to `fetch` the same MR (it can — the MR still exists on the forge). If you
-keep a single central store via `WITS_REVIEW_DIR` on shared/synced storage, both
-machines share the drafts automatically and only the pins (which are per-clone
-git refs) are rebuilt by `fetch`.
+`local.json` refers to threads and lines on the MR's current snapshot, so the
+second machine must be able to `fetch` the same MR — it can, the MR still exists
+on the forge. If you point `WITS_REVIEW_DIR` at synced storage, both machines
+share the drafts automatically and only the per-clone git refs are rebuilt by
+`fetch`.
 
 ## Schema versioning
 
 Every file and every `--json` payload carries an integer `schema` (currently
-`1`). When the shape changes incompatibly it is bumped; a reader that sees a
-schema it doesn't recognize should refuse rather than guess. Because the cache is
-disposable, a schema bump can be handled for the cache by simply refetching; only
-draft migrations (if ever needed) warrant more care.
+`1`); an incompatible shape change bumps it. Because `info.json`/`comments.json`
+are disposable, a bump can be handled for them by refetching; only `local.json`
+migrations (if ever needed) warrant more care.

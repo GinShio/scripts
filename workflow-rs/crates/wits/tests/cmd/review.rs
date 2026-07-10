@@ -1,19 +1,16 @@
 //! Black-box tests for `wits review`'s local pipeline.
 //!
 //! The network verbs (`fetch`, `submit`) talk to a live forge, which a unit test
-//! can't stand up; but everything *between* them is local and is where the
-//! elegance lives — the store, the draft, the merged view, the `--json`
-//! contract. So these drive the real binary against a throwaway git repo with a
-//! hand-seeded store (simulating a completed `fetch`) and pin the authoring
-//! loop: seed → show → comment → verdict → draft → show → drop, plus a
+//! can't stand up; but everything *between* them is local — the three-file
+//! store, the hand-edited `local.json` draft, the merged `--json` view. So these
+//! drive the real binary against a throwaway git repo with a hand-seeded store
+//! (simulating a completed `fetch`), author by writing `local.json` (the way an
+//! editor or a human does), and pin the read/preview path plus a
 //! `submit --dry-run` that plans without touching the network.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-/// A throwaway repo (with an `origin` remote so the forge identity resolves) and
-/// an isolated review store, reused across several commands.
 struct Fixture {
     _dir: tempfile::TempDir,
     repo: PathBuf,
@@ -48,90 +45,90 @@ impl Fixture {
         git(&["init", "-b", "main"]);
         git(&["remote", "add", "origin", "git@github.com:me/proj.git"]);
 
-        Fixture {
-            _dir: dir,
-            repo,
-            store,
-        }
+        Fixture { _dir: dir, repo, store }
     }
 
-    /// The store path for MR `id`'s cache under this fixture's identity.
-    fn cache_path(&self, id: &str) -> PathBuf {
-        self.store
-            .join("github.com/me/proj/remote")
-            .join(format!("mr-{id}.json"))
+    fn mr_dir(&self, id: &str) -> PathBuf {
+        self.store.join("github.com/me/proj").join(id)
     }
 
-    /// Seed a completed fetch: write a remote cache with one remote thread.
+    /// Seed a completed fetch: `info.json` (with one changed file and a reviewed
+    /// snapshot) and `comments.json` (one remote thread).
     fn seed(&self, id: &str, head_sha: &str) {
-        let template = r##"{
-          "schema": 1,
-          "mr": {
-            "id": "__ID__", "display": "#__ID__", "state": "open", "draft": false,
-            "title": "Add a thing", "author": "alice",
-            "base": "main", "source": "feature-__ID__", "head_sha": "__HEAD__",
-            "updated_at": "2026-07-01T00:00:00Z", "labels": [],
-            "web_url": "https://github.com/me/proj/pull/__ID__"
-          },
-          "version": { "base_sha": "base000", "start_sha": "base000", "head_sha": "__HEAD__" },
-          "fetched_at": "1700000000",
-          "commits": [{ "sha": "__HEAD__", "subject": "Add a thing" }],
-          "files": [{ "path": "src/x.c", "status": "M" }],
-          "threads": [{
-            "id": "remote:100", "origin": "remote", "resolved": false, "outdated": false,
-            "placement": { "kind": "line", "path": "src/x.c", "side": "new", "line": 5 },
-            "comments": [{
-              "id": "remote:100", "author": "bob", "origin": "remote",
-              "body": "nit here", "created_at": "2026-07-01T00:00:00Z", "state": "published"
-            }]
-          }]
-        }"##;
-        let cache = template.replace("__ID__", id).replace("__HEAD__", head_sha);
-        let path = self.cache_path(id);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, cache).unwrap();
+        let dir = self.mr_dir(id);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let info = INFO
+            .replace("__ID__", id)
+            .replace("__HEAD__", head_sha);
+        std::fs::write(dir.join("info.json"), info).unwrap();
+        std::fs::write(dir.join("comments.json"), COMMENTS).unwrap();
     }
 
-    fn run(&self, args: &[&str], stdin: &[u8]) -> Out {
+    /// Author by writing the draft file, exactly as an editor/human would.
+    fn write_local(&self, id: &str, json: &str) {
+        let dir = self.mr_dir(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("local.json"), json).unwrap();
+    }
+
+    fn local_exists(&self, id: &str) -> bool {
+        self.mr_dir(id).join("local.json").exists()
+    }
+
+    fn run(&self, args: &[&str]) -> Out {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_wits"));
         cmd.args(args)
             .current_dir(&self.repo)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .env("WITS_REVIEW_DIR", &self.store)
-            // A token so the forge resolves for a dry-run submit; no network is
-            // reached because the mutation is only previewed.
-            .env("GITHUB_TOKEN", "x")
-            .stdin(Stdio::piped())
+            .env("GITHUB_TOKEN", "x") // lets a dry-run submit resolve the forge
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = cmd.spawn().unwrap();
-        child.stdin.take().unwrap().write_all(stdin).unwrap();
-        let output = child.wait_with_output().unwrap();
+        let output = cmd.spawn().unwrap().wait_with_output().unwrap();
         Out {
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         }
     }
-
-    fn draft_exists(&self, id: &str) -> bool {
-        Path::new(&self.store)
-            .join("github.com/me/proj/draft")
-            .join(format!("mr-{id}.json"))
-            .exists()
-    }
 }
+
+const INFO: &str = r##"{
+  "schema": 1,
+  "mr": { "id": "__ID__", "display": "#__ID__", "state": "open", "draft": false,
+          "title": "Add a thing", "author": "alice", "base": "main",
+          "source": "feature-__ID__", "head_sha": "__HEAD__",
+          "updated_at": "2026-07-01T00:00:00Z", "labels": [],
+          "web_url": "https://github.com/me/proj/pull/__ID__" },
+  "version": { "base_sha": "base000", "start_sha": "base000", "head_sha": "__HEAD__" },
+  "fetched_at": "1700000000",
+  "commits": [ { "sha": "__HEAD__", "subject": "Add a thing" } ],
+  "files": [ { "path": "src/x.c", "status": "M" } ]
+}"##;
+
+const COMMENTS: &str = r##"{
+  "schema": 1,
+  "threads": [ {
+    "id": "remote:9987", "origin": "remote", "resolved": false, "outdated": true,
+    "placement": { "kind": "line", "path": "src/x.c", "side": "new", "line": 5 },
+    "comments": [ { "id": "remote:5", "author": "bob", "origin": "remote",
+                    "body": "nit here", "created_at": "2026-07-01T00:00:00Z",
+                    "state": "published" } ]
+  } ]
+}"##;
 
 #[test]
 fn show_reflects_the_seeded_remote_thread() {
     let fx = Fixture::new();
     fx.seed("1", "head111");
 
-    let out = fx.run(&["review", "show", "1", "--json"], b"");
+    let out = fx.run(&["review", "show", "1", "--json"]);
     assert!(out.success, "stderr: {}", out.stderr);
     assert!(out.stdout.contains("\"head_sha\": \"head111\""));
-    assert!(out.stdout.contains("\"remote:100\""));
+    assert!(out.stdout.contains("\"remote:9987\""));
     assert!(out.stdout.contains("nit here"));
 }
 
@@ -141,92 +138,64 @@ fn inbox_lists_fetched_mrs() {
     fx.seed("1", "head111");
     fx.seed("2", "head222");
 
-    let out = fx.run(&["review", "show", "--json"], b"");
+    let out = fx.run(&["review", "show", "--json"]);
     assert!(out.success, "stderr: {}", out.stderr);
     assert!(out.stdout.contains("\"id\": \"1\""));
     assert!(out.stdout.contains("\"id\": \"2\""));
 }
 
 #[test]
-fn authoring_loop_builds_and_edits_a_draft() {
+fn a_hand_written_draft_merges_into_the_view() {
     let fx = Fixture::new();
     fx.seed("1", "head111");
-
-    // A line comment (body on stdin) and a reply to the remote thread.
-    let c = fx.run(
-        &["review", "comment", "1", "--line", "src/x.c:10"],
-        b"looks off",
+    fx.write_local(
+        "1",
+        r#"{ "schema": 1, "verdict": "request-changes",
+             "actions": [
+               { "action": "comment", "file": "src/x.c", "line": 50, "body": "looks off" },
+               { "action": "reply", "thread": "9987", "body": "agreed" }
+             ] }"#,
     );
-    assert!(c.success, "stderr: {}", c.stderr);
-    let r = fx.run(
-        &["review", "comment", "1", "--reply", "remote:100"],
-        b"agreed",
-    );
-    assert!(r.success, "stderr: {}", r.stderr);
 
-    // A verdict.
-    let v = fx.run(&["review", "verdict", "1", "approve"], b"");
-    assert!(v.success, "stderr: {}", v.stderr);
-
-    // The draft records all three.
-    let d = fx.run(&["review", "draft", "1", "--json"], b"");
+    // `draft` echoes it back.
+    let d = fx.run(&["review", "draft", "1", "--json"]);
     assert!(d.success, "stderr: {}", d.stderr);
-    assert!(d.stdout.contains("\"approve\""));
-    assert!(d.stdout.contains("\"local:1\""));
-    assert!(d.stdout.contains("\"local:2\""));
+    assert!(d.stdout.contains("request-changes"));
     assert!(d.stdout.contains("looks off"));
 
-    // `show` folds the pending draft into the thread view.
-    let s = fx.run(&["review", "show", "1", "--json"], b"");
+    // `show` folds the draft into the thread view: a new local thread, and the
+    // reply attached to the remote thread.
+    let s = fx.run(&["review", "show", "1", "--json"]);
+    assert!(s.success, "stderr: {}", s.stderr);
+    assert!(s.stdout.contains("\"local:0\""), "new comment becomes a local thread");
+    assert!(s.stdout.contains("looks off"));
+    assert!(s.stdout.contains("agreed"), "reply attaches to the remote thread");
     assert!(s.stdout.contains("\"pending\""));
-    assert!(
-        s.stdout.contains("agreed"),
-        "reply should attach to remote thread"
-    );
-
-    // Drop the line comment; the reply and verdict remain.
-    let drop = fx.run(&["review", "drop", "1", "local:1"], b"");
-    assert!(drop.success, "stderr: {}", drop.stderr);
-    let d2 = fx.run(&["review", "draft", "1", "--json"], b"");
-    assert!(!d2.stdout.contains("looks off"));
-    assert!(d2.stdout.contains("\"local:2\""));
-}
-
-#[test]
-fn dropping_the_last_action_removes_the_draft_file() {
-    let fx = Fixture::new();
-    fx.seed("1", "head111");
-    fx.run(&["review", "comment", "1", "--mr-level"], b"just a note");
-    assert!(fx.draft_exists("1"));
-    fx.run(&["review", "drop", "1", "local:1"], b"");
-    // A verdict is still absent, so the draft is now empty and its file is gone.
-    assert!(!fx.draft_exists("1"), "empty draft file should be removed");
 }
 
 #[test]
 fn submit_dry_run_plans_without_touching_the_network() {
     let fx = Fixture::new();
     fx.seed("1", "head111");
-    fx.run(
-        &["review", "comment", "1", "--line", "src/x.c:10"],
-        b"please fix",
+    fx.write_local(
+        "1",
+        r#"{ "schema": 1, "verdict": "request-changes",
+             "actions": [ { "action": "comment", "file": "src/x.c", "line": 50, "body": "please fix" } ] }"#,
     );
-    fx.run(&["review", "verdict", "1", "request-changes"], b"");
 
-    let out = fx.run(&["review", "submit", "1", "-n"], b"");
+    let out = fx.run(&["review", "submit", "1", "-n"]);
     assert!(out.success, "stderr: {}", out.stderr);
-    // The plan lands on stdout (the scriptable dry-run stream).
     assert!(out.stdout.contains("[DRY-RUN]"), "stdout: {}", out.stdout);
     assert!(out.stdout.contains("request-changes"));
-    assert!(out.stdout.contains("src/x.c:10"));
-    // The draft is untouched by a dry run.
-    assert!(fx.draft_exists("1"));
+    assert!(out.stdout.contains("src/x.c:50"));
+    // A dry run leaves the draft untouched.
+    assert!(fx.local_exists("1"));
 }
 
 #[test]
 fn unknown_mr_is_a_clean_error_not_a_panic() {
     let fx = Fixture::new();
-    let out = fx.run(&["review", "show", "99", "--json"], b"");
+    let out = fx.run(&["review", "show", "99", "--json"]);
     assert!(!out.success);
     assert!(out.stderr.contains("isn't in the store") || out.stderr.contains("fetch"));
 }
