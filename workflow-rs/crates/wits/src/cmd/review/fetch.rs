@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use wits_util::git::Repository;
 
 use super::config::{self, Config};
-use super::model::{Comments, Info, MrInfo, StoredCommit, StoredFile, Thread, SCHEMA};
+use super::model::{Comments, Info, MrInfo, Snapshot, StoredCommit, StoredFile, Thread, SCHEMA};
 use super::store::refs;
 use super::{online, parse_mr_handle, Online};
 
@@ -57,27 +57,34 @@ fn fetch_one(ctx: &Online, remote: &str, id: &str) -> Result<()> {
     let repo = &ctx.local.repo;
 
     let details = forge.mr_details(id)?;
-    let version = details.version;
-    let head_sha = version.head_sha.clone();
+    let v = details.version;
+    let head_sha = v.head_sha.clone();
 
     if !head_sha.is_empty() {
         let mr_ref = forge.mr_ref(id)?;
         repo.fetch_ref(remote, &mr_ref, &refs::pin(id, &head_sha))
             .with_context(|| format!("fetching MR {id} objects"))?;
     }
-    if !version.base_sha.is_empty() && repo.rev_parse(&version.base_sha).is_none() {
-        repo.try_fetch_object(remote, &version.base_sha, &refs::base_pin(id, &head_sha));
+    if !v.base_sha.is_empty() && repo.rev_parse(&v.base_sha).is_none() {
+        repo.try_fetch_object(remote, &v.base_sha, &refs::base_pin(id, &head_sha));
     }
 
-    let (commits, files) = local_range(repo, &version.base_sha, &head_sha);
-    let info = Info {
+    let (commits, files) = local_range(repo, &v.base_sha, &head_sha);
+    // Preserve the snapshot history across fetches; append only when the head
+    // moved. Metadata and current-snapshot diff state are refreshed wholesale.
+    let mut info = Info {
         schema: SCHEMA,
         mr: MrInfo::from(details.summary),
-        version,
-        fetched_at: now_epoch(),
+        snapshots: store.load_info(id).map(|i| i.snapshots).unwrap_or_default(),
         commits,
         files,
     };
+    info.record_snapshot(Snapshot {
+        base_sha: v.base_sha,
+        start_sha: v.start_sha,
+        head_sha,
+        fetched_at: now_epoch(),
+    });
     store.save_info(id, &info)?;
 
     let threads: Vec<Thread> = forge
@@ -120,8 +127,7 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
             None => Info {
                 schema: SCHEMA,
                 mr,
-                version: Default::default(),
-                fetched_at: now_epoch(),
+                snapshots: Vec::new(),
                 commits: Vec::new(),
                 files: Vec::new(),
             },

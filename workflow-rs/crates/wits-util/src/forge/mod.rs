@@ -188,6 +188,18 @@ pub trait Forge: Send + Sync {
     fn resolve(&self, _id: &str, _thread: &str, _resolved: bool) -> anyhow::Result<()> {
         anyhow::bail!("resolving threads is not supported for this forge yet")
     }
+
+    /// A web permalink to a file (optionally a line or line range) at a ref, for
+    /// expanding a `[[path:line]]` reference in a comment body. The default has
+    /// no web URL and degrades to a readable `path:line@ref`; GitHub and GitLab
+    /// override it with real blob URLs.
+    fn permalink(&self, r#ref: &str, path: &str, lines: Option<(u32, Option<u32>)>) -> String {
+        match lines {
+            Some((a, Some(b))) => format!("{path}:{a}-{b}@{ref}"),
+            Some((a, None)) => format!("{path}:{a}@{ref}"),
+            None => format!("{path}@{ref}"),
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------

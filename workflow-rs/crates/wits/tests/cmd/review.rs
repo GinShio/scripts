@@ -8,6 +8,7 @@
 //! editor or a human does), and pin the read/preview path plus a
 //! `submit --dry-run` that plans without touching the network.
 
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -77,6 +78,14 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Out {
+        self.run_with(args, None)
+    }
+
+    fn run_stdin(&self, args: &[&str], stdin: &str) -> Out {
+        self.run_with(args, Some(stdin))
+    }
+
+    fn run_with(&self, args: &[&str], stdin: Option<&str>) -> Out {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_wits"));
         cmd.args(args)
             .current_dir(&self.repo)
@@ -84,10 +93,14 @@ impl Fixture {
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .env("WITS_REVIEW_DIR", &self.store)
             .env("GITHUB_TOKEN", "x") // lets a dry-run submit resolve the forge
-            .stdin(Stdio::null())
+            .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let output = cmd.spawn().unwrap().wait_with_output().unwrap();
+        let mut child = cmd.spawn().unwrap();
+        if let Some(text) = stdin {
+            child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+        }
+        let output = child.wait_with_output().unwrap();
         Out {
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -103,8 +116,8 @@ const INFO: &str = r##"{
           "source": "feature-__ID__", "head_sha": "__HEAD__",
           "updated_at": "2026-07-01T00:00:00Z", "labels": [],
           "web_url": "https://github.com/me/proj/pull/__ID__" },
-  "version": { "base_sha": "base000", "start_sha": "base000", "head_sha": "__HEAD__" },
-  "fetched_at": "1700000000",
+  "snapshots": [ { "base_sha": "base000", "start_sha": "base000",
+                   "head_sha": "__HEAD__", "fetched_at": "1700000000" } ],
   "commits": [ { "sha": "__HEAD__", "subject": "Add a thing" } ],
   "files": [ { "path": "src/x.c", "status": "M" } ]
 }"##;
@@ -171,6 +184,30 @@ fn a_hand_written_draft_merges_into_the_view() {
     assert!(s.stdout.contains("looks off"));
     assert!(s.stdout.contains("agreed"), "reply attaches to the remote thread");
     assert!(s.stdout.contains("\"pending\""));
+}
+
+#[test]
+fn draft_ingest_appends_and_shows() {
+    let fx = Fixture::new();
+    fx.seed("1", "head111");
+
+    // The tool owns the write: pipe a batch of actions in via `draft <mr> -`.
+    let a = fx.run_stdin(
+        &["review", "draft", "1", "-"],
+        r#"{ "schema": 1, "verdict": "comment",
+             "actions": [ { "action": "comment", "file": "src/x.c", "line": 7, "body": "first" } ] }"#,
+    );
+    assert!(a.success, "stderr: {}", a.stderr);
+    // A second batch appends rather than replacing.
+    let b = fx.run_stdin(
+        &["review", "draft", "1", "-"],
+        r#"{ "schema": 1, "actions": [ { "action": "reply", "thread": "9987", "body": "second" } ] }"#,
+    );
+    assert!(b.success, "stderr: {}", b.stderr);
+
+    let d = fx.run(&["review", "draft", "1", "--json"]);
+    assert!(d.stdout.contains("\"comment\""), "verdict preserved");
+    assert!(d.stdout.contains("first") && d.stdout.contains("second"), "both batches present");
 }
 
 #[test]

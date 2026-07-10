@@ -27,6 +27,9 @@ const DRAFT_PREFIX: &str = "Draft: ";
 
 pub struct GitLab {
     api_base: String,
+    /// The web root of the target project (`https://host/group/repo`), for blob
+    /// permalinks — distinct from `api_base`.
+    web_base: String,
     /// Encoded path of the project where the MR resides — the target. Reads and
     /// edits always go here; for a same-project MR this is also where it's made.
     target_path: String,
@@ -70,8 +73,10 @@ impl GitLab {
             _ => None,
         };
 
+        let web_base = format!("https://{}/{}", target.host, target.project_path());
         Ok(Self {
             api_base,
+            web_base,
             target_path,
             auth,
             fork,
@@ -545,6 +550,15 @@ impl Forge for GitLab {
         );
         request("PUT", &url, &self.auth, None)?;
         Ok(())
+    }
+
+    fn permalink(&self, r#ref: &str, path: &str, lines: Option<(u32, Option<u32>)>) -> String {
+        let frag = match lines {
+            Some((a, Some(b))) => format!("#L{a}-{b}"),
+            Some((a, None)) => format!("#L{a}"),
+            None => String::new(),
+        };
+        format!("{}/-/blob/{ref}/{path}{frag}", self.web_base)
     }
 }
 

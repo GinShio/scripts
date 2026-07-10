@@ -35,6 +35,8 @@ The detail view, with the pending draft folded into the remote discussion.
   "schema": 1,
   "mr": { "...": "MrInfo, see below" },
   "snapshot": { "base_sha": "aaaa…", "head_sha": "9f8e…" },
+  "snapshots": [ { "base_sha": "aaaa…", "start_sha": "aaaa…", "head_sha": "9f8e…",
+                   "fetched_at": "1719830400" } ],
   "neighbors": { "position": 1, "prev_mr": "122", "next_mr": "124",
                  "nodes": ["121","122","123","124"] },
   "commits": [ { "sha": "9f8e…", "subject": "Fix the lock ordering" } ],
@@ -50,8 +52,9 @@ The detail view, with the pending draft folded into the remote discussion.
 |---|---|---|
 | `schema` | int | Payload version. |
 | `mr` | object | MR metadata (table below). |
-| `snapshot.base_sha` | string | The base SHA of the reviewed diff. |
-| `snapshot.head_sha` | string | The head SHA under review. **Render your diff between these two.** |
+| `snapshot.base_sha` | string | The base SHA of the current reviewed diff. |
+| `snapshot.head_sha` | string | The current head SHA under review. **Render your diff between these two.** |
+| `snapshots` | array | The full snapshot history, oldest first: `{ base_sha, start_sha, head_sha, fetched_at }`. Each is a fetched, pinned review point; browse an older one with `diff --snapshot <head_sha>`. Distinct from an ad-hoc diff *range*. |
 | `neighbors` | object | This MR's place in its stack (table below). |
 | `commits` | array | Commits in `base..head`, oldest first: `{ sha, subject }`. |
 | `files` | array | Files the MR touched: `{ path, old_path?, status }`. `status` is git's letter (`A`/`M`/`D`/`R`/`C`); `old_path` present on a rename/copy. |
@@ -173,6 +176,12 @@ This is the file a front-end (or a human) edits to author a review. It is the
 one place `wits review` reads authored intent from, so its shape is a public,
 versioned contract.
 
+**Writing it.** A front-end doesn't need the store path: it pipes a batch of the
+same shape to `wits review draft <mr> -` (or a file), and the tool **appends** the
+batch's actions (setting `verdict`/`summary` if present) and validates as it
+writes. A human can edit the file directly instead — equivalent. To edit or
+remove a queued action, edit the file.
+
 ```json
 {
   "schema": 1,
@@ -237,7 +246,11 @@ versioned contract.
 - **Batching:** `verdict` + `summary` + all line/file `comment`s post as one
   review; MR-level comments, replies, and resolves are separate calls.
 - **Anchoring:** line/file comments submit against the reviewed snapshot's head
-  (from `info.json`). Editing after a re-fetch that moved the head triggers a
-  warning; submit before refreshing for exact anchoring.
+  (from `info.json`); submit before a re-fetch for exact anchoring.
+- **References:** a `[[path:line]]` token in any `body` is expanded to a forge
+  permalink. Grammar: `path` (repo-relative), optional `:line` or `:start-end`,
+  optional `@ref` to pin a commit/branch/tag (default: the reviewed head).
+  Examples: `[[src/y.c:20]]`, `[[src/y.c:20-30]]`, `[[src/y.c]]`,
+  `[[src/y.c:20@main]]`. Unparseable tokens are left as written.
 - **After submit:** landed actions are removed and `local.json` is deleted once
   empty; failed actions stay for a retry.

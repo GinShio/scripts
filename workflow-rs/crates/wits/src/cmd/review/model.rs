@@ -85,17 +85,63 @@ pub struct StoredFile {
     pub status: String,
 }
 
-/// `info.json` — the MR's necessary metadata and diff state. Refetched by
-/// `fetch`; safe to hand-tweak. A feed refresh fills only `mr`, leaving the
-/// diff state empty until a full `fetch <mr>`.
+/// One fetched, pinned review point — a *snapshot*, distinct from an ad-hoc diff
+/// *range*: a snapshot is a historical identity whose objects are held alive by a
+/// `refs/wits/review/*` pin, whereas a range is a throwaway query.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub base_sha: String,
+    pub start_sha: String,
+    pub head_sha: String,
+    /// Unix timestamp of the fetch that first recorded this snapshot.
+    pub fetched_at: String,
+}
+
+impl Snapshot {
+    /// The forge diff-version SHAs for anchoring a comment on this snapshot.
+    pub fn version(&self) -> DiffVersion {
+        DiffVersion {
+            base_sha: self.base_sha.clone(),
+            start_sha: self.start_sha.clone(),
+            head_sha: self.head_sha.clone(),
+        }
+    }
+}
+
+/// `info.json` — the MR's necessary metadata and its snapshot history. A pure
+/// **cache**: `fetch` overwrites it, so it is not meant to be hand-edited. A feed
+/// refresh fills only `mr`, leaving the snapshot history empty until a full
+/// `fetch <mr>`. `commits`/`files` describe the current (latest) snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
     pub schema: u32,
     pub mr: MrInfo,
-    pub version: DiffVersion,
-    pub fetched_at: String,
+    /// Every review point we have fetched and pinned, oldest first; the last is
+    /// the current one.
+    #[serde(default)]
+    pub snapshots: Vec<Snapshot>,
     pub commits: Vec<StoredCommit>,
     pub files: Vec<StoredFile>,
+}
+
+impl Info {
+    /// The current (latest) snapshot, if any has been fetched.
+    pub fn current(&self) -> Option<&Snapshot> {
+        self.snapshots.last()
+    }
+
+    /// The current snapshot's head SHA, or empty when none is fetched.
+    pub fn head(&self) -> &str {
+        self.current().map(|s| s.head_sha.as_str()).unwrap_or("")
+    }
+
+    /// Record a freshly-fetched snapshot, appending it only when the head moved
+    /// (so a re-fetch of an unchanged MR doesn't grow the history).
+    pub fn record_snapshot(&mut self, snapshot: Snapshot) {
+        if self.snapshots.last().map(|s| &s.head_sha) != Some(&snapshot.head_sha) {
+            self.snapshots.push(snapshot);
+        }
+    }
 }
 
 /// Where a comment sits, in the read/output view.

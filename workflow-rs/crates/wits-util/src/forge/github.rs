@@ -18,6 +18,9 @@ use crate::remote::RemoteInfo;
 
 pub struct GitHub {
     api_base: String,
+    /// The web root of the target repo (`https://host/owner/repo`), for blob
+    /// permalinks — distinct from `api_base`.
+    web_base: String,
     project: String,
     /// The repo we target — also the head owner for a same-repo MR.
     owner: String,
@@ -38,8 +41,10 @@ impl GitHub {
         } else {
             api_url_override.unwrap_or_else(|| format!("https://{}/api/v3", target.host))
         };
+        let web_base = format!("https://{}/{}", target.host, target.project_path());
         Self {
             api_base,
+            web_base,
             owner: target.owner.clone(),
             project: target.project_path(),
             head_owner,
@@ -466,5 +471,14 @@ impl Forge for GitHub {
         let url = format!("{}/{id}/comments/{thread}/replies", self.pulls_url());
         request("POST", &url, &self.auth, Some(&json!({ "body": body })))?;
         Ok(())
+    }
+
+    fn permalink(&self, r#ref: &str, path: &str, lines: Option<(u32, Option<u32>)>) -> String {
+        let frag = match lines {
+            Some((a, Some(b))) => format!("#L{a}-L{b}"),
+            Some((a, None)) => format!("#L{a}"),
+            None => String::new(),
+        };
+        format!("{}/blob/{ref}/{path}{frag}", self.web_base)
     }
 }

@@ -33,22 +33,25 @@ nested directories — that is fine.
 
 ## The three files
 
-### `info.json` — metadata + diff state
+### `info.json` — metadata + snapshot history
 
-The MR's necessary information: the inbox row and the header/coordinates of the
-detail view. Refetchable; safe to hand-tweak.
+The MR's necessary information: the inbox row, the detail header, and the history
+of review points. A **pure cache** — `fetch` regenerates it, so it is not meant
+to be hand-edited (edits are overwritten on the next fetch).
 
 | Field | Meaning |
 |---|---|
 | `schema` | Store version. |
 | `mr` | The MR object (id, display, state, draft, title, author, base, source, head_sha, updated_at, labels, web_url — see [json.md](json.md#mr-object)). |
-| `version` | The diff SHAs a comment anchors against: `base_sha`, `start_sha`, `head_sha` (start/base coincide on GitHub; GitLab uses all three). |
-| `fetched_at` | Unix timestamp of the last fetch (used by `prune --older-than`). |
-| `commits` | Commits in `base..head`, derived **locally** from the fetched objects. |
-| `files` | Files the MR touched, derived locally. |
+| `snapshots` | The review points fetched so far, oldest first: each `{ base_sha, start_sha, head_sha, fetched_at }`. The last is the current one. Every snapshot's objects are pinned (below). |
+| `commits` | Commits in the current snapshot's `base..head`, derived **locally** from the fetched objects. |
+| `files` | Files the current snapshot touched, derived locally. |
 
-A **feed** fetch fills only `mr`, leaving `version`/`commits`/`files` empty; a
-full `fetch <mr>` fills them.
+A **feed** fetch fills only `mr`, leaving `snapshots`/`commits`/`files` empty; a
+full `fetch <mr>` fills them and appends a snapshot when the head has moved. A
+**snapshot** (a stored, pinned review point) is distinct from a diff **range** (a
+throwaway query); `fetched_at` on the current snapshot is what `prune
+--older-than` reads.
 
 ### `comments.json` — the forge's discussion (a cache)
 
@@ -63,6 +66,10 @@ The one file you write, defined in
 `summary`, and an append-style `actions` list. It exists only while you have a
 draft — `submit` deletes it once flushed, and an empty draft is the same as no
 file. This is the state that would be *lost*, so it is what migration moves.
+
+You need not know this path to write it: `wits review draft <mr> -` (or a file)
+hands a batch of actions to the tool, which appends and validates them. Editing
+the file directly is equivalent; the tool reading it doesn't care who wrote it.
 
 ## Git refs — pinning reviewed objects
 

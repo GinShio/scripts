@@ -10,11 +10,13 @@ use serde::Serialize;
 
 use wits_util::git::Repository;
 
-use super::model::{Action, Comment, Local, MrInfo, Placement, StoredCommit, StoredFile, Thread, SCHEMA};
+use super::model::{
+    Action, Comment, Local, MrInfo, Placement, Snapshot, StoredCommit, StoredFile, Thread, SCHEMA,
+};
 use super::{local, ShowArgs};
 
 #[derive(Serialize)]
-struct Snapshot {
+struct SnapshotView {
     base_sha: String,
     head_sha: String,
 }
@@ -42,7 +44,10 @@ struct DraftView {
 struct DetailView {
     schema: u32,
     mr: MrInfo,
-    snapshot: Snapshot,
+    snapshot: SnapshotView,
+    /// The full snapshot history, oldest first, so the editor can offer
+    /// switching (`diff --snapshot <sha>`).
+    snapshots: Vec<Snapshot>,
     neighbors: Neighbors,
     commits: Vec<StoredCommit>,
     files: Vec<StoredFile>,
@@ -92,15 +97,16 @@ fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
         nodes,
     };
 
-    let mut threads = merge_threads(comments.threads, &draft, &info.version.head_sha);
+    let mut threads = merge_threads(comments.threads, &draft, info.head());
     apply_filters(&mut threads, args);
 
     let view = DetailView {
         schema: SCHEMA,
-        snapshot: Snapshot {
-            base_sha: info.version.base_sha.clone(),
-            head_sha: info.version.head_sha.clone(),
+        snapshot: SnapshotView {
+            base_sha: info.current().map(|s| s.base_sha.clone()).unwrap_or_default(),
+            head_sha: info.head().to_owned(),
         },
+        snapshots: info.snapshots.clone(),
         neighbors,
         commits: info.commits.clone(),
         files: info.files.clone(),
@@ -301,9 +307,47 @@ fn short(sha: &str) -> &str {
     &sha[..sha.len().min(8)]
 }
 
+/// Read a JSON batch (`{verdict?, summary?, actions:[…]}`) from a file or stdin
+/// and append its actions to the draft, setting the verdict/summary when the
+/// batch provides them. The tool owns the write; the editor only provides the
+/// content. Surgery on a queued action is done by editing `local.json`.
+fn ingest(ctx: &super::Local, id: &str, input: &std::path::Path) -> Result<()> {
+    use std::io::Read;
+    let text = if input.as_os_str() == "-" {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("reading the draft batch from stdin")?;
+        buf
+    } else {
+        std::fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?
+    };
+    let batch: Local = serde_json::from_str(&text).context("parsing the draft batch as JSON")?;
+
+    let mut draft = ctx.store.load_local(id);
+    let added = batch.actions.len();
+    draft.actions.extend(batch.actions);
+    if batch.verdict.is_some() {
+        draft.verdict = batch.verdict;
+    }
+    if batch.summary.is_some() {
+        draft.summary = batch.summary;
+    }
+    ctx.store.save_local(id, &draft)?;
+    log::info!("appended {added} action(s) to MR {id}'s draft");
+    Ok(())
+}
+
 pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
     let ctx = local(repo)?;
     let id = super::parse_mr_handle(&args.mr)?;
+
+    // With an input (file or `-`), ingest a batch into the draft (the tool owns
+    // the write); otherwise show the current draft.
+    if let Some(input) = &args.input {
+        return ingest(&ctx, &id, input);
+    }
+
     let draft = ctx.store.load_local(&id);
 
     if args.json {

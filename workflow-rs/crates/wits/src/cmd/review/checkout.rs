@@ -26,7 +26,7 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
         .store
         .load_info(&id)
         .with_context(|| format!("MR {id} isn't fetched — run `wits review fetch {id}` first"))?;
-    let head = info.version.head_sha;
+    let head = info.head().to_owned();
     if head.is_empty() {
         bail!("MR {id} has no fetched snapshot — run `wits review fetch {id}` for full detail");
     }
@@ -108,9 +108,8 @@ pub fn run_prune(repo: &Repository, args: &PruneArgs) -> Result<()> {
         let id = &info.mr.id;
         let terminal = matches!(info.mr.state.as_str(), "merged" | "closed");
         let stale = cutoff.is_some_and(|before| {
-            info.fetched_at
-                .parse::<i64>()
-                .ok()
+            info.current()
+                .and_then(|s| s.fetched_at.parse::<i64>().ok())
                 .is_some_and(|at| at < before)
         });
         if !terminal && !stale {

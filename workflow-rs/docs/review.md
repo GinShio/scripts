@@ -80,8 +80,8 @@ Seven verbs; only `fetch` and `submit` touch the network.
 |---|---|---|
 | `fetch [mr] [--feed name]` | read | Pull one MR (full), a feed (light), or every feed (bare). |
 | `show [mr] [filters] [--json]` | — | The inbox, or one MR's merged review view. |
-| `diff <mr> [--range r] [--patch\|--json]` | — | A diff's commits/files/coordinates. |
-| `draft <mr> [--json]` | — | The pending `local.json`, echoed and normalized. |
+| `diff <mr> [--range r\|--snapshot sha] [--patch\|--json]` | — | A diff's commits/files/coordinates. |
+| `draft <mr> [FILE\|-] [--json]` | — | Show the pending draft, or append a batch of actions to it. |
 | `submit [mr] [--stack\|--all]` | write | Flush the draft(s) as batched reviews. |
 | `checkout [mr] [--next\|--prev] [--in-place\|--worktree DIR]` | — | Materialize the code to build/test. |
 | `prune [--older-than DAYS\|DATE]` | — | Drop terminal/dormant MRs. |
@@ -146,12 +146,45 @@ wits review diff 123 --json          # coordinates for an editor
 ```
 
 `--range` is `all` (the whole `base..head`, default), a git range `A..B`, or a
-single revision.
+single revision. `--snapshot <sha>` browses a **historical** snapshot instead
+(see below).
+
+### Snapshots vs. ranges
+
+These are two different things, kept apart on purpose:
+
+- A **snapshot** is a review point you fetched: its base/start/head SHAs, pinned
+  so the objects survive a later force-push. Every `fetch` that sees a new head
+  records one, so `info.json` accumulates a history. `show --json` lists them
+  under `snapshots`.
+- A **range** is a throwaway diff query (`base..head`, `A..B`, a commit) — never
+  stored.
+
+To review the code as of an older snapshot (browse "outdated context"):
+
+```sh
+wits review show 123 --json          # the "snapshots" array lists head SHAs + times
+wits review diff 123 --snapshot 1a2b3c   # that snapshot's base..head (prefix ok)
+```
+
+Because every snapshot's objects are pinned, this works even after the author
+has force-pushed past them.
 
 ## Authoring a review — edit `local.json`
 
-There are **no authoring commands**. To review, you edit the MR's `local.json`
-(an editor extension writes it for you; a human can too). Its full schema is in
+There are **no authoring commands**. You produce the content; the tool writes it
+into `local.json`. Two equivalent ways:
+
+- **Pipe a batch to the tool** (the path an editor extension uses):
+  ```sh
+  wits review draft 123 -   # read a JSON batch of actions from stdin; a file path also works
+  ```
+  This appends the batch's actions to the draft (setting the verdict/summary if
+  the batch carries them), and validates as it writes.
+- **Edit `local.json` directly** (the plain-text path for a human). It is the
+  same file; both are equivalent.
+
+To edit or remove a *queued* action, edit `local.json`. Its full schema is in
 [json.md](review/json.md#localjson---the-write-contract); the shape:
 
 ```json
@@ -186,7 +219,28 @@ Preview what's recorded any time, without touching the forge:
 
 ```sh
 wits review draft 123           # human
-wits review draft 123 --json    # machine
+wits review draft 123 --json    # machine (echoes local.json)
+```
+
+### Referencing another line or file
+
+A comment body may reference another location with a `[[…]]` token, which
+`submit` expands into a forge permalink (so it renders as a link, while your
+local body stays plain and portable):
+
+| Token | Refers to |
+|---|---|
+| `[[src/y.c:20]]` | line 20 of `src/y.c` (path is repo-relative) |
+| `[[src/y.c:20-30]]` | lines 20–30 |
+| `[[src/y.c]]` | the whole file, no line |
+| `[[src/y.c:20@main]]` | line 20 as of another commit/branch/tag (`@ref`) |
+
+The reference resolves against the **reviewed snapshot's head** by default; the
+optional `@ref` pins any other commit, branch, or tag. Example:
+
+```json
+{ "action": "comment", "file": "src/x.c", "line": 42,
+  "body": "Same bug as [[src/y.c:20]] — factor them together." }
 ```
 
 ## Submitting
@@ -255,48 +309,80 @@ outdated comment can still be submitted.
 
 ## Configuration reference
 
-### Tokens and forge detection (git config, shared with `stack`)
+Three surfaces: **environment variables** (locations and tokens),
+**git config** (forge identity and tokens, shared with `stack`), and the feed
+**`review.toml`**. Every key is listed below with what it does.
 
-| Setting | Key / variable | Notes |
-|---|---|---|
-| Token (per host) | `workflow.platform.<host>.token` | Most specific. |
-| Token (per service) | `workflow.platform.<service>.token` | `<service>` ∈ github, gitlab. |
-| Token (blanket) | `workflow.platform.token` | Last config fallback. |
-| Token (env) | `GITHUB_TOKEN`, `GITLAB_TOKEN` | Used when no config key matches. |
-| Service override | `workflow.platform.<host>.service` | Name a self-hosted host's type. |
-| API base override | `workflow.platform.<host>.api-url` | Self-hosted / enterprise. |
+### Environment variables
 
-### Feeds (`review.toml`)
+- **`WITS_REVIEW_DIR`** — Absolute path to the store root, overriding the default
+  location. Point it at synced storage to share your drafts across machines. See
+  *Store location* below for how it fits the ladder.
+- **`WITS_REVIEW_CONFIG`** — Absolute path to the feed config file, overriding the
+  default `review.toml` location. Handy to keep one config outside `$HOME`.
+- **`XDG_STATE_HOME`** — When set (and `WITS_REVIEW_DIR` isn't), the store lives at
+  `$XDG_STATE_HOME/wits/review`. This is *state*, not config.
+- **`XDG_CONFIG_HOME`** — When set (and `WITS_REVIEW_CONFIG` isn't), the feed file
+  is `$XDG_CONFIG_HOME/wits/review.toml`. This is *config*, not state.
+- **`GITHUB_TOKEN` / `GITLAB_TOKEN`** — The forge API token, used by `fetch`/
+  `submit` when no git-config token key matches. The one that applies is chosen
+  by the detected service.
+- **`HOME`** — Falls back to `$HOME/.config/wits/review.toml` for the feed file
+  when neither override nor `XDG_CONFIG_HOME` is set.
 
-The file is a single global TOML at `$WITS_REVIEW_CONFIG`, else
-`$XDG_CONFIG_HOME/wits/review.toml`, else `$HOME/.config/wits/review.toml`.
-Each repo is a `[repo."<host>/<owner>/<repo>"]` table; each feed is a
-`feed.<name>` inline table of these keys:
+### Git config (under `workflow.platform.*`, shared with `stack`)
 
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `state` | string | `open+draft` | Which lifecycle states to pull: `open+draft`, `open`, or `draft`. Merged/closed are never fetched. |
-| `labels` | list | `[]` | Only MRs carrying **all** of these labels. |
-| `exclude-labels` | list | `[]` | Drop MRs carrying any of these labels. |
-| `author` | string | — | Only MRs opened by this user. `@me` is you. |
-| `assignee` | string | — | Only MRs assigned to this user. `@me` is you. |
-| `reviewer` | string | — | Only MRs with this user requested as reviewer. `@me` is you. |
-| `search` | string | — | A raw platform search string (the full-text escape hatch). |
-| `limit` | integer | `30` | Cap on how many MRs to pull (most recently updated first). |
+Token resolution tries these in order, most specific first, then the env var:
 
-> Fields are combined with AND; a repo query only pulls MRs matching all of them.
-> Multiple `labels` are AND-ed on both GitHub and GitLab (the platforms' own
-> behaviour for a single list query) — use separate feeds for either-or.
+- **`workflow.platform.<host>.token`** — Token for one host (e.g.
+  `github.com`). The most precise, and what you usually set.
+- **`workflow.platform.<service>.token`** — Token for a whole service
+  (`<service>` ∈ `github`, `gitlab`), when several hosts share a service.
+- **`workflow.platform.token`** — A blanket token, the last config fallback
+  before the environment.
+- **`workflow.platform.<host>.service`** — Declares a self-hosted host's type
+  (`github` / `gitlab`) when the hostname doesn't reveal it.
+- **`workflow.platform.<host>.api-url`** — The API base for a self-hosted or
+  enterprise instance (e.g. `https://git.acme.com/api/v4`).
+
+### Feeds — `review.toml`
+
+The file is a single global TOML, found at `$WITS_REVIEW_CONFIG`, else
+`$XDG_CONFIG_HOME/wits/review.toml`, else `$HOME/.config/wits/review.toml`. Each
+repo is a table `[repo."<host>/<owner>/<repo>"]`; inside it, each feed is an
+inline table `feed.<name> = { … }`. The feed keys, each optional:
+
+- **`state`** *(string, default `"open+draft"`)* — Which lifecycle states to
+  pull: `"open+draft"`, `"open"`, or `"draft"`. Merged and closed MRs are never
+  fetched — a review inbox is about live work.
+- **`labels`** *(list, default `[]`)* — Only MRs carrying **all** of these labels.
+  Multiple labels are AND-ed on both GitHub and GitLab (the platforms' own
+  behaviour for a single list query); use separate feeds when you want either-or.
+- **`exclude-labels`** *(list, default `[]`)* — Drop MRs carrying **any** of these
+  labels — the way to filter out `wip`/bot noise.
+- **`author`** *(string)* — Only MRs opened by this user. `@me` resolves to the
+  authenticated user.
+- **`assignee`** *(string)* — Only MRs assigned to this user. `@me` is you.
+- **`reviewer`** *(string)* — Only MRs with this user requested as a reviewer.
+  `@me` is you — this is the "assigned to me to review" feed.
+- **`search`** *(string)* — A raw platform search string, passed straight through
+  for the full-text case the faceted keys can't express.
+- **`limit`** *(integer, default `30`)* — A cap on how many MRs the feed pulls,
+  most-recently-updated first, so a large repo can't flood the inbox.
+
+Different keys are combined with **AND**: a feed pulls only MRs matching all of
+them. `@me` works in `author`/`assignee`/`reviewer`.
 
 ### Store location (state, distinct from config)
 
-| Rung | Path |
-|---|---|
-| 1 | `$WITS_REVIEW_DIR` |
-| 2 | `$XDG_STATE_HOME/wits/review` |
-| 3 | `$GIT_DIR/wits/review` (default, per-clone) |
+The store root is resolved on this ladder, first hit wins:
 
-Per-run choices (`--range`, `--stack`, `--all`, `-n`) are flags, not config.
+- **`$WITS_REVIEW_DIR`** — an explicit override, when set.
+- **`$XDG_STATE_HOME/wits/review`** — when `XDG_STATE_HOME` is set.
+- **`$GIT_DIR/wits/review`** — the default, per-clone (beside `.git/machete`).
+
+Per-run choices (`--range`, `--snapshot`, `--stack`, `--all`, `-n`) are flags,
+not config — they describe one invocation.
 
 ## Version scope and limitations
 
@@ -308,7 +394,7 @@ Bounded on purpose, and honest about it:
 | Thread resolve | GitLab only; GitHub's is GraphQL-only and deferred (the tool speaks REST). A `resolve` action submitted to a GitHub MR reports the gap. |
 | `request-changes` on GitLab | No native equivalent; maps to "post the review and do not approve". |
 | Editing/deleting a **published** comment | Not supported; you edit only your pending `local.json`. |
-| Outdated draft | If you re-`fetch` after drafting and the head moved, `submit` warns and posts against the currently-held snapshot. Submit before a refresh for the smooth path. |
+| Outdated draft | Comments submit against the currently-held snapshot. If you re-`fetch` after drafting and the head moved, the lines may no longer line up; submit before a refresh for exact anchoring. (Per-comment snapshot pinning is future work.) |
 | Feeds | Pull the most recently updated MRs up to `limit`; an incremental "since last sync" cursor is future work. |
 
 ## Troubleshooting

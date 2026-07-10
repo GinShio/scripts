@@ -31,9 +31,24 @@ pub fn run(repo: &Repository, args: &DiffArgs) -> Result<()> {
         format!("MR {id} isn't in the store yet — run `wits review fetch {id}` first")
     })?;
 
-    // `all` is the whole reviewed range; anything else is passed to git verbatim.
+    // Resolve the range from a chosen snapshot, the current snapshot (`all`),
+    // or a verbatim git range.
+    let (base_sha, head_sha) = if let Some(sha) = &args.snapshot {
+        let snap = info
+            .snapshots
+            .iter()
+            .find(|s| s.head_sha.starts_with(sha))
+            .with_context(|| format!("MR {id} has no fetched snapshot matching '{sha}'"))?;
+        (snap.base_sha.clone(), snap.head_sha.clone())
+    } else {
+        let current = info.current();
+        (
+            current.map(|s| s.base_sha.clone()).unwrap_or_default(),
+            current.map(|s| s.head_sha.clone()).unwrap_or_default(),
+        )
+    };
     let range = if args.range == "all" {
-        format!("{}..{}", info.version.base_sha, info.version.head_sha)
+        format!("{base_sha}..{head_sha}")
     } else {
         args.range.clone()
     };
@@ -72,8 +87,8 @@ pub fn run(repo: &Repository, args: &DiffArgs) -> Result<()> {
         schema: SCHEMA,
         mr: id,
         range,
-        base_sha: info.version.base_sha,
-        head_sha: info.version.head_sha,
+        base_sha,
+        head_sha,
         commits,
         files,
     };

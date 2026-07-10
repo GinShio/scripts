@@ -93,6 +93,10 @@ pub struct DiffArgs {
     /// A git range or rev: `A..B`, a single `<sha>`, or `all` (base..head).
     #[arg(long, default_value = "all")]
     pub range: String,
+    /// Browse a historical snapshot by its head SHA (a prefix is fine); its
+    /// base..head replaces `--range`.
+    #[arg(long, value_name = "SHA", conflicts_with = "range")]
+    pub snapshot: Option<String>,
     /// Print the textual patch (shells to git) instead of coordinates.
     #[arg(long)]
     pub patch: bool,
@@ -103,9 +107,12 @@ pub struct DiffArgs {
 
 #[derive(Debug, Args)]
 pub struct DraftArgs {
-    /// The MR whose draft to show.
+    /// The MR whose draft to show or append to.
     pub mr: String,
-    /// Emit machine-readable JSON.
+    /// A JSON batch of actions to append to the draft; `-` or a file. When
+    /// given, `draft` ingests (the tool owns the write); when omitted, it shows.
+    pub input: Option<PathBuf>,
+    /// Emit machine-readable JSON (on show).
     #[arg(long)]
     pub json: bool,
 }
@@ -294,8 +301,7 @@ pub(crate) fn stub_info(id: &str, base: &str, source: &str) -> model::Info {
             labels: Vec::new(),
             web_url: String::new(),
         },
-        version: Default::default(),
-        fetched_at: String::new(),
+        snapshots: Vec::new(),
         commits: Vec::new(),
         files: Vec::new(),
     }
