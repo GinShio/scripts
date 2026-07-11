@@ -213,12 +213,21 @@ mod tests {
             side: None,
             start_line: None,
             body: "hi".into(),
+            commit: None,
         });
         store.save_local("7", &local).unwrap();
         assert_eq!(store.load_local("7").actions.len(), 1);
         assert_eq!(store.local_ids(), ["7"]);
 
-        store.save_local("7", &Local { schema: SCHEMA, ..Default::default() }).unwrap();
+        store
+            .save_local(
+                "7",
+                &Local {
+                    schema: SCHEMA,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         assert!(store.local_ids().is_empty());
     }
 

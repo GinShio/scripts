@@ -242,6 +242,8 @@ Local {                          // local.json — hand/editor-edited
     summary: Option<Body>,       // the review body; rides with the verdict, no extra notification
     actions: [ Comment | Reply | Resolve ],   // append-style
 }
+// Comment { file?, line?, side?, start_line?, body, commit? }
+//   commit: the snapshot head SHA this comment's line anchors were written against
 ```
 
 The draft is the **only** thing you write, and you write it *as a file*, not
@@ -253,6 +255,15 @@ draft per MR (reviewing a stack means several); the verdict is one per MR. At
 thread's repeated resolutions collapsed to the last), posted, and cleared —
 failures stay in the file to retry. Editing or deleting an *already-published*
 comment is out of v1 scope (§17); the draft is only your unsubmitted intent.
+
+Each `Comment` carries its own `commit` — the snapshot head SHA its line anchors
+were written against. `draft <mr> -` stamps it at ingest; a hand-editor may set
+it explicitly. At `submit`, each comment is anchored to its own commit, so
+different actions in one draft can target different snapshots (**cross-snapshot
+drafting**). When the commit differs from the current head, the forge marks the
+comment outdated — honestly, since it was about the code at that snapshot (§6).
+Comments without a `commit` (hand-edited, pre-existing) are stamped with the
+current snapshot at normalize time.
 
 A comment body may carry a `[[path:line]]` reference (repo-relative path,
 optional `:line`/`:start-end`, optional `@ref` to pin another commit; default is
@@ -436,10 +447,11 @@ resolution (which would need GraphQL) exists precisely to keep it that way.
 `submit` flushes drafts, and its correctness rests on getting the granularity
 right:
 
-- **Concurrency is per-MR and unconstrained.** Unlike `stack submit` (which
+- **Concurrency is per-MR and bounded.** Unlike `stack submit` (which
   serializes sibling MR *creation* to dodge duplicate-detection races), review
-  submissions to different MRs are wholly independent, so they fan out over the
-  same bounded thread pool with no ordering constraint.
+  submissions to different MRs are wholly independent, so they fan out over
+  scoped threads (up to 8 at a time, matching `stack`'s `map_parallel`) with no
+  ordering constraint.
 - **Atomicity is per-action, not per-MR.** A single MR's draft can expand to
   several forge calls — the batched review, a separate `mr` conversation comment,
   a GitLab approve, a resolve — so a partial failure within one MR is possible.
@@ -570,11 +582,13 @@ dormant ones) and lets git GC the objects.
 
 Delivered in v1: forge-first acquisition with object pinning and **snapshot
 history**, the snapshot/anchor/thread model with a hand-edited `local.json` draft
-(plus a `draft <mr> -` ingest verb so the tool owns the write), the three-file
+(plus a `draft <mr> -` ingest verb so the tool owns the write), per-comment
+snapshot anchoring with cross-snapshot drafting, the three-file
 store on the env→XDG_STATE→GIT_DIR ladder, config-driven feeds, the `--json` read
 contract and the `local.json` write contract (`schema` 1), `[[path:line]]`
 reference expansion, worktree/in-place materialization with stack navigation,
-`prune` (day count or ISO date), and the GitHub + GitLab review backends.
+`prune` (day count or ISO date), parallel submit over scoped threads,
+and the GitHub + GitLab review backends.
 
 Deliberately deferred, and honest about it:
 
@@ -582,9 +596,10 @@ Deliberately deferred, and honest about it:
   worth adding (v1 is REST-only, so resolve works on GitLab only — §10).
 - **future** editing or deleting an *already-published* comment; the draft is
   only your *unsubmitted* intent (§5.4).
-- **future** per-comment snapshot pinning so an outdated draft submits against the
-  exact snapshot each comment was written on; v1 submits against the currently-held
-  snapshot (§6), and the snapshot *history* is already tracked for browsing.
+- **future** per-comment snapshot *pinning* for commits outside the fetched
+  snapshot history. Per-comment **anchoring** is delivered (each comment carries
+  its `commit` and submits against it — §5.4); the deferred part is holding git
+  objects alive for arbitrary commits that aren't already pinned by a fetch.
 - **future** the incremental-sync cursor for feeds (v1 pulls the most-recently
   updated MRs up to `limit`; the `updated_after` plumbing exists but is unused —
   §9), and a feed cache-expiry policy.

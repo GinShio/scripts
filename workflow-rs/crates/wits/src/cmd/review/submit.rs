@@ -26,15 +26,23 @@ pub fn run(repo: &Repository, args: &SubmitArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut failures = 0;
-    for id in &ids {
-        if let Err(e) = submit_one(&ctx, id) {
-            failures += 1;
+    // Submissions to different MRs are wholly independent — fan out over scoped
+    // threads so network latency overlaps. Per-action reconciliation inside each
+    // MR stays sequential (the store writes to distinct paths, so no races).
+    let results = super::map_parallel(&ids, |id| {
+        let result = submit_one(&ctx, id);
+        (id.clone(), result)
+    });
+
+    let failures: Vec<_> = results
+        .into_iter()
+        .filter_map(|(id, r)| r.err().map(|e| (id, e)))
+        .collect();
+    if !failures.is_empty() {
+        for (id, e) in &failures {
             log::warn!("MR {id}: {e}");
         }
-    }
-    if failures > 0 {
-        anyhow::bail!("{failures} MR(s) failed to submit");
+        anyhow::bail!("{} MR(s) failed to submit", failures.len());
     }
     Ok(())
 }
@@ -66,7 +74,6 @@ fn submit_one(ctx: &Online, id: &str) -> Result<()> {
         log::info!("MR {id}: nothing to submit");
         return Ok(());
     }
-    local.normalize();
 
     let info = store
         .load_info(id)
@@ -76,8 +83,14 @@ fn submit_one(ctx: &Online, id: &str) -> Result<()> {
         .map(|s| s.version())
         .filter(|v| !v.head_sha.is_empty())
         .with_context(|| {
-            format!("MR {id} has no reviewed snapshot; run `wits review fetch {id}` for full detail")
+            format!(
+                "MR {id} has no reviewed snapshot; run `wits review fetch {id}` for full detail"
+            )
         })?;
+
+    // Normalize: de-duplicate, collapse resolves, and stamp unstamped comments
+    // with the current snapshot head so hand-edited drafts get anchored.
+    local.normalize(&version.head_sha);
 
     if wits_log::is_dry_run() {
         preview(id, &local, forge.noun());
@@ -92,7 +105,10 @@ fn submit_one(ctx: &Online, id: &str) -> Result<()> {
     } else {
         match forge.submit_review(id, &submission) {
             Ok(()) => {
-                log::info!("MR {id}: posted review ({} comment(s))", submission.comments.len());
+                log::info!(
+                    "MR {id}: posted review ({} comment(s))",
+                    submission.comments.len()
+                );
                 true
             }
             Err(e) => {
@@ -192,8 +208,9 @@ fn build_submission(
     }
 }
 
-/// A line/file comment action → a submittable comment, anchored at the reviewed
-/// head. MR-level comments and non-comment actions yield `None`.
+/// A line/file comment action → a submittable comment, anchored at the action's
+/// own commit (the snapshot the comment was written against). MR-level comments
+/// and non-comment actions yield `None`.
 fn to_submit_comment(
     action: &Action,
     version: &wits_util::forge::DiffVersion,
@@ -205,11 +222,14 @@ fn to_submit_comment(
         side,
         start_line,
         body,
+        commit: action_commit,
     } = action
     else {
         return None;
     };
-    let head = &version.head_sha;
+    // Use the action's own commit when set (per-comment snapshot); fall back to
+    // the current snapshot's head for backward compatibility.
+    let head = action_commit.as_deref().unwrap_or(&version.head_sha);
     let placement = match line {
         Some(line) => SubmitPlacement::Line {
             path: path.clone(),
@@ -285,7 +305,11 @@ fn preview(id: &str, local: &Local, noun: &str) {
     }
     for action in &local.actions {
         let line = match action {
-            Action::Comment { file: Some(f), line: Some(l), .. } => format!("comment on {f}:{l}"),
+            Action::Comment {
+                file: Some(f),
+                line: Some(l),
+                ..
+            } => format!("comment on {f}:{l}"),
             Action::Comment { file: Some(f), .. } => format!("comment on file {f}"),
             Action::Comment { .. } => "conversation comment".to_owned(),
             Action::Reply { thread, .. } => format!("reply to {thread}"),
@@ -340,9 +364,15 @@ mod tests {
             "https://github.com/o/r/blob/deadbeef/src/y.c#L20-L25"
         );
         // A whole-file reference has no line fragment.
-        assert_eq!(go("[[README.md]]"), "https://github.com/o/r/blob/deadbeef/README.md");
+        assert_eq!(
+            go("[[README.md]]"),
+            "https://github.com/o/r/blob/deadbeef/README.md"
+        );
         // `@ref` pins another commit/branch.
-        assert_eq!(go("[[src/y.c:9@main]]"), "https://github.com/o/r/blob/main/src/y.c#L9");
+        assert_eq!(
+            go("[[src/y.c:9@main]]"),
+            "https://github.com/o/r/blob/main/src/y.c#L9"
+        );
         // A non-reference is untouched; an unterminated token is left as written.
         assert_eq!(go("no refs here"), "no refs here");
         assert_eq!(go("dangling [[oops"), "dangling [[oops");

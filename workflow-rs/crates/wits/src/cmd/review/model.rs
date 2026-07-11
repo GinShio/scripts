@@ -259,6 +259,11 @@ impl Default for Comments {
 /// hand-edit: a comment infers its placement from which fields are present —
 /// `file`+`line` is a line comment, `file` alone is file-level, neither is an
 /// MR-level conversation comment.
+///
+/// A comment's `commit` records the snapshot head SHA its line anchors were
+/// written against. Set by `draft <mr> -` at ingest time; a hand-editor may set
+/// it explicitly. At submit, the comment is anchored to its own commit, so
+/// different actions in one draft can target different snapshots.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum Action {
@@ -272,6 +277,12 @@ pub enum Action {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         start_line: Option<u32>,
         body: String,
+        /// The snapshot head SHA this comment's line anchors were written
+        /// against. When set, `submit` anchors the comment to this commit
+        /// (the forge may mark it outdated if the head has moved). When unset,
+        /// `submit` falls back to the current snapshot's head.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        commit: Option<String>,
     },
     Reply {
         thread: String,
@@ -284,31 +295,44 @@ pub enum Action {
 }
 
 impl Action {
-    /// The output placement for a comment action, stamped with the reviewed
-    /// `head`. Non-comment actions have no placement.
+    /// The output placement for a comment action. The commit comes from the
+    /// action itself (per-comment snapshot); `head` is the fallback for actions
+    /// that predate per-comment stamping. Non-comment actions have no placement.
     pub fn placement(&self, head: &str) -> Option<Placement> {
-        let commit = (!head.is_empty()).then(|| head.to_owned());
         match self {
             Action::Comment {
                 file: Some(path),
                 line: Some(line),
                 side,
                 start_line,
+                commit,
                 ..
-            } => Some(Placement::Line {
-                path: path.clone(),
-                old_path: None,
-                side: side.unwrap_or(Side::New),
-                line: *line,
-                start_line: *start_line,
-                commit,
-            }),
+            } => {
+                let c = commit
+                    .clone()
+                    .or_else(|| (!head.is_empty()).then(|| head.to_owned()));
+                Some(Placement::Line {
+                    path: path.clone(),
+                    old_path: None,
+                    side: side.unwrap_or(Side::New),
+                    line: *line,
+                    start_line: *start_line,
+                    commit: c,
+                })
+            }
             Action::Comment {
-                file: Some(path), ..
-            } => Some(Placement::File {
-                path: path.clone(),
+                file: Some(path),
                 commit,
-            }),
+                ..
+            } => {
+                let c = commit
+                    .clone()
+                    .or_else(|| (!head.is_empty()).then(|| head.to_owned()));
+                Some(Placement::File {
+                    path: path.clone(),
+                    commit: c,
+                })
+            }
             Action::Comment { .. } => Some(Placement::Mr),
             _ => None,
         }
@@ -318,6 +342,11 @@ impl Action {
 /// `local.json` — your unsubmitted review: an optional verdict and summary, and
 /// an append-style list of actions. Edited by hand or an editor; `submit` merges
 /// and flushes it. This shape is the public write contract.
+///
+/// Each `Comment` action carries its own `commit` — the snapshot head SHA its
+/// line anchors were written against. This makes cross-snapshot drafting safe:
+/// different comments in one draft can target different snapshots, and `submit`
+/// anchors each to its own commit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Local {
     pub schema: u32,
@@ -327,6 +356,11 @@ pub struct Local {
     pub summary: Option<String>,
     #[serde(default)]
     pub actions: Vec<Action>,
+}
+
+/// Truncate a SHA to a display-friendly prefix (11 hex chars, like `git log`).
+pub fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(11)]
 }
 
 impl Default for Local {
@@ -348,7 +382,11 @@ impl Local {
     /// Merge and de-duplicate the recorded actions, in place: drop exact repeats
     /// (a comment written twice), and collapse repeated resolutions of one
     /// thread to the last stated intent. Order is otherwise preserved.
-    pub fn normalize(&mut self) {
+    ///
+    /// Also stamps each `Comment` action's `commit` with `head` when it is not
+    /// already set, so hand-edited or pre-commit drafts get anchored to the
+    /// current snapshot.
+    pub fn normalize(&mut self, head: &str) {
         // Last-wins per resolved thread: find the final resolve for each thread.
         let mut last_resolve: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
@@ -361,7 +399,14 @@ impl Local {
         let mut seen: Vec<Action> = Vec::new();
         let mut resolved_emitted: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        for a in self.actions.drain(..) {
+        for mut a in self.actions.drain(..) {
+            // Stamp unstamped comments with the current snapshot head, so
+            // hand-edited drafts get anchored before dedup and submission.
+            if let Action::Comment { ref mut commit, .. } = a {
+                if commit.is_none() && !head.is_empty() {
+                    *commit = Some(head.to_owned());
+                }
+            }
             match &a {
                 Action::Resolve { thread, .. } => {
                     if resolved_emitted.insert(thread.clone()) {

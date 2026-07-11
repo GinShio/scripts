@@ -11,7 +11,8 @@ use serde::Serialize;
 use wits_util::git::Repository;
 
 use super::model::{
-    Action, Comment, Local, MrInfo, Placement, Snapshot, StoredCommit, StoredFile, Thread, SCHEMA,
+    short, Action, Comment, Local, MrInfo, Placement, Snapshot, StoredCommit, StoredFile, Thread,
+    SCHEMA,
 };
 use super::{local, ShowArgs};
 
@@ -103,7 +104,10 @@ fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
     let view = DetailView {
         schema: SCHEMA,
         snapshot: SnapshotView {
-            base_sha: info.current().map(|s| s.base_sha.clone()).unwrap_or_default(),
+            base_sha: info
+                .current()
+                .map(|s| s.base_sha.clone())
+                .unwrap_or_default(),
             head_sha: info.head().to_owned(),
         },
         snapshots: info.snapshots.clone(),
@@ -180,6 +184,9 @@ fn apply_filters(threads: &mut Vec<Thread>, args: &ShowArgs) {
     if args.resolved {
         threads.retain(|t| t.resolved);
     }
+    if args.unresolved {
+        threads.retain(|t| !t.resolved);
+    }
     if args.unread {
         threads.retain(|t| t.comments.last().is_some_and(|c| c.origin == "remote"));
     }
@@ -215,9 +222,17 @@ fn show_inbox(ctx: &super::Local, args: &ShowArgs) -> Result<()> {
         .collect();
 
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&InboxView { schema: SCHEMA, items })?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&InboxView {
+                schema: SCHEMA,
+                items
+            })?
+        );
     } else if items.is_empty() {
-        println!("(nothing fetched — `wits review fetch <mr>` or `wits review fetch --feed <name>`)");
+        println!(
+            "(nothing fetched — `wits review fetch <mr>` or `wits review fetch --feed <name>`)"
+        );
     } else {
         for item in &items {
             let pending = if item.review.pending > 0 {
@@ -236,7 +251,10 @@ fn show_inbox(ctx: &super::Local, args: &ShowArgs) -> Result<()> {
 
 fn print_detail_human(view: &DetailView) {
     println!("{} [{}] {}", view.mr.display, view.mr.state, view.mr.title);
-    println!("  by {} · base {} · {}", view.mr.author, view.mr.base, view.mr.web_url);
+    println!(
+        "  by {} · base {} · {}",
+        view.mr.author, view.mr.base, view.mr.web_url
+    );
     println!(
         "  snapshot {}..{}",
         short(&view.snapshot.base_sha),
@@ -266,7 +284,11 @@ fn print_detail_human(view: &DetailView) {
             .map(|(_, s)| *s)
             .collect::<Vec<_>>()
             .join(",");
-            let flags = if flags.is_empty() { String::new() } else { format!(" [{flags}]") };
+            let flags = if flags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{flags}]")
+            };
             println!("    {} {}{flags}", t.id, describe_placement(&t.placement));
             for c in &t.comments {
                 println!("      {} ({}): {}", c.author, c.origin, first_line(&c.body));
@@ -293,7 +315,9 @@ fn verdict_word(v: wits_util::forge::Verdict) -> &'static str {
 
 fn describe_placement(p: &Placement) -> String {
     match p {
-        Placement::Line { path, line, side, .. } => format!("{path}:{line} ({})", side.as_str()),
+        Placement::Line {
+            path, line, side, ..
+        } => format!("{path}:{line} ({})", side.as_str()),
         Placement::File { path, .. } => format!("{path} (file)"),
         Placement::Mr => "(conversation)".to_owned(),
     }
@@ -301,10 +325,6 @@ fn describe_placement(p: &Placement) -> String {
 
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
-}
-
-fn short(sha: &str) -> &str {
-    &sha[..sha.len().min(8)]
 }
 
 /// Read a JSON batch (`{verdict?, summary?, actions:[…]}`) from a file or stdin
@@ -326,7 +346,24 @@ fn ingest(ctx: &super::Local, id: &str, input: &std::path::Path) -> Result<()> {
 
     let mut draft = ctx.store.load_local(id);
     let added = batch.actions.len();
-    draft.actions.extend(batch.actions);
+
+    // Stamp each incoming comment's `commit` with the current snapshot head, so
+    // the comment is anchored to the snapshot it was written against. Actions
+    // that already carry a `commit` (explicit hand-edit) are left as-is.
+    let head = ctx
+        .store
+        .load_info(id)
+        .map(|i| i.head().to_owned())
+        .unwrap_or_default();
+    let mut actions = batch.actions;
+    for action in &mut actions {
+        if let Action::Comment { ref mut commit, .. } = action {
+            if commit.is_none() && !head.is_empty() {
+                *commit = Some(head.clone());
+            }
+        }
+    }
+    draft.actions.extend(actions);
     if batch.verdict.is_some() {
         draft.verdict = batch.verdict;
     }
@@ -366,12 +403,19 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
     }
     for (i, action) in draft.actions.iter().enumerate() {
         match action {
-            Action::Comment { body, .. } => {
+            Action::Comment { body, commit, .. } => {
                 let where_ = describe_placement(&action.placement("").unwrap_or(Placement::Mr));
-                println!("  local:{i}  comment {where_}  {}", first_line(body));
+                let at = commit
+                    .as_deref()
+                    .map(|s| format!(" @{}", short(s)))
+                    .unwrap_or_default();
+                println!("  local:{i}  comment {where_}{at}  {}", first_line(body));
             }
             Action::Reply { thread, body } => {
-                println!("  local:{i}  reply -> remote:{thread}  {}", first_line(body))
+                println!(
+                    "  local:{i}  reply -> remote:{thread}  {}",
+                    first_line(body)
+                )
             }
             Action::Resolve { thread, resolved } => {
                 let verb = if *resolved { "resolve" } else { "unresolve" };

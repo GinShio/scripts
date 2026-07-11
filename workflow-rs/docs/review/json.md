@@ -188,9 +188,9 @@ remove a queued action, edit the file.
   "verdict": "request-changes",
   "summary": "A few blockers below.",
   "actions": [
-    { "action": "comment", "file": "src/x.c", "line": 42, "body": "Off-by-one." },
-    { "action": "comment", "file": "src/x.c", "line": 42, "start_line": 40, "side": "old", "body": "…" },
-    { "action": "comment", "file": "src/x.c", "body": "File-level note." },
+    { "action": "comment", "file": "src/x.c", "line": 42, "body": "Off-by-one.", "commit": "a1b2c3d4" },
+    { "action": "comment", "file": "src/x.c", "line": 42, "start_line": 40, "side": "old", "body": "…", "commit": "a1b2c3d4" },
+    { "action": "comment", "file": "src/x.c", "body": "File-level note.", "commit": "a1b2c3d4" },
     { "action": "comment", "body": "MR-level conversation note." },
     { "action": "reply", "thread": "9987", "body": "Done." },
     { "action": "resolve", "thread": "9987", "resolved": true }
@@ -224,6 +224,7 @@ remove a queued action, edit the file.
 | `side` | string | no | `new` (default) or `old`. |
 | `start_line` | int | no | First line of a multi-line span (with `line` as the end). |
 | `body` | string | yes | The comment text. |
+| `commit` | string | no | Snapshot head SHA this comment's line anchors were written against. Set by `draft <mr> -` at ingest; a hand-editor may set it. `submit` anchors the comment to this commit (the forge may mark it outdated). When unset, falls back to the current snapshot. |
 
 **`reply`** — add to an existing thread.
 
@@ -245,8 +246,11 @@ remove a queued action, edit the file.
   `resolve` of one thread collapses to the last stated value.
 - **Batching:** `verdict` + `summary` + all line/file `comment`s post as one
   review; MR-level comments, replies, and resolves are separate calls.
-- **Anchoring:** line/file comments submit against the reviewed snapshot's head
-  (from `info.json`); submit before a re-fetch for exact anchoring.
+- **Anchoring:** each comment carries its own `commit` — the snapshot head its
+  line anchors were written against. `submit` anchors the comment to that commit,
+  so different actions in one draft can target different snapshots (cross-snapshot
+  drafting). Comments without a `commit` are stamped with the current snapshot at
+  normalize time.
 - **References:** a `[[path:line]]` token in any `body` is expanded to a forge
   permalink. Grammar: `path` (repo-relative), optional `:line` or `:start-end`,
   optional `@ref` to pin a commit/branch/tag (default: the reviewed head).

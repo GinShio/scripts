@@ -75,6 +75,9 @@ pub struct ShowArgs {
     /// Only resolved threads.
     #[arg(long)]
     pub resolved: bool,
+    /// Only unresolved threads.
+    #[arg(long, conflicts_with = "resolved")]
+    pub unresolved: bool,
     /// Only threads whose last comment is someone else's.
     #[arg(long)]
     pub unread: bool,
@@ -185,6 +188,10 @@ pub(crate) struct Local {
 
 pub(crate) fn local(repo: &Repository) -> Result<Local> {
     let remotes = Remotes::resolve(repo);
+    local_from_remotes(repo, &remotes)
+}
+
+fn local_from_remotes(repo: &Repository, remotes: &Remotes) -> Result<Local> {
     let target = remotes
         .target()
         .cloned()
@@ -209,12 +216,37 @@ pub(crate) struct Online {
 pub(crate) fn online(repo: &Repository) -> Result<Online> {
     let remotes = Remotes::resolve(repo);
     let forge = forge::detect(repo, &remotes)?;
-    let local = local(repo)?;
+    let local = local_from_remotes(repo, &remotes)?;
     Ok(Online {
         local,
         remotes,
         forge,
     })
+}
+
+/// How many forge operations run at once. Review submissions are independent per
+/// MR and network-bound, so scoped OS threads keep the latency down without
+/// any tuning burden.
+const MAX_PARALLEL: usize = 8;
+
+/// Run `f` over `items` with bounded parallelism, returning results in input
+/// order. Uses scoped threads so the closure can borrow freely from the
+/// surrounding stack frame — no `Arc`, no `'static` bounds.
+pub(crate) fn map_parallel<I, T>(items: &[I], f: impl Fn(&I) -> T + Sync) -> Vec<T>
+where
+    I: Sync,
+    T: Send,
+{
+    let mut out = Vec::with_capacity(items.len());
+    for chunk in items.chunks(MAX_PARALLEL.max(1)) {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = chunk.iter().map(|item| scope.spawn(|| f(item))).collect();
+            for handle in handles {
+                out.push(handle.join().expect("worker thread panicked"));
+            }
+        });
+    }
+    out
 }
 
 /// Parse an MR handle: a bare number, or a forge URL whose last numeric path
@@ -318,8 +350,14 @@ mod tests {
             stub_info("b", "feat-a", "feat-b"),
             stub_info("c", "feat-b", "feat-c"),
         ];
-        assert_eq!(stack_chain(&infos, "b"), (vec!["a".into(), "b".into(), "c".into()], 1));
-        assert_eq!(stack_chain(&infos, "a"), (vec!["a".into(), "b".into(), "c".into()], 0));
+        assert_eq!(
+            stack_chain(&infos, "b"),
+            (vec!["a".into(), "b".into(), "c".into()], 1)
+        );
+        assert_eq!(
+            stack_chain(&infos, "a"),
+            (vec!["a".into(), "b".into(), "c".into()], 0)
+        );
     }
 
     #[test]
@@ -332,7 +370,10 @@ mod tests {
     #[test]
     fn parses_mr_numbers_and_urls() {
         assert_eq!(parse_mr_handle("123").unwrap(), "123");
-        assert_eq!(parse_mr_handle("https://github.com/o/r/pull/456").unwrap(), "456");
+        assert_eq!(
+            parse_mr_handle("https://github.com/o/r/pull/456").unwrap(),
+            "456"
+        );
         assert_eq!(
             parse_mr_handle("https://gitlab.com/o/r/-/merge_requests/789/").unwrap(),
             "789"

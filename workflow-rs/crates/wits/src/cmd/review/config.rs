@@ -21,7 +21,7 @@ use wits_util::remote::RemoteInfo;
 
 /// How many MRs a feed pulls when it doesn't say otherwise — a cap so a large
 /// repo can't flood the inbox.
-const DEFAULT_LIMIT: usize = 50;
+const DEFAULT_LIMIT: usize = 30;
 
 /// The whole config file: repos, each holding named feeds.
 #[derive(Debug, Default, Deserialize)]

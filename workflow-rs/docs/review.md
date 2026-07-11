@@ -133,6 +133,7 @@ resolutions flip the flag. For a large MR, **filter** instead of paginate:
 |---|---|
 | `--outdated` | are anchored to a line no longer in the current diff |
 | `--resolved` | are resolved |
+| `--unresolved` | are not yet resolved |
 | `--unread` | have someone else's comment last (likely awaiting your reply) |
 | `--file PATH` | are anchored in `PATH` |
 
@@ -193,9 +194,9 @@ To edit or remove a *queued* action, edit `local.json`. Its full schema is in
   "verdict": "request-changes",
   "summary": "A few blockers below.",
   "actions": [
-    { "action": "comment", "file": "src/x.c", "line": 42, "body": "Off-by-one." },
-    { "action": "comment", "file": "src/x.c", "line": 40, "start_line": 38, "side": "old", "body": "Was this intended?" },
-    { "action": "comment", "file": "src/x.c", "body": "This file wants a header." },
+    { "action": "comment", "file": "src/x.c", "line": 42, "body": "Off-by-one.", "commit": "a1b2c3d4" },
+    { "action": "comment", "file": "src/x.c", "line": 40, "start_line": 38, "side": "old", "body": "Was this intended?", "commit": "a1b2c3d4" },
+    { "action": "comment", "file": "src/x.c", "body": "This file wants a header.", "commit": "a1b2c3d4" },
     { "action": "comment", "body": "Overall close." },
     { "action": "reply", "thread": "9987", "body": "Done." },
     { "action": "resolve", "thread": "9987", "resolved": true }
@@ -207,6 +208,12 @@ Rules, all inferred so the file is pleasant to hand-write:
 
 - **`verdict`** (optional): `approve`, `request-changes`, or `comment`.
 - **`summary`** (optional): the review's overall body.
+- **`commit`** on a comment (optional): the snapshot head SHA the comment's line
+  anchors were written against. `draft <mr> -` stamps it automatically at ingest;
+  a hand-editor may set it. `submit` anchors the comment to this commit — the
+  forge may mark it outdated if the head has moved. Different comments in one
+  draft can target different snapshots (cross-snapshot drafting). When unset,
+  `submit` falls back to the current snapshot's head.
 - **A `comment` action's placement** is inferred: `file`+`line` → a line comment;
   `file` alone → a file-level comment; neither → an MR-level conversation comment.
   `side` (`new`/`old`, default `new`) and `start_line` (a multi-line start) are

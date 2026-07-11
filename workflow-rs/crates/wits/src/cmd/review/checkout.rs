@@ -15,6 +15,7 @@ use anyhow::{bail, Context, Result};
 use wits_util::git::Repository;
 use wits_util::project::git::Git;
 
+use super::model::short;
 use super::store::refs;
 use super::{local, CheckoutArgs, Local, PruneArgs};
 
@@ -124,7 +125,11 @@ pub fn run_prune(repo: &Repository, args: &PruneArgs) -> Result<()> {
             }
         }
         ctx.store.delete_mr(id)?;
-        let why = if terminal { info.mr.state.as_str() } else { "dormant" };
+        let why = if terminal {
+            info.mr.state.as_str()
+        } else {
+            "dormant"
+        };
         log::info!("pruned MR {id} ({why})");
         pruned += 1;
     }
@@ -143,8 +148,9 @@ fn parse_cutoff(spec: &str) -> Result<i64> {
     if let Ok(days) = spec.parse::<i64>() {
         return Ok(now_secs() - days.saturating_mul(86_400));
     }
-    let epoch_day = iso_date_to_epoch_day(spec)
-        .with_context(|| format!("--older-than must be a day count or an ISO date, got '{spec}'"))?;
+    let epoch_day = iso_date_to_epoch_day(spec).with_context(|| {
+        format!("--older-than must be a day count or an ISO date, got '{spec}'")
+    })?;
     Ok(epoch_day * 86_400)
 }
 
@@ -171,8 +177,4 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
-}
-
-fn short(sha: &str) -> &str {
-    &sha[..sha.len().min(8)]
 }
