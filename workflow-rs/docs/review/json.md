@@ -101,7 +101,7 @@ The detail view, with the pending draft folded into the remote discussion.
 
 | `kind` | Fields | Meaning |
 |---|---|---|
-| `line` | `path`, `side`, `line`, `old_path?`, `start_line?`, `commit?` | A code line. `start_line` marks a multi-line span; `commit` is the reviewed SHA. |
+| `line` | `path`, `end` {`line`, `side`}, `start`? {`line`, `side`}, `old_path?`, `commit?` | A code line. `end` is the anchor line; `start`, when present, makes a multi-line span and may carry a different `side` (a cross-side span). `commit` is the reviewed SHA. |
 | `file` | `path`, `commit?` | A whole changed file, no line. |
 | `mr` | — | The MR conversation, no code anchor. |
 
@@ -189,7 +189,7 @@ remove a queued action, edit the file.
   "summary": "A few blockers below.",
   "actions": [
     { "action": "comment", "file": "src/x.c", "line": 42, "body": "Off-by-one.", "commit": "a1b2c3d4" },
-    { "action": "comment", "file": "src/x.c", "line": 42, "start_line": 40, "side": "old", "body": "…", "commit": "a1b2c3d4" },
+    { "action": "comment", "file": "src/x.c", "line": 42, "start_line": 40, "side": "old", "start_side": "old", "body": "…", "commit": "a1b2c3d4" },
     { "action": "comment", "file": "src/x.c", "body": "File-level note.", "commit": "a1b2c3d4" },
     { "action": "comment", "body": "MR-level conversation note." },
     { "action": "reply", "thread": "9987", "body": "Done." },
@@ -223,8 +223,9 @@ remove a queued action, edit the file.
 | `line` | int | no | Line number on `side`. |
 | `side` | string | no | `new` (default) or `old`. |
 | `start_line` | int | no | First line of a multi-line span (with `line` as the end). |
+| `start_side` | string | no | Side of `start_line`; defaults to `side` when absent. Set it (differently from `side`) to express a cross-side span — e.g. starting on an `old` line and ending on a `new` one. |
 | `body` | string | yes | The comment text. |
-| `commit` | string | no | Snapshot head SHA this comment's line anchors were written against. Set by `draft <mr> -` at ingest; a hand-editor may set it. `submit` anchors the comment to this commit (the forge may mark it outdated). When unset, falls back to the current snapshot. |
+| `commit` | string | no | Snapshot head SHA this comment's line anchors were written against. Set by `draft <mr> -` at ingest; a hand-editor may set it. `submit` resolves it to the snapshot's full `{base, start, head}` and anchors the comment to that version (the forge may mark it outdated). When unset, falls back to the current snapshot. |
 
 **`reply`** — add to an existing thread.
 
@@ -247,14 +248,23 @@ remove a queued action, edit the file.
 - **Batching:** `verdict` + `summary` + all line/file `comment`s post as one
   review; MR-level comments, replies, and resolves are separate calls.
 - **Anchoring:** each comment carries its own `commit` — the snapshot head its
-  line anchors were written against. `submit` anchors the comment to that commit,
-  so different actions in one draft can target different snapshots (cross-snapshot
-  drafting). Comments without a `commit` are stamped with the current snapshot at
-  normalize time.
+  line anchors were written against. `submit` resolves it against the snapshot
+  history to the full `{base, start, head}` version and anchors the comment to it.
+  On GitLab this is **per-comment** (each diff note targets its own version), so
+  different actions in one draft can target different snapshots — true
+  cross-snapshot drafting. On GitHub the whole review anchors to one review-level
+  `commit_id` (the API takes one per review), so the batch anchors to the review's
+  snapshot. Comments without a `commit` are stamped with the current snapshot at
+  normalize time and anchor to the current head on both backends.
 - **References:** a `[[path:line]]` token in any `body` is expanded to a forge
   permalink. Grammar: `path` (repo-relative), optional `:line` or `:start-end`,
-  optional `@ref` to pin a commit/branch/tag (default: the reviewed head).
-  Examples: `[[src/y.c:20]]`, `[[src/y.c:20-30]]`, `[[src/y.c]]`,
-  `[[src/y.c:20@main]]`. Unparseable tokens are left as written.
-- **After submit:** landed actions are removed and `local.json` is deleted once
-  empty; failed actions stay for a retry.
+  optional `@ref` to pin a commit/branch/tag (default: the reviewed head for that
+  comment, i.e. its own `commit` when set). Examples: `[[src/y.c:20]]`,
+  `[[src/y.c:20-30]]`, `[[src/y.c]]`, `[[src/y.c:20@main]]`. Unparseable tokens are
+  left as written.
+- **Failure / retry:** reconciliation is per action — whatever landed is cleared,
+  whatever failed stays in the draft. On GitLab a partial failure is rolled back
+  (the drafts that did post are deleted), so a retry is clean and duplicates
+  nothing; a verdict failure never duplicates already-posted comments. An empty
+  draft post-`submit` triggers a re-fetch so your comments return as remote
+  threads.

@@ -46,7 +46,11 @@ impl Fixture {
         git(&["init", "-b", "main"]);
         git(&["remote", "add", "origin", "git@github.com:me/proj.git"]);
 
-        Fixture { _dir: dir, repo, store }
+        Fixture {
+            _dir: dir,
+            repo,
+            store,
+        }
     }
 
     fn mr_dir(&self, id: &str) -> PathBuf {
@@ -59,9 +63,7 @@ impl Fixture {
         let dir = self.mr_dir(id);
         std::fs::create_dir_all(&dir).unwrap();
 
-        let info = INFO
-            .replace("__ID__", id)
-            .replace("__HEAD__", head_sha);
+        let info = INFO.replace("__ID__", id).replace("__HEAD__", head_sha);
         std::fs::write(dir.join("info.json"), info).unwrap();
         std::fs::write(dir.join("comments.json"), COMMENTS).unwrap();
     }
@@ -93,12 +95,21 @@ impl Fixture {
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .env("WITS_REVIEW_DIR", &self.store)
             .env("GITHUB_TOKEN", "x") // lets a dry-run submit resolve the forge
-            .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = cmd.spawn().unwrap();
         if let Some(text) = stdin {
-            child.stdin.take().unwrap().write_all(text.as_bytes()).unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(text.as_bytes())
+                .unwrap();
         }
         let output = child.wait_with_output().unwrap();
         Out {
@@ -126,7 +137,7 @@ const COMMENTS: &str = r##"{
   "schema": 1,
   "threads": [ {
     "id": "remote:9987", "origin": "remote", "resolved": false, "outdated": true,
-    "placement": { "kind": "line", "path": "src/x.c", "side": "new", "line": 5 },
+    "placement": { "kind": "line", "path": "src/x.c", "end": { "line": 5, "side": "new" } },
     "comments": [ { "id": "remote:5", "author": "bob", "origin": "remote",
                     "body": "nit here", "created_at": "2026-07-01T00:00:00Z",
                     "state": "published" } ]
@@ -180,10 +191,37 @@ fn a_hand_written_draft_merges_into_the_view() {
     // reply attached to the remote thread.
     let s = fx.run(&["review", "show", "1", "--json"]);
     assert!(s.success, "stderr: {}", s.stderr);
-    assert!(s.stdout.contains("\"local:0\""), "new comment becomes a local thread");
+    assert!(
+        s.stdout.contains("\"local:0\""),
+        "new comment becomes a local thread"
+    );
     assert!(s.stdout.contains("looks off"));
-    assert!(s.stdout.contains("agreed"), "reply attaches to the remote thread");
+    assert!(
+        s.stdout.contains("agreed"),
+        "reply attaches to the remote thread"
+    );
     assert!(s.stdout.contains("\"pending\""));
+}
+
+#[test]
+fn a_remote_prefixed_thread_id_attaches_to_its_thread() {
+    // The `remote:` form `show` prints must be an acceptable thread id on
+    // `reply`/`resolve` — without normalization it would double-prefix
+    // (`remote:remote:9987`) and match no thread.
+    let fx = Fixture::new();
+    fx.seed("1", "head111");
+    fx.write_local(
+        "1",
+        r#"{ "schema": 1,
+             "actions": [ { "action": "reply", "thread": "remote:9987", "body": "ok" } ] }"#,
+    );
+
+    let s = fx.run(&["review", "show", "1", "--json"]);
+    assert!(s.success, "stderr: {}", s.stderr);
+    assert!(
+        s.stdout.contains("ok"),
+        "remote:-prefixed reply attaches to its thread"
+    );
 }
 
 #[test]
@@ -207,7 +245,10 @@ fn draft_ingest_appends_and_shows() {
 
     let d = fx.run(&["review", "draft", "1", "--json"]);
     assert!(d.stdout.contains("\"comment\""), "verdict preserved");
-    assert!(d.stdout.contains("first") && d.stdout.contains("second"), "both batches present");
+    assert!(
+        d.stdout.contains("first") && d.stdout.contains("second"),
+        "both batches present"
+    );
 }
 
 #[test]

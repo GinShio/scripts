@@ -12,9 +12,9 @@
 //! re-running is safe. Like `submit`, it leaves the work of *finding* the MR to
 //! the forge and never pushes.
 
+use wits_util::forge::{self, Attributes, StateFilter};
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
-use wits_util::forge::{self, Attributes, StateFilter};
 use wits_util::remote::Remotes;
 
 use super::{fail_if_any, map_parallel, resolution, DecorateArgs};
@@ -34,10 +34,6 @@ pub fn run(repo: &Repository, args: &DecorateArgs) -> anyhow::Result<()> {
     if attrs.is_empty() {
         anyhow::bail!("nothing to set: pass at least one --label / --assignee / --reviewer");
     }
-    if args.all && args.branch.is_some() {
-        anyhow::bail!("give a branch or --all, not both");
-    }
-
     let branches = target_branches(repo, args)?;
     if branches.is_empty() {
         log::info!("no branches in scope");

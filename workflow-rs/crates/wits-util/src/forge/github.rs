@@ -11,8 +11,9 @@ use serde_json::{json, Value};
 
 use super::{
     current_user, encode, pick, request, resolve_self, Attributes, Auth, DiffVersion, FeedQuery,
-    Forge, MergeRequest, MrDetails, MrState, MrSummary, NewMr, RemoteComment, RemotePlacement,
-    RemoteThread, ReviewSubmission, Side, StateFilter, SubmitPlacement, Verdict, SELF_REF,
+    Forge, LineRef, MergeRequest, MrDetails, MrState, MrSummary, NewMr, RemoteComment,
+    RemotePlacement, RemoteThread, ReviewOutcome, ReviewSubmission, Side, StateFilter,
+    SubmitPlacement, Verdict, SELF_REF,
 };
 use crate::remote::RemoteInfo;
 
@@ -300,11 +301,24 @@ impl Forge for GitHub {
             self.api_base,
             encode(&self.search_query(query)),
         );
-        let v = request("GET", &url, &self.auth, None)?;
-        Ok(v["items"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(parse_summary).collect())
-            .unwrap_or_default())
+        let limit = query.limit;
+        let mut collected = 0usize;
+        super::request_paginated(&url, &self.auth, 10, |v, headers| {
+            if collected >= limit {
+                return (Vec::new(), None);
+            }
+            let items: Vec<MrSummary> = v["items"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(parse_summary).collect())
+                .unwrap_or_default();
+            collected += items.len();
+            let next = if collected >= limit {
+                None
+            } else {
+                super::parse_link_next(headers)
+            };
+            (items, next)
+        })
     }
 
     fn mr_details(&self, id: &str) -> anyhow::Result<MrDetails> {
@@ -335,53 +349,75 @@ impl Forge for GitHub {
         // `position` — that is our outdated signal. Thread *resolution* is
         // GraphQL-only and unreadable here, so `resolved` stays false (a
         // documented v1 limitation).
-        let url = format!("{}/{id}/comments?per_page=100", self.pulls_url());
-        let v = request("GET", &url, &self.auth, None)?;
         let mut threads: Vec<RemoteThread> = Vec::new();
         let mut root_index: HashMap<u64, usize> = HashMap::new();
-        if let Some(arr) = v.as_array() {
-            for c in arr {
-                let comment = parse_review_comment(c);
-                if let Some(root) = c["in_reply_to_id"].as_u64() {
-                    if let Some(&i) = root_index.get(&root) {
-                        threads[i].comments.push(comment);
-                        continue;
-                    }
+
+        let review_url = format!("{}/{id}/comments?per_page=100", self.pulls_url());
+        let review_comments: Vec<Value> =
+            super::request_paginated(&review_url, &self.auth, 10, |v, headers| {
+                let items: Vec<Value> = v.as_array().map(|arr| arr.to_vec()).unwrap_or_default();
+                let next = super::parse_link_next(headers);
+                (items, next)
+            })?;
+
+        for c in &review_comments {
+            let comment = parse_review_comment(c);
+            if let Some(root) = c["in_reply_to_id"].as_u64() {
+                if let Some(&i) = root_index.get(&root) {
+                    threads[i].comments.push(comment);
+                    continue;
                 }
-                let cid = c["id"].as_u64().unwrap_or(0);
-                let placement = if c["subject_type"].as_str() == Some("file") {
+            }
+            let cid = c["id"].as_u64().unwrap_or(0);
+            let (placement, outdated) = if c["subject_type"].as_str() == Some("file") {
+                (
                     RemotePlacement::File {
                         path: c["path"].as_str().unwrap_or_default().to_owned(),
-                    }
-                } else {
-                    let side = match c["side"].as_str() {
-                        Some("LEFT") => Side::Old,
-                        _ => Side::New,
-                    };
-                    let line = c["line"]
-                        .as_u64()
-                        .or_else(|| c["original_line"].as_u64())
-                        .unwrap_or(0) as u32;
-                    RemotePlacement::Line {
-                        path: c["path"].as_str().unwrap_or_default().to_owned(),
-                        old_path: None,
-                        side,
-                        line,
-                        commit: c["original_commit_id"]
-                            .as_str()
-                            .or_else(|| c["commit_id"].as_str())
-                            .map(str::to_owned),
-                    }
+                    },
+                    false,
+                )
+            } else {
+                let side = match c["side"].as_str() {
+                    Some("LEFT") => Side::Old,
+                    _ => Side::New,
                 };
-                root_index.insert(cid, threads.len());
-                threads.push(RemoteThread {
-                    id: cid.to_string(),
-                    resolved: false,
-                    outdated: c["position"].is_null(),
-                    placement,
-                    comments: vec![comment],
-                });
-            }
+                // A comment becomes outdated when the line it anchored has left
+                // the current diff: GitHub nulls `line` but keeps the original.
+                // (`position` is the legacy diff-hunk field and is null on every
+                // modern review-API comment, current or not — not a signal.)
+                let outdated = c["line"].is_null() && c["original_line"].as_u64().is_some();
+                let line = c["line"]
+                    .as_u64()
+                    .or_else(|| c["original_line"].as_u64())
+                    .unwrap_or(0) as u32;
+                let end = LineRef { line, side };
+                let start = c["start_line"]
+                    .as_u64()
+                    .or_else(|| c["original_start_line"].as_u64())
+                    .map(|sl| LineRef {
+                        line: sl as u32,
+                        side,
+                    });
+                let placement = RemotePlacement::Line {
+                    path: c["path"].as_str().unwrap_or_default().to_owned(),
+                    old_path: None,
+                    end,
+                    start,
+                    commit: c["original_commit_id"]
+                        .as_str()
+                        .or_else(|| c["commit_id"].as_str())
+                        .map(str::to_owned),
+                };
+                (placement, outdated)
+            };
+            root_index.insert(cid, threads.len());
+            threads.push(RemoteThread {
+                id: cid.to_string(),
+                resolved: false,
+                outdated,
+                placement,
+                comments: vec![comment],
+            });
         }
 
         // Conversation (issue) comments — each an MR-level thread.
@@ -389,45 +425,45 @@ impl Forge for GitHub {
             "{}/repos/{}/issues/{id}/comments?per_page=100",
             self.api_base, self.project
         );
-        let iv = request("GET", &iurl, &self.auth, None)?;
-        if let Some(arr) = iv.as_array() {
-            for c in arr {
-                threads.push(RemoteThread {
-                    id: c["id"].as_u64().unwrap_or(0).to_string(),
-                    resolved: false,
-                    outdated: false,
-                    placement: RemotePlacement::Mr,
-                    comments: vec![parse_review_comment(c)],
-                });
-            }
+        let issue_comments: Vec<Value> =
+            super::request_paginated(&iurl, &self.auth, 10, |v, headers| {
+                let items: Vec<Value> = v.as_array().map(|arr| arr.to_vec()).unwrap_or_default();
+                let next = super::parse_link_next(headers);
+                (items, next)
+            })?;
+
+        for c in &issue_comments {
+            threads.push(RemoteThread {
+                id: c["id"].as_u64().unwrap_or(0).to_string(),
+                resolved: false,
+                outdated: false,
+                placement: RemotePlacement::Mr,
+                comments: vec![parse_review_comment(c)],
+            });
         }
         Ok(threads)
     }
 
-    fn submit_review(&self, id: &str, review: &ReviewSubmission) -> anyhow::Result<()> {
+    fn submit_review(&self, id: &str, review: &ReviewSubmission) -> anyhow::Result<ReviewOutcome> {
         if review.is_empty() {
-            return Ok(());
+            return Ok(ReviewOutcome::default());
         }
         let comments: Vec<Value> = review
             .comments
             .iter()
             .map(|c| match &c.placement {
                 SubmitPlacement::Line {
-                    path,
-                    side,
-                    line,
-                    start_line,
-                    ..
+                    path, end, start, ..
                 } => {
                     let mut o = json!({
                         "path": path,
-                        "line": line,
-                        "side": gh_side(*side),
+                        "line": end.line,
+                        "side": gh_side(end.side),
                         "body": c.body,
                     });
-                    if let Some(sl) = start_line {
-                        o["start_line"] = json!(sl);
-                        o["start_side"] = json!(gh_side(*side));
+                    if let Some(s) = start {
+                        o["start_line"] = json!(s.line);
+                        o["start_side"] = json!(gh_side(s.side));
                     }
                     o
                 }
@@ -454,8 +490,15 @@ impl Forge for GitHub {
             body["body"] = json!(s);
         }
         let url = format!("{}/{id}/reviews", self.pulls_url());
-        request("POST", &url, &self.auth, Some(&body))?;
-        Ok(())
+        let n = review.comments.len();
+        let has_verdict = review.verdict.is_some();
+        match request("POST", &url, &self.auth, Some(&body)) {
+            Ok(_) => Ok(ReviewOutcome::all_ok(n, has_verdict)),
+            // The batched review API is atomic: a failed POST leaves nothing on
+            // the forge, so the caller keeps the whole draft and retries
+            // cleanly — no partial state, no duplicates.
+            Err(e) => Err(e),
+        }
     }
 
     fn comment_mr(&self, id: &str, body: &str) -> anyhow::Result<()> {

@@ -276,11 +276,14 @@ pub(crate) fn stack_chain(infos: &[model::Info], current: &str) -> (Vec<String>,
         .filter(|i| !i.mr.source.is_empty())
         .map(|i| (i.mr.source.as_str(), i.mr.id.as_str()))
         .collect();
-    let by_base: HashMap<&str, &str> = infos
-        .iter()
-        .filter(|i| !i.mr.base.is_empty())
-        .map(|i| (i.mr.base.as_str(), i.mr.id.as_str()))
-        .collect();
+    let by_base: HashMap<&str, Vec<&str>> = infos.iter().fold(HashMap::new(), |mut map, i| {
+        if !i.mr.base.is_empty() {
+            map.entry(i.mr.base.as_str())
+                .or_default()
+                .push(i.mr.id.as_str());
+        }
+        map
+    });
 
     let Some(cur) = by_id.get(current) else {
         return (vec![current.to_owned()], 0);
@@ -300,7 +303,16 @@ pub(crate) fn stack_chain(infos: &[model::Info], current: &str) -> (Vec<String>,
 
     let mut up = Vec::new();
     let mut node = *cur;
-    while let Some(&next) = by_base.get(node.mr.source.as_str()) {
+    while let Some(children) = by_base.get(node.mr.source.as_str()) {
+        if children.len() > 1 {
+            log::warn!(
+                "stack fork at {}: {} children ({}), following first",
+                node.mr.source,
+                children.len(),
+                children.join(", ")
+            );
+        }
+        let &next = &children[0];
         if !seen.insert(next) {
             break;
         }
@@ -365,6 +377,23 @@ mod tests {
         let infos = vec![stub_info("x", "main", "feature-x")];
         assert_eq!(stack_chain(&infos, "x"), (vec!["x".to_owned()], 0));
         assert_eq!(stack_chain(&infos, "z"), (vec!["z".to_owned()], 0));
+    }
+
+    #[test]
+    fn follows_first_child_at_a_fork() {
+        // Two MRs branch off the same base (a fork in the stack).
+        // The chain follows the first child deterministically and warns.
+        let infos = vec![
+            stub_info("a", "main", "feat-a"),
+            stub_info("b", "feat-a", "feat-b"),
+            stub_info("c", "feat-a", "feat-c"),
+        ];
+        let (chain, idx) = stack_chain(&infos, "a");
+        // a is at index 0, followed by one of b/c (insertion order → b first).
+        assert_eq!(idx, 0);
+        assert_eq!(chain[0], "a");
+        assert_eq!(chain.len(), 2);
+        assert!(chain[1] == "b" || chain[1] == "c");
     }
 
     #[test]

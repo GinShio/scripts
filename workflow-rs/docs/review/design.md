@@ -190,24 +190,39 @@ outdated context freely: `diff --snapshot <sha>` resolves to that pinned point's
 
 ### 5.2 `Anchor` — file coordinates, computed locally, translated at submit
 
+A line anchor is one nested shape, shared by the local model and the forge
+boundary, with each endpoint carrying its own side so a multi-line span can
+cross sides:
+
 ```
+LineRef { line: u32, side: Old | New }          // one endpoint
+
 Anchor {
-    commit_sha,          // the commit the comment is about (an old one → outdated on submit)
-    path,                // new_path; old_path also kept for renames/deletes
-    side: Old | New,     // which side of the diff; default New, Old only for deleted lines
-    line,                // the file line number on that side
-    range: Option<(u32, u32)>,  // multi-line selection
+    path,                          // new_path; old_path kept for renames/deletes
+    old_path: Option<String>,
+    end: LineRef,                  // the anchor line (a single line when start is None)
+    start: Option<LineRef>,         // the first line of a multi-line span, if any
+    version: DiffVersion,           // the snapshot {base, start, head} this comment was written on
 }
 ```
 
+Each endpoint carries its own `side` because a span can *cross sides* — a
+comment starting on a deleted (old-side) line and ending on an added (new-side)
+one. A flat `start_line` plus a single `side` could not express that, and GitLab's
+`position.line_range` is inherently two-sided (`start`/`end`, each `{type,
+old_line, new_line}`). The nested shape is the lowest common representation both
+forges speak: GitHub gets `line`/`side`/`start_line`/`start_side`; GitLab gets
+`line_range{start, end}`.
+
 The deliberate choice is **file line numbers, not diff-hunk positions.** Modern
-forges anchor by file line (GitHub now; GitLab's `old_line/new_line`), so an
-anchor expressed in file coordinates lines up with whatever diff the editor
-renders — the tool and the editor never have to agree on one canonical diff text.
-The tool computes diffs internally only to *judge* things (is this line changed,
-which commit last touched it, is this anchor now outdated), never to *render* for
-the user. `review diff` therefore emits coordinates and anchors; only
-`diff --patch` shells to `git` for a terminal convenience.
+forges anchor by file line (GitHub, with `line`/`original_line`; GitLab's
+`old_line`/`new_line`), so an anchor expressed in file coordinates lines up with
+whatever diff the editor renders — the tool and the editor never have to agree on
+one canonical diff text. The tool computes diffs internally only to *judge*
+things (is this line changed, which commit last touched it, is this anchor now
+outdated), never to *render* for the user. `review diff` therefore emits
+coordinates and anchors; only `diff --patch` shells to `git` for a terminal
+convenience.
 
 ### 5.3 `Thread` + `Comment`, and the three placements
 
@@ -224,7 +239,9 @@ forge reality, not a preference:
   "comment outside the diff hunk" requirement, and both target forges now support
   it (GitHub dropped the in-hunk restriction; GitLab shows the full changed
   file).
-- **`file`** — anchored to a changed file but not a line (`subject_type: file`).
+- **`file`** — anchored to a changed file but not a line (GitHub
+  `subject_type: file`; GitLab a `position_type: file` diff note with the version
+  SHAs and path, no line).
 - **`mr`** — the MR-level conversation comment (GitHub's issue comment; a GitLab
   note with no position). This is "just leave a remark on the MR."
 
@@ -242,7 +259,8 @@ Local {                          // local.json — hand/editor-edited
     summary: Option<Body>,       // the review body; rides with the verdict, no extra notification
     actions: [ Comment | Reply | Resolve ],   // append-style
 }
-// Comment { file?, line?, side?, start_line?, body, commit? }
+// Comment { file?, line?, side?, start_line?, start_side?, body, commit? }
+//   side, start_side: New (default) or Old; start_side defaults to side
 //   commit: the snapshot head SHA this comment's line anchors were written against
 ```
 
@@ -258,12 +276,31 @@ comment is out of v1 scope (§17); the draft is only your unsubmitted intent.
 
 Each `Comment` carries its own `commit` — the snapshot head SHA its line anchors
 were written against. `draft <mr> -` stamps it at ingest; a hand-editor may set
-it explicitly. At `submit`, each comment is anchored to its own commit, so
-different actions in one draft can target different snapshots (**cross-snapshot
-drafting**). When the commit differs from the current head, the forge marks the
-comment outdated — honestly, since it was about the code at that snapshot (§6).
+it explicitly. At `submit`, `build_submission` resolves that SHA against the
+snapshot history (`info.json`'s `snapshots[]`) to a full `DiffVersion`
+(`{base, start, head}`), so a per-comment version — not just a head SHA — rides
+with the comment into the forge boundary.
+
+**Cross-snapshot anchoring is per-comment on GitLab, review-level on GitHub** —
+an honest asymmetry of the two APIs, surfaced in the capability matrix (§10):
+
+- **GitLab** anchors each diff note to its *own* `position{base_sha, start_sha,
+  head_sha}`, so different comments in one draft can target different snapshots:
+true **cross-snapshot drafting**, each marked outdated honestly when the branch
+has moved on (§6).
+- **GitHub** batched-review API takes *one* top-level `commit_id` for the whole
+  review; the per-comment `commit` cannot drive a per-comment anchor there. So
+  the whole review batch anchors to the review's snapshot head (the current one
+  unless a single comment dominates), and GitHub marks it outdated when that head
+  is behind the branch tip. GitHub's `comment_id`-bearing comment objects (the
+  standalone `POST .../pulls/{n}/comments` endpoint) *do* carry a per-comment
+  `commit_id`, but that endpoint fires one notification per comment — handing
+  the §10 "one notification" guarantee to get per-comment anchoring was not worth
+  it. The asymmetry is documented, not papered over.
+
 Comments without a `commit` (hand-edited, pre-existing) are stamped with the
-current snapshot at normalize time.
+current snapshot at normalize time, so they anchor to the review's current head
+on both backends.
 
 A comment body may carry a `[[path:line]]` reference (repo-relative path,
 optional `:line`/`:start-end`, optional `@ref` to pin another commit; default is
@@ -275,11 +312,25 @@ forge concern (`Forge::permalink`), never baked into the draft.
 
 The governing rule: **submit each comment against the SHA it was written on, and
 let the forge display it as outdated.** We do not auto-re-anchor a comment onto
-the new line — that risks pinning it to the wrong code. GitHub accepts a comment
-with `commit_id` set to the reviewed commit (marked outdated when HEAD has moved);
-GitLab accepts a `position` built from the reviewed version's SHAs. This is
-exactly the "outdated comments can still be pushed" requirement, and it is why §4
-pins the snapshot's objects and §5.1 keeps the version SHAs.
+the new line — that risks pinning it to the wrong code. GitLab anchors each diff
+note to its own version's SHAs (§5.4), per-comment; GitHub anchors the whole
+review to one `commit_id` (§5.4, the documented API limit). Both accept a comment
+written on an older snapshot and display it as outdated when the branch has moved
+on. This is exactly the "outdated comments can still be pushed" requirement, and
+it is why §4 pins the snapshot's objects and §5.1 keeps the version SHAs.
+
+**Reading back.** On the read side `list_threads` flags a thread `outdated` when
+its anchor has left the current diff. The signals differ per forge and are read
+honestly, not inferred from a single field:
+
+- **GitHub** — a comment is outdated when `line` is null but `original_line` is
+  present (the line it was on is no longer in the diff). `position` is the legacy
+  diff-hunk field and is null on every modern review-API comment, current or not,
+  so it is *not* the signal no matter how convenient it looks.
+- **GitLab** — there is no cheap per-note outdated flag, so the read view marks
+  `outdated: false` honestly rather than guessing (a capability-matrix limitation,
+  §10); a comment whose line has drifted is still readable against its pinned
+  snapshot.
 
 The GC edge — reviewing `A`, sitting on the draft for a very long time, the author
 force-pushing `A` away, and the forge eventually GC-ing it — is real but bounded:
@@ -401,10 +452,16 @@ primitives, sketched:
 ```rust
 // Added to Forge, alongside the existing find/create/set_base/set_body/apply_attributes:
 fn list_threads(&self, mr: &str) -> Result<Vec<RemoteThread>>;   // + resolved/outdated flags
-fn submit_review(&self, mr: &str, draft: &ReviewDraft) -> Result<SubmitOutcome>;
+fn submit_review(&self, mr: &str, review: &ReviewSubmission) -> Result<ReviewOutcome>;
 fn reply(&self, thread: &RemoteThreadId, body: &str) -> Result<()>;
 fn resolve(&self, thread: &RemoteThreadId, resolved: bool) -> Result<()>;   // GitLab only in v1
 ```
+
+`submit_review` returns a **granular** `ReviewOutcome` — one boolean per comment,
+plus `summary_ok` and an optional `verdict_ok` — never an `Err` for a partial
+success. An `Err` means *nothing* landed (an atomic backend's hard failure, or a
+total transport failure); any partial success is `Ok` with the per-step outcomes
+filled in, so the orchestration layer reconciles each action independently (§11).
 
 As with the MR half, no platform JSON shape escapes a host module. But review
 touches corners of the platforms that do **not** normalize cleanly, and pretending
@@ -413,15 +470,19 @@ hidden, because a reviewer needs to know them:
 
 | Concern | GitHub | GitLab |
 |---|---|---|
-| Batched review (comments + verdict) | one review call → one notification | draft notes → one bulk publish |
-| `approve` verdict | part of the review call | a **separate** approve endpoint (so review submit is 2 calls) |
-| `request-changes` verdict | native | **no native equivalent** — mapped to "post review, leave unapproved" (§ below) |
-| Diff-line comment anchor | `commit_id` + file line; commit must be in the PR | `position{base/start/head_sha, old/new_line}`; commit must be a known MR *version* (A1) |
+| Batched review (comments + verdict) | one atomic review call → one notification; `Err` = nothing landed | draft notes → one `bulk_publish` (publishes all of the user's pending drafts) |
+| Partial failure handling | the atomic API needs none — failure leaves nothing | **all-or-nothing per attempt**: any draft failure aborts the publish and roll back (DELETE) what posted, so retry is clean (§11) |
+| `approve` verdict | part of the review call | a **separate** approve endpoint, called only after the batch landed |
+| `request-changes` verdict | native | **no native equivalent** → post review + **unapprove** (`DELETE …/approve`), withdrawing prior approval (A3) |
+| Diff-line comment anchor | one review-level `commit_id` + file line; the batch anchors to one snapshot | **per-comment** `position{base/start/head_sha, old/new_line}`; each comment anchors to its own version (A1) |
+| Cross-snapshot drafting | not possible in one review (one `commit_id`); the batch anchors to the review head | **delivered** — each comment carries its own version |
+| Multi-line span | `start_line` + `start_side` + `line` + `side` (two-sided) | `position.line_range{start, end}` each `{type, old_line, new_line}` (two-sided) |
 | Comment on unchanged line of a changed file | supported | supported |
-| File-level comment | `subject_type: file` | note without line |
+| File-level comment | `subject_type: file` | `position_type: file` diff note with version SHAs + path, no line |
 | MR-level (conversation) comment | issue-comment API (separate object/notification) | position-less note |
 | Reply to an existing thread | often a separate call, not part of the batch | note added to the discussion |
 | Resolve / unresolve a thread | **GraphQL-only** → deferred to future in v1 | REST, supported in v1 |
+| `outdated` read-back | `line` null & `original_line` present | no cheap per-note flag; left `false` (honest) |
 
 The named caveats behind the matrix:
 
@@ -431,9 +492,10 @@ The named caveats behind the matrix:
   intermediate commit does not, and degrades to an `mr` comment. GitHub is more
   lenient. Captured by keeping the version SHAs on the snapshot (§5.1).
 - **A3 — `request-changes` on GitLab** is not a first-class action. It maps to
-  "submit the review as a comment and do not approve" (optionally unapprove). The
-  verdict is fundamentally a GitHub/Gitea concept; the doc says so plainly rather
-  than faking parity.
+  "submit the review as a comment, then **unapprove**" (`DELETE …/approve`),
+  withdrawing any prior approval of ours so the MR's approval state reflects
+  "changes needed". The verdict is fundamentally a GitHub/Gitea concept; the doc
+  says so plainly rather than faking parity.
 - **A5 — batching is best-effort per platform.** New inline comments batch into
   one review; replies to existing threads and (GitLab) resolves may be separate
   calls with their own notifications. The tool minimizes notifications where the
@@ -455,13 +517,26 @@ right:
 - **Atomicity is per-action, not per-MR.** A single MR's draft can expand to
   several forge calls — the batched review, a separate `mr` conversation comment,
   a GitLab approve, a resolve — so a partial failure within one MR is possible.
-  `submit` therefore tracks each action's outcome, clears the ones that landed,
-  and leaves the failed ones in the draft to retry. (This corrects an earlier,
-  looser "per-MR atomic" framing.)
-- **The local write happens once, after the fan-out joins.** All network work
-  runs first; only when every task has returned does `submit` reconcile the local
-  drafts in a single pass. There is never a half-cleared draft and never two
-  writers racing on the store.
+  `submit_review` reports a granular `ReviewOutcome` (one result per comment, plus
+  `summary_ok` and `verdict_ok`), and `submit` clears the actions that landed,
+  leaving the failed ones in the draft to retry. An `Err` means nothing landed;
+  any partial success is `Ok` with per-step outcomes filled in.
+- **GitLab is all-or-nothing per attempt, with rollback.** Its draft-notes →
+  `bulk_publish` two-phase shape has a real partial state between the two, so the
+  backend owns the atomicity itself: any draft-note failure aborts the publish and
+  `DELETE`s the drafts that did post, and a `bulk_publish` failure does the same;
+  the per-comment results revert to false and the whole draft stays local for a
+  clean retry — no orphaned drafts, no duplicates on retry. The verdict rides with
+  the batch: it is attempted only after the batch landed, on its own endpoint
+  (`Approve` → POST, `RequestChanges` → unapprove), so a verdict failure can never
+  duplicate already-visible comments. (The double-failure edge — rollback's own
+  `DELETE` failing — is bounded: a leftover orphan surfaces only if a *later*
+  `bulk_publish` runs, the rare documented case.) GitHub's review API is atomic
+  and needs none of this.
+- **The local write happens per-MR inside the fan-out.** Each MR writes to a
+  distinct store path (`<id>/local.json`), so the per-MR tasks are independent and
+  there is never a race or a half-cleared draft; the safety comes from path
+  isolation, not from a single post-join write pass.
 
 ## 12. Editor interface — read via `--json`, write by editing `local.json`
 
@@ -574,6 +649,25 @@ dormant ones) and lets git GC the objects.
 - **Auto-re-anchoring outdated comments onto the new line.** Rejected as a default
   (§6): it can pin a comment to the wrong code. Honesty (anchor to the reviewed
   SHA) is the default; re-anchoring is an explicit opt-in.
+- **Splitting a GitHub review into per-comment `commit_id`s.** Rejected as a
+  default for the cross-snapshot case (§5.4): GitHub's batched-review API takes
+  one top-level `commit_id`, so per-comment anchoring there means splitting the
+  draft into multiple review POSTs (one per commit) — which fires one notification
+  per review, breaching the §10 "one notification" matrix guarantee. Purposely not
+  bought; cross-snapshot anchoring stays GitLab-delivered and the asymmetry is
+  documented.
+- **`GitLab bulk_publish` with an explicit `draft_ids` body / pre-flight cleanup
+  of pre-existing drafts.** Rejected: `bulk_publish` publishes *all* of the
+  user's pending drafts on the MR and ignores a `draft_ids` body. Pre-flight
+  deleting existing drafts would risk discarding drafts the user built by hand in
+  the GitLab UI. Instead the backend owns atomicity per attempt — any failure
+  rolls back *this* attempt's drafts by id; double-failure is bounded (§11).
+- **A flat `start_line` + single `side` anchor.** Rejected in favour of the
+  nested two-sided `LineRef` (§5.2): a span that crosses the delete/add boundary
+  (an old-side start, a new-side end) could not be expressed, and GitLab's
+  `line_range` is inherently two-sided. The nested shape is the honest common
+  representation; the flat, hand-friendly `start_line`/`start_side` lives in the
+  `local.json` write contract.
 - **Cross-MR comments on a stack.** Rejected (§13): no forge object backs it.
 - **Folding `review` into `wits stack`.** Rejected: it is its own subcommand with
   its own verbs; it only *reuses* `stack`'s resolution.
@@ -583,12 +677,17 @@ dormant ones) and lets git GC the objects.
 Delivered in v1: forge-first acquisition with object pinning and **snapshot
 history**, the snapshot/anchor/thread model with a hand-edited `local.json` draft
 (plus a `draft <mr> -` ingest verb so the tool owns the write), per-comment
-snapshot anchoring with cross-snapshot drafting, the three-file
-store on the env→XDG_STATE→GIT_DIR ladder, config-driven feeds, the `--json` read
-contract and the `local.json` write contract (`schema` 1), `[[path:line]]`
-reference expansion, worktree/in-place materialization with stack navigation,
-`prune` (day count or ISO date), parallel submit over scoped threads,
-and the GitHub + GitLab review backends.
+snapshot anchoring with **cross-snapshot drafting on GitLab** (each comment
+resolves its own `DiffVersion` and anchors to it; GitHub's API takes one review
+`commit_id`, so it anchors the batch to one snapshot — §5.4/§6), the three-file
+store on the env→XDG_STATE→GIT_DIR ladder, config-driven feeds with server-side
+open/draft filtering on both forges, the `--json` read contract and the
+`local.json` write contract (`schema` 1), `[[path:line]]` reference expansion,
+two-sided multi-line spans (nested `LineRef`, each endpoint carrying `side`),
+worktree/in-place materialization with stack navigation, `prune` (day count or
+ISO date), parallel submit over scoped threads with per-action `ReviewOutcome`
+reconciliation (including GitLab's all-or-nothing rollback), and the GitHub +
+GitLab review backends.
 
 Deliberately deferred, and honest about it:
 
@@ -596,10 +695,17 @@ Deliberately deferred, and honest about it:
   worth adding (v1 is REST-only, so resolve works on GitLab only — §10).
 - **future** editing or deleting an *already-published* comment; the draft is
   only your *unsubmitted* intent (§5.4).
+- **future** GitHub per-comment cross-snapshot anchoring. Per-comment
+  **anchoring** is delivered on GitLab (each comment carries its `commit` and
+  resolves it to a `DiffVersion` that anchors the diff note — §5.4); GitHub's
+  batched-review API accepts one top-level `commit_id` per review, so the batch
+  anchors to the review's snapshot there. The GitHub standalone-comment endpoint
+  does take a per-comment `commit_id` but fires a notification per comment — not
+  worth the §10 "one notification" guarantee.
 - **future** per-comment snapshot *pinning* for commits outside the fetched
-  snapshot history. Per-comment **anchoring** is delivered (each comment carries
-  its `commit` and submits against it — §5.4); the deferred part is holding git
-  objects alive for arbitrary commits that aren't already pinned by a fetch.
+  snapshot history. The deferred part is holding git objects alive for arbitrary
+  commits that aren't already pinned by a fetch; anchoring (resolving
+  `commit` → `DiffVersion` from the snapshot history) is delivered.
 - **future** the incremental-sync cursor for feeds (v1 pulls the most-recently
   updated MRs up to `limit`; the `updated_after` plumbing exists but is unused —
   §9), and a feed cache-expiry policy.

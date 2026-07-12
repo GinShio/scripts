@@ -140,7 +140,7 @@ pub struct DecorateArgs {
     pub branch: Option<String>,
 
     /// Apply the same attributes to every MR in the current stack instead of one.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "branch")]
     pub all: bool,
 
     /// A label to add (repeatable).

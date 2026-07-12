@@ -195,7 +195,7 @@ To edit or remove a *queued* action, edit `local.json`. Its full schema is in
   "summary": "A few blockers below.",
   "actions": [
     { "action": "comment", "file": "src/x.c", "line": 42, "body": "Off-by-one.", "commit": "a1b2c3d4" },
-    { "action": "comment", "file": "src/x.c", "line": 40, "start_line": 38, "side": "old", "body": "Was this intended?", "commit": "a1b2c3d4" },
+    { "action": "comment", "file": "src/x.c", "line": 40, "start_line": 38, "side": "old", "start_side": "old", "body": "Was this intended?", "commit": "a1b2c3d4" },
     { "action": "comment", "file": "src/x.c", "body": "This file wants a header.", "commit": "a1b2c3d4" },
     { "action": "comment", "body": "Overall close." },
     { "action": "reply", "thread": "9987", "body": "Done." },
@@ -210,14 +210,17 @@ Rules, all inferred so the file is pleasant to hand-write:
 - **`summary`** (optional): the review's overall body.
 - **`commit`** on a comment (optional): the snapshot head SHA the comment's line
   anchors were written against. `draft <mr> -` stamps it automatically at ingest;
-  a hand-editor may set it. `submit` anchors the comment to this commit — the
-  forge may mark it outdated if the head has moved. Different comments in one
-  draft can target different snapshots (cross-snapshot drafting). When unset,
+  a hand-editor may set it. `submit` resolves it to the snapshot's full version
+  (`{base, start, head}`) and anchors the comment to it — the forge may mark it
+  outdated if the head has moved. Different comments in one draft can target
+  different snapshots (cross-snapshot drafting — fully per-comment on GitLab; on
+  GitHub the whole review anchors to one review-level commit). When unset,
   `submit` falls back to the current snapshot's head.
 - **A `comment` action's placement** is inferred: `file`+`line` → a line comment;
   `file` alone → a file-level comment; neither → an MR-level conversation comment.
   `side` (`new`/`old`, default `new`) and `start_line` (a multi-line start) are
-  optional.
+  optional; `start_side` (defaults to `side`) marks a span that starts on one side
+  and ends on the other (e.g. a deleted line through to an added one).
 - **`reply`** targets a thread id (the bare forge id, or the `remote:` form
   `show` prints).
 - **`resolve`** sets a thread's resolved state (GitLab in v1).
@@ -399,9 +402,10 @@ Bounded on purpose, and honest about it:
 |---|---|
 | Forges | GitHub and GitLab. Gitea/Forgejo/Codeberg have the trait seam but no backend. |
 | Thread resolve | GitLab only; GitHub's is GraphQL-only and deferred (the tool speaks REST). A `resolve` action submitted to a GitHub MR reports the gap. |
-| `request-changes` on GitLab | No native equivalent; maps to "post the review and do not approve". |
+| `request-changes` on GitLab | No native equivalent; maps to "post the review and **unapprove**" — withdrawing any prior approval of yours. |
 | Editing/deleting a **published** comment | Not supported; you edit only your pending `local.json`. |
-| Outdated draft | Comments submit against the currently-held snapshot. If you re-`fetch` after drafting and the head moved, the lines may no longer line up; submit before a refresh for exact anchoring. (Per-comment snapshot pinning is future work.) |
+| Cross-snapshot anchoring | Per-comment on GitLab (each comment anchors to its own snapshot version); review-level on GitHub (its API takes one commit per review, so the batch anchors to one snapshot). Comments without a `commit` use the current snapshot. |
+| Outdated draft | Comments submit against the snapshot they were written on. If you re-`fetch` after drafting and the head moved, GitLab keeps each comment anchored to its own snapshot; GitHub moves the whole batch to the new review head. (Holding objects alive for commits outside the snapshot history — per-comment *pinning* — is future work.) |
 | Feeds | Pull the most recently updated MRs up to `limit`; an incremental "since last sync" cursor is future work. |
 
 ## Troubleshooting

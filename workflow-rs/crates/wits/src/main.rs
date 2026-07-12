@@ -20,8 +20,13 @@
 //! lists the built-ins and the plugins it finds on `$PATH`.
 
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt;
 use std::path::Path;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
+#[cfg(not(unix))]
+compile_error!("wits requires a Unix platform (uses exec() for plugin dispatch)");
 
 use clap::{CommandFactory, Parser, Subcommand};
 
@@ -233,11 +238,17 @@ fn discover_plugins() -> Vec<String> {
     found.into_iter().collect()
 }
 
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> bool {
+    false
 }
 
 #[cfg(test)]

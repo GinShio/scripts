@@ -312,12 +312,12 @@ fn resolve_toolchain(ctx: &mut Ctx, name: String, raw: &RawToolchain) -> Result<
     let environment = raw
         .environment
         .iter()
-        .map(|(k, v)| Ok((k.clone(), ctx.render_value(&v.clone().into())?)))
+        .map(|(k, v)| Ok((k.clone(), ctx.render_value(&Value::from(v))?)))
         .collect::<Result<Vec<_>>>()?;
     let definitions = raw
         .definitions
         .iter()
-        .map(|(k, v)| Ok((k.clone(), ctx.engine().resolve(&v.clone().into())?)))
+        .map(|(k, v)| Ok((k.clone(), ctx.engine().resolve(&Value::from(v))?)))
         .collect::<Result<Vec<_>>>()?;
 
     let tc = Toolchain {
@@ -412,7 +412,7 @@ fn apply_env_map(
     // Overlay the raw entries under both the namespace and env.* so entries may
     // reference each other in any order, then resolve each.
     for (k, v) in raw {
-        let val: Value = v.clone().into();
+        let val = Value::from(v);
         ctx.set(&format!("{ns}.{k}"), val.clone());
         ctx.set_env(k, template_string(&val));
     }
@@ -439,7 +439,7 @@ fn apply_def_map(
         return Ok(());
     }
     for (k, v) in raw {
-        ctx.set(&format!("{ns}.{k}"), v.clone().into());
+        ctx.set(&format!("{ns}.{k}"), Value::from(v));
     }
     let engine = ctx.engine();
     for k in raw.keys() {

@@ -181,11 +181,12 @@ pub fn parse_url(url: &str) -> Option<RemoteInfo> {
         return None;
     }
 
+    let service = detect_service(&host);
     Some(RemoteInfo {
-        host: host.clone(),
+        host,
         owner: owner.to_owned(),
         repo: repo.to_owned(),
-        service: detect_service(&host),
+        service,
     })
 }
 

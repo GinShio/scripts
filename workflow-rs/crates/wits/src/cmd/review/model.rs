@@ -15,7 +15,8 @@
 use serde::{Deserialize, Serialize};
 
 use wits_util::forge::{
-    DiffVersion, MrState, MrSummary, RemoteComment, RemotePlacement, RemoteThread, Side, Verdict,
+    DiffVersion, LineRef, MrState, MrSummary, RemoteComment, RemotePlacement, RemoteThread, Side,
+    Verdict,
 };
 
 /// The store/JSON schema version. Bumped on an incompatible shape change.
@@ -144,7 +145,8 @@ impl Info {
     }
 }
 
-/// Where a comment sits, in the read/output view.
+/// Where a comment sits, in the read/output view. The line placement uses the
+/// nested [`LineRef`] shape so a multi-line span can cross diff sides.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Placement {
@@ -152,10 +154,11 @@ pub enum Placement {
         path: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         old_path: Option<String>,
-        side: Side,
-        line: u32,
+        /// The anchor (end) line.
+        end: LineRef,
+        /// The start line of a multi-line span, when set.
         #[serde(skip_serializing_if = "Option::is_none", default)]
-        start_line: Option<u32>,
+        start: Option<LineRef>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         commit: Option<String>,
     },
@@ -173,15 +176,14 @@ impl From<RemotePlacement> for Placement {
             RemotePlacement::Line {
                 path,
                 old_path,
-                side,
-                line,
+                end,
+                start,
                 commit,
             } => Placement::Line {
                 path,
                 old_path,
-                side,
-                line,
-                start_line: None,
+                end,
+                start,
                 commit,
             },
             RemotePlacement::File { path } => Placement::File { path, commit: None },
@@ -274,8 +276,13 @@ pub enum Action {
         line: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         side: Option<Side>,
+        /// First line of a multi-line span (with `line` as the end). Defaults to
+        /// the same side as `side` unless `start_side` overrides it.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         start_line: Option<u32>,
+        /// Side of the multi-line `start_line`; defaults to `side` when absent.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        start_side: Option<Side>,
         body: String,
         /// The snapshot head SHA this comment's line anchors were written
         /// against. When set, `submit` anchors the comment to this commit
@@ -305,18 +312,27 @@ impl Action {
                 line: Some(line),
                 side,
                 start_line,
+                start_side,
                 commit,
                 ..
             } => {
                 let c = commit
                     .clone()
                     .or_else(|| (!head.is_empty()).then(|| head.to_owned()));
+                let s = side.unwrap_or(Side::New);
+                let end = LineRef {
+                    line: *line,
+                    side: s,
+                };
+                let start = start_line.map(|sl| LineRef {
+                    line: sl,
+                    side: start_side.unwrap_or(s),
+                });
                 Some(Placement::Line {
                     path: path.clone(),
                     old_path: None,
-                    side: side.unwrap_or(Side::New),
-                    line: *line,
-                    start_line: *start_line,
+                    end,
+                    start,
                     commit: c,
                 })
             }
@@ -358,6 +374,17 @@ pub struct Local {
     pub actions: Vec<Action>,
 }
 
+/// The canonical, forge-facing form of a thread id: the bare forge id, with any
+/// `remote:` prefix (`show`/`local.json` print ids in that form) stripped. The
+/// draft's `thread` field on `reply`/`resolve` accepts either the bare id or the
+/// `remote:` form and treats the two as the same thread, so the prefix must not
+/// survive into the forge URL or into the read-fold's id match — `remote:9987`
+/// stamped verbatim would become `remote:remote:9987` against a thread whose id
+/// is `remote:9987`, matching nothing (fold) or 404ing (submit).
+pub fn bare_thread_id(thread: &str) -> &str {
+    thread.strip_prefix("remote:").unwrap_or(thread)
+}
+
 /// Truncate a SHA to a display-friendly prefix (11 hex chars, like `git log`).
 pub fn short(sha: &str) -> &str {
     &sha[..sha.len().min(11)]
@@ -385,14 +412,19 @@ impl Local {
     ///
     /// Also stamps each `Comment` action's `commit` with `head` when it is not
     /// already set, so hand-edited or pre-commit drafts get anchored to the
-    /// current snapshot.
+    /// current snapshot, and canonicalizes a `reply`/`resolve` `thread` to the
+    /// bare forge id so a `remote:<id>` written into the draft can't leak into a
+    /// forge URL (a 404) or the read-fold's id match (a miss).
     pub fn normalize(&mut self, head: &str) {
-        // Last-wins per resolved thread: find the final resolve for each thread.
+        // Last-wins per resolved thread: find the final resolve for each thread,
+        // keyed on the bare forge id so `remote:9987` and `9987` collapse together.
+        // The stored form is the bare id (canonical) so neither the read-fold nor
+        // submit ever has to deal with a stray prefix.
         let mut last_resolve: std::collections::HashMap<String, bool> =
             std::collections::HashMap::new();
         for a in &self.actions {
             if let Action::Resolve { thread, resolved } = a {
-                last_resolve.insert(thread.clone(), *resolved);
+                last_resolve.insert(bare_thread_id(thread).to_owned(), *resolved);
             }
         }
 
@@ -407,12 +439,22 @@ impl Local {
                     *commit = Some(head.to_owned());
                 }
             }
+            // Canonicalize thread-targeting actions to the bare forge id, so the
+            // stored draft never carries a `remote:` prefix that the read-fold or
+            // submit would have to strip.
+            match &mut a {
+                Action::Reply { thread, .. } | Action::Resolve { thread, .. } => {
+                    *thread = bare_thread_id(thread).to_owned();
+                }
+                _ => {}
+            }
             match &a {
                 Action::Resolve { thread, .. } => {
-                    if resolved_emitted.insert(thread.clone()) {
-                        let resolved = last_resolve[thread];
+                    let bare = thread.clone();
+                    if resolved_emitted.insert(bare.clone()) {
+                        let resolved = last_resolve[bare.as_str()];
                         seen.push(Action::Resolve {
-                            thread: thread.clone(),
+                            thread: bare,
                             resolved,
                         });
                     }
@@ -422,5 +464,190 @@ impl Local {
             }
         }
         self.actions = seen;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn comment(file: &str, line: u32, commit: Option<&str>) -> Action {
+        Action::Comment {
+            file: Some(file.into()),
+            line: Some(line),
+            side: None,
+            start_line: None,
+            start_side: None,
+            body: "x".into(),
+            commit: commit.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn normalize_stamps_unstamped_comments_with_current_head() {
+        let mut local = Local {
+            schema: SCHEMA,
+            verdict: None,
+            summary: None,
+            actions: vec![comment("a.c", 1, None)],
+        };
+        local.normalize("deadbeef");
+        match &local.actions[0] {
+            Action::Comment { commit, .. } => assert_eq!(commit.as_deref(), Some("deadbeef")),
+            _ => panic!("expected a comment"),
+        }
+    }
+
+    #[test]
+    fn normalize_leaves_explicit_commit_intact() {
+        let mut local = Local {
+            schema: SCHEMA,
+            verdict: None,
+            summary: None,
+            actions: vec![
+                comment("a.c", 1, Some("older")),
+                comment("a.c", 1, Some("older")),
+            ],
+        };
+        local.normalize("deadbeef");
+        // Dedup drops the exact repeat, and the survivor keeps its own commit,
+        // not the current head.
+        assert_eq!(local.actions.len(), 1);
+        match &local.actions[0] {
+            Action::Comment { commit, .. } => assert_eq!(commit.as_deref(), Some("older")),
+            _ => panic!("expected a comment"),
+        }
+    }
+
+    #[test]
+    fn normalize_dedup_keeps_distinct_commits() {
+        // Same file/line but different snapshots are two distinct intents —
+        // both survive dedup (cross-snapshot drafting).
+        let mut local = Local {
+            schema: SCHEMA,
+            verdict: None,
+            summary: None,
+            actions: vec![
+                comment("a.c", 1, Some("snapA")),
+                comment("a.c", 1, Some("snapB")),
+            ],
+        };
+        local.normalize("deadbeef");
+        assert_eq!(local.actions.len(), 2);
+    }
+
+    #[test]
+    fn normalize_collapses_repeated_resolves_to_the_last() {
+        let mut local = Local {
+            schema: SCHEMA,
+            verdict: None,
+            summary: None,
+            actions: vec![
+                Action::Resolve {
+                    thread: "42".into(),
+                    resolved: true,
+                },
+                Action::Resolve {
+                    thread: "42".into(),
+                    resolved: false,
+                },
+                Action::Resolve {
+                    thread: "42".into(),
+                    resolved: true,
+                },
+            ],
+        };
+        local.normalize("deadbeef");
+        assert_eq!(local.actions.len(), 1);
+        match &local.actions[0] {
+            Action::Resolve { thread, resolved } => {
+                assert_eq!(thread, "42");
+                assert!(*resolved, "last write wins");
+            }
+            _ => panic!("expected a resolve"),
+        }
+    }
+
+    #[test]
+    fn normalize_collapses_remote_prefix_to_bare_thread_id() {
+        // A draft written with `remote:42` and one written with the bare `42`
+        // refer to the same thread; normalize keys them together (last write
+        // wins) and stores the canonical bare form, so neither show's fold nor
+        // submit ever sees a `remote:` prefix leak into the forge URL.
+        let mut local = Local {
+            schema: SCHEMA,
+            verdict: None,
+            summary: None,
+            actions: vec![
+                Action::Resolve {
+                    thread: "remote:42".into(),
+                    resolved: false,
+                },
+                Action::Resolve {
+                    thread: "42".into(),
+                    resolved: true,
+                },
+                Action::Reply {
+                    thread: "remote:42".into(),
+                    body: "x".into(),
+                },
+            ],
+        };
+        local.normalize("deadbeef");
+        // The two resolves collapse to one bare-id action, last value wins.
+        let resolves: Vec<_> = local
+            .actions
+            .iter()
+            .filter(|a| matches!(a, Action::Resolve { .. }))
+            .collect();
+        assert_eq!(resolves.len(), 1);
+        match &resolves[0] {
+            Action::Resolve { thread, resolved } => {
+                assert_eq!(thread, "42");
+                assert!(*resolved, "last write wins");
+            }
+            _ => unreachable!(),
+        }
+        // The reply keeps its body; its thread is normalized to bare too.
+        match &local
+            .actions
+            .iter()
+            .find(|a| matches!(a, Action::Reply { .. }))
+            .unwrap()
+        {
+            Action::Reply { thread, .. } => assert_eq!(thread, "42"),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn bare_thread_id_strips_the_remote_prefix() {
+        assert_eq!(bare_thread_id("remote:9987"), "9987");
+        assert_eq!(bare_thread_id("9987"), "9987");
+    }
+
+    #[test]
+    fn normalize_is_idempotent() {
+        let mut local = Local {
+            schema: SCHEMA,
+            verdict: None,
+            summary: None,
+            actions: vec![
+                comment("a.c", 1, Some("snap")),
+                comment("a.c", 1, Some("snap")),
+                Action::Resolve {
+                    thread: "42".into(),
+                    resolved: true,
+                },
+                Action::Resolve {
+                    thread: "42".into(),
+                    resolved: false,
+                },
+            ],
+        };
+        local.normalize("deadbeef");
+        let once = local.actions.clone();
+        local.normalize("deadbeef");
+        assert_eq!(local.actions, once, "a second normalize is a no-op");
     }
 }

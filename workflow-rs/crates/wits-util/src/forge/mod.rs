@@ -23,8 +23,9 @@ pub mod review;
 use serde_json::Value;
 
 pub use review::{
-    DiffVersion, FeedQuery, FeedStates, MrDetails, MrSummary, RemoteComment, RemotePlacement,
-    RemoteThread, ReviewSubmission, Side, SubmitComment, SubmitPlacement, Verdict,
+    DiffVersion, FeedQuery, FeedStates, LineRef, MrDetails, MrSummary, RemoteComment,
+    RemotePlacement, RemoteThread, ReviewOutcome, ReviewSubmission, Side, SubmitComment,
+    SubmitPlacement, Verdict,
 };
 
 use crate::git::Repository;
@@ -168,8 +169,20 @@ pub trait Forge: Send + Sync {
     }
 
     /// Flush a batched review — verdict, summary, and new inline/file comments —
-    /// as one review where the platform allows it.
-    fn submit_review(&self, _id: &str, _review: &ReviewSubmission) -> anyhow::Result<()> {
+    /// as one review where the platform allows it. The result is a granular
+    /// [`ReviewOutcome`]: each comment, the summary, and the verdict report their
+    /// own success so the orchestration layer reconciles per action — a landed
+    /// comment is cleared, a failed one stays, and a verdict failure never
+    /// poisons comments already posted.
+    ///
+    /// `Err` means *nothing* landed (a total failure, or a partial state that
+    /// the backend rolled back to nothing); the caller keeps the whole draft.
+    /// A partial success is always `Ok` with the per-step outcomes filled in.
+    fn submit_review(
+        &self,
+        _id: &str,
+        _review: &ReviewSubmission,
+    ) -> anyhow::Result<ReviewOutcome> {
         anyhow::bail!("`wits review` has no backend for this forge yet")
     }
 
@@ -218,6 +231,71 @@ pub(crate) enum Auth {
     PrivateToken(String),
 }
 
+/// Send a request with retry on transient failures (429, 502, 503). Returns
+/// the raw `ureq::Response` on success so callers can read headers before
+/// consuming the body.
+///
+/// Exponential backoff (1s → 2s → 4s, capped at 30s) with `Retry-After`
+/// honoured. All forge mutations here are either idempotent or additive, so
+/// a retry on a definitive server response never creates duplicate side
+/// effects.
+fn send_with_retry(
+    method: &str,
+    url: &str,
+    auth: &Auth,
+    body: Option<&Value>,
+) -> anyhow::Result<ureq::Response> {
+    let max_retries = 3u32;
+    let mut backoff_ms = 1000u64;
+
+    for attempt in 0..=max_retries {
+        let mut req = ureq::request(method, url)
+            .set("Accept", "application/json")
+            .set("User-Agent", "wits-stack");
+        req = match auth {
+            Auth::Bearer(t) => req.set("Authorization", &format!("Bearer {t}")),
+            Auth::Token(t) => req.set("Authorization", &format!("token {t}")),
+            Auth::PrivateToken(t) => req.set("PRIVATE-TOKEN", t),
+        };
+
+        let response = match body {
+            Some(b) => req.send_json(b),
+            None => req.call(),
+        };
+
+        match response {
+            Ok(r) => return Ok(r),
+            Err(ureq::Error::Status(code, r)) if is_retryable(code) && attempt < max_retries => {
+                let wait_ms = r
+                    .header("retry-after")
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .map(|secs| secs * 1000)
+                    .unwrap_or(backoff_ms);
+                log::info!(
+                    "HTTP {code} from {url}, retrying in {wait_ms}ms \
+                     (attempt {}/{max_retries})",
+                    attempt + 1,
+                );
+                std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                backoff_ms = (backoff_ms * 2).min(30_000);
+            }
+            Err(ureq::Error::Status(code, r)) => {
+                let detail = r.into_string().unwrap_or_default();
+                anyhow::bail!("HTTP {code}: {}", detail.trim());
+            }
+            Err(e) => return Err(anyhow::anyhow!("request to {url} failed: {e}")),
+        }
+    }
+    unreachable!("retry loop must return before exhausting attempts")
+}
+
+/// Whether a status code warrants a retry. Only codes where the server
+/// explicitly signals a transient condition are included — 4xx errors (other
+/// than 429) are permanent and retrying them wastes time.
+fn is_retryable(code: u16) -> bool {
+    matches!(code, 429 | 502 | 503)
+}
+
 /// Issue one request and decode the JSON reply. A non-2xx status is turned into
 /// an error carrying the platform's own message body, because that text is
 /// usually the only thing that explains *why* (a stale token, a base that
@@ -228,28 +306,67 @@ pub(crate) fn request(
     auth: &Auth,
     body: Option<&Value>,
 ) -> anyhow::Result<Value> {
-    let mut req = ureq::request(method, url)
-        .set("Accept", "application/json")
-        .set("User-Agent", "wits-stack");
-    req = match auth {
-        Auth::Bearer(t) => req.set("Authorization", &format!("Bearer {t}")),
-        Auth::Token(t) => req.set("Authorization", &format!("token {t}")),
-        Auth::PrivateToken(t) => req.set("PRIVATE-TOKEN", t),
-    };
+    let r = send_with_retry(method, url, auth, body)?;
+    Ok(r.into_json().unwrap_or(Value::Null))
+}
 
-    let response = match body {
-        Some(b) => req.send_json(b.clone()),
-        None => req.call(),
-    };
-
-    match response {
-        Ok(r) => Ok(r.into_json().unwrap_or(Value::Null)),
-        Err(ureq::Error::Status(code, r)) => {
-            let detail = r.into_string().unwrap_or_default();
-            anyhow::bail!("HTTP {code}: {}", detail.trim());
+/// Issue a paginated request, accumulating items across pages. Each backend
+/// supplies a parser that extracts items from one page and the next-page URL
+/// (parsed from `Link` headers on GitHub, `X-Next-Page` on GitLab, etc.).
+///
+/// The parser is called once per page; its items are appended to the
+/// accumulator before the next page is fetched. A `None` next-URL (or
+/// exceeding `max_pages`) terminates the loop.
+pub(crate) fn request_paginated<T>(
+    initial_url: &str,
+    auth: &Auth,
+    max_pages: usize,
+    mut parse_page: impl FnMut(&Value, &[(String, String)]) -> (Vec<T>, Option<String>),
+) -> anyhow::Result<Vec<T>> {
+    let mut all = Vec::new();
+    let mut url = Some(initial_url.to_owned());
+    let mut pages = 0;
+    while let Some(u) = url {
+        if pages >= max_pages {
+            break;
         }
-        Err(e) => Err(anyhow::anyhow!("request to {url} failed: {e}")),
+        let response = send_with_retry("GET", &u, auth, None)?;
+        let headers: Vec<(String, String)> = response
+            .headers_names()
+            .into_iter()
+            .filter_map(|name| {
+                response
+                    .header(&name)
+                    .map(|value| (name.to_lowercase(), value.to_owned()))
+            })
+            .collect();
+        let v: Value = response.into_json().unwrap_or(Value::Null);
+        let (items, next) = parse_page(&v, &headers);
+        all.extend(items);
+        url = next;
+        pages += 1;
     }
+    Ok(all)
+}
+
+/// Parse a GitHub-style `Link` header for the `rel="next"` URL.
+pub(crate) fn parse_link_next(headers: &[(String, String)]) -> Option<String> {
+    headers
+        .iter()
+        .find(|(name, _)| name == "link")
+        .and_then(|(_, value)| {
+            value.split(',').find_map(|part| {
+                let part = part.trim();
+                if part.contains("rel=\"next\"") {
+                    part.split('<')
+                        .nth(1)
+                        .and_then(|rest| rest.split('>').next())
+                        .map(str::to_owned)
+                } else {
+                    None
+                }
+            })
+        })
 }
 
 /// The literal a caller passes for "the authenticated user".

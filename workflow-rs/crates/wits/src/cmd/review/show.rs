@@ -11,8 +11,8 @@ use serde::Serialize;
 use wits_util::git::Repository;
 
 use super::model::{
-    short, Action, Comment, Local, MrInfo, Placement, Snapshot, StoredCommit, StoredFile, Thread,
-    SCHEMA,
+    bare_thread_id, short, Action, Comment, Local, MrInfo, Placement, Snapshot, StoredCommit,
+    StoredFile, Thread, SCHEMA,
 };
 use super::{local, ShowArgs};
 
@@ -87,7 +87,7 @@ fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
         format!("MR {id} isn't in the store yet — run `wits review fetch {id}` first")
     })?;
     let comments = ctx.store.load_comments(id);
-    let draft = ctx.store.load_local(id);
+    let draft = ctx.store.load_local(id)?;
 
     let infos = ctx.store.list_infos();
     let (nodes, position) = super::stack_chain(&infos, id);
@@ -150,13 +150,13 @@ fn merge_threads(mut threads: Vec<Thread>, draft: &Local, head: &str) -> Vec<Thr
                 });
             }
             Action::Reply { thread, body } => {
-                let target = format!("remote:{thread}");
+                let target = format!("remote:{}", bare_thread_id(thread));
                 if let Some(t) = threads.iter_mut().find(|t| t.id == target) {
                     t.comments.push(pending_comment(&local_id, body));
                 }
             }
             Action::Resolve { thread, resolved } => {
-                let target = format!("remote:{thread}");
+                let target = format!("remote:{}", bare_thread_id(thread));
                 if let Some(t) = threads.iter_mut().find(|t| t.id == target) {
                     t.resolved = *resolved;
                 }
@@ -213,7 +213,15 @@ fn show_inbox(ctx: &super::Local, args: &ShowArgs) -> Result<()> {
     let items: Vec<InboxItem> = infos
         .into_iter()
         .map(|info| {
-            let pending = pending_count(&ctx.store.load_local(&info.mr.id));
+            // One MR's corrupt draft shouldn't sink the rest of the inbox —
+            // degrade to "no pending actions" with a per-MR warning.
+            let pending = match ctx.store.load_local(&info.mr.id) {
+                Ok(draft) => pending_count(&draft),
+                Err(e) => {
+                    log::warn!("MR {}: skipping draft in inbox: {e}", info.mr.id);
+                    0
+                }
+            };
             InboxItem {
                 mr: info.mr,
                 review: InboxReview { pending },
@@ -299,25 +307,23 @@ fn print_detail_human(view: &DetailView) {
         let verdict = view
             .draft
             .verdict
-            .map(|v| format!(" verdict={}", verdict_word(v)))
+            .map(|v| format!(" verdict={}", v.display_str()))
             .unwrap_or_default();
         println!("  draft: {} pending action(s){verdict}", view.draft.pending);
-    }
-}
-
-fn verdict_word(v: wits_util::forge::Verdict) -> &'static str {
-    match v {
-        wits_util::forge::Verdict::Approve => "approve",
-        wits_util::forge::Verdict::RequestChanges => "request-changes",
-        wits_util::forge::Verdict::Comment => "comment",
     }
 }
 
 fn describe_placement(p: &Placement) -> String {
     match p {
         Placement::Line {
-            path, line, side, ..
-        } => format!("{path}:{line} ({})", side.as_str()),
+            path, end, start, ..
+        } => {
+            let span = match start {
+                Some(s) => format!("{}-{}", s.line, end.line),
+                None => end.line.to_string(),
+            };
+            format!("{path}:{span} ({})", end.side.as_str())
+        }
         Placement::File { path, .. } => format!("{path} (file)"),
         Placement::Mr => "(conversation)".to_owned(),
     }
@@ -343,8 +349,16 @@ fn ingest(ctx: &super::Local, id: &str, input: &std::path::Path) -> Result<()> {
         std::fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?
     };
     let batch: Local = serde_json::from_str(&text).context("parsing the draft batch as JSON")?;
+    if batch.schema != SCHEMA {
+        anyhow::bail!(
+            "draft batch schema {} is unsupported (expected {}). The `local.json` \
+             contract has likely changed — regenerate the batch with the current shape.",
+            batch.schema,
+            SCHEMA
+        );
+    }
 
-    let mut draft = ctx.store.load_local(id);
+    let mut draft = ctx.store.load_local(id)?;
     let added = batch.actions.len();
 
     // Stamp each incoming comment's `commit` with the current snapshot head, so
@@ -385,7 +399,7 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
         return ingest(&ctx, &id, input);
     }
 
-    let draft = ctx.store.load_local(&id);
+    let draft = ctx.store.load_local(&id)?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&draft)?);
@@ -396,7 +410,7 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
         return Ok(());
     }
     if let Some(v) = draft.verdict {
-        println!("verdict: {}", verdict_word(v));
+        println!("verdict: {}", v.display_str());
     }
     if let Some(s) = &draft.summary {
         println!("summary: {}", first_line(s));
@@ -413,13 +427,14 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
             }
             Action::Reply { thread, body } => {
                 println!(
-                    "  local:{i}  reply -> remote:{thread}  {}",
+                    "  local:{i}  reply -> remote:{}  {}",
+                    bare_thread_id(thread),
                     first_line(body)
                 )
             }
             Action::Resolve { thread, resolved } => {
                 let verb = if *resolved { "resolve" } else { "unresolve" };
-                println!("  local:{i}  {verb} remote:{thread}")
+                println!("  local:{i}  {verb} remote:{}", bare_thread_id(thread))
             }
         }
     }

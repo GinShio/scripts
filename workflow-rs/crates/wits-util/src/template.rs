@@ -130,6 +130,22 @@ impl From<toml::Value> for Value {
     }
 }
 
+impl From<&toml::Value> for Value {
+    fn from(v: &toml::Value) -> Self {
+        match v {
+            toml::Value::String(s) => Value::Str(s.clone()),
+            toml::Value::Integer(n) => Value::Int(*n),
+            toml::Value::Float(f) => Value::Float(*f),
+            toml::Value::Boolean(b) => Value::Bool(*b),
+            toml::Value::Datetime(d) => Value::Str(d.to_string()),
+            toml::Value::Array(a) => Value::List(a.iter().map(Value::from).collect()),
+            toml::Value::Table(t) => {
+                Value::Map(t.iter().map(|(k, v)| (k.clone(), Value::from(v))).collect())
+            }
+        }
+    }
+}
+
 fn format_float(f: f64) -> String {
     if f.fract() == 0.0 && f.is_finite() {
         format!("{f:.1}")

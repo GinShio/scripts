@@ -70,8 +70,20 @@ impl Store {
 
     // -- local (the editable draft) ------------------------------------------
 
-    pub fn load_local(&self, id: &str) -> Local {
-        read_json(&self.mr_dir(id).join("local.json")).unwrap_or_default()
+    /// The editable draft — the one *precious* file, the only one that would
+    /// be lost. Its absence is a legitimate empty draft; a present-but-
+    /// unparseable file is a real error we surface rather than silently treating
+    /// as empty (a hand-edit typo must never erase your in-progress review).
+    pub fn load_local(&self, id: &str) -> Result<Local> {
+        let path = self.mr_dir(id).join("local.json");
+        if !path.exists() {
+            return Ok(Local::default());
+        }
+        let text =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let local: Local = serde_json::from_str(&text)
+            .with_context(|| format!("parsing {} — fix the JSON or delete it", path.display()))?;
+        Ok(local)
     }
 
     /// Persist the draft, or delete the file once it has emptied — an empty
@@ -212,11 +224,12 @@ mod tests {
             line: Some(3),
             side: None,
             start_line: None,
+            start_side: None,
             body: "hi".into(),
             commit: None,
         });
         store.save_local("7", &local).unwrap();
-        assert_eq!(store.load_local("7").actions.len(), 1);
+        assert_eq!(store.load_local("7").unwrap().actions.len(), 1);
         assert_eq!(store.local_ids(), ["7"]);
 
         store

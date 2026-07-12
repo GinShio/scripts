@@ -31,6 +31,18 @@ impl Side {
     }
 }
 
+/// One endpoint of a line anchor: a file line and the diff side it lives on.
+/// Each endpoint carries its own side so a multi-line span can cross sides — a
+/// comment starting on a deleted (old-side) line and ending on an added
+/// (new-side) one. This is the single nested shape every placement speaks in;
+/// each forge translates it to its native anchor form (GitHub `line`/`side`/
+/// `start_line`/`start_side`; GitLab `position.line_range{start,end}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineRef {
+    pub line: u32,
+    pub side: Side,
+}
+
 /// A reviewer's verdict on an MR. `RequestChanges` is a GitHub/Gitea concept;
 /// GitLab has no native equivalent and maps it to "leave a comment review and do
 /// not approve" (see the capability matrix).
@@ -40,6 +52,17 @@ pub enum Verdict {
     Approve,
     RequestChanges,
     Comment,
+}
+
+impl Verdict {
+    /// A short, stable display string for logs and dry-run output.
+    pub fn display_str(self) -> &'static str {
+        match self {
+            Verdict::Approve => "approve",
+            Verdict::RequestChanges => "request-changes",
+            Verdict::Comment => "comment",
+        }
+    }
 }
 
 /// The lifecycle states a feed pulls. `merged`/`closed` are deliberately never
@@ -125,12 +148,13 @@ pub struct MrDetails {
 /// Where a remote thread is anchored, normalized across platforms.
 #[derive(Debug, Clone)]
 pub enum RemotePlacement {
-    /// On a code line of a changed file.
+    /// On a code line of a changed file. `end` is the anchor line; `start`, when
+    /// present, makes it a multi-line span (and may sit on the other side).
     Line {
         path: String,
         old_path: Option<String>,
-        side: Side,
-        line: u32,
+        end: LineRef,
+        start: Option<LineRef>,
         commit: Option<String>,
     },
     /// On a changed file, no specific line.
@@ -159,22 +183,27 @@ pub struct RemoteThread {
 }
 
 /// Where a new comment being submitted should land. Carries the reviewed
-/// `commit` so an outdated anchor is honoured rather than silently re-based.
+/// [`DiffVersion`] so an outdated anchor is honoured rather than silently
+/// re-based — and so GitLab, whose diff-note `position` needs all three SHAs, can
+/// anchor a comment to the snapshot it was written on. The line anchor is the
+/// nested [`LineRef`] shape each forge translates to its own anchor form.
 #[derive(Debug, Clone)]
 pub enum SubmitPlacement {
     Line {
         path: String,
         old_path: Option<String>,
-        side: Side,
-        /// The end line of the comment (a single line when `start_line` is None).
-        line: u32,
-        /// The first line of a multi-line comment, if any.
-        start_line: Option<u32>,
-        commit: String,
+        /// The anchor (end) line; a single-line comment when `start` is `None`.
+        end: LineRef,
+        /// The start line of a multi-line span, when set. May carry a different
+        /// side from `end` (a cross-side span).
+        start: Option<LineRef>,
+        /// The snapshot version the comment's lines were written against
+        /// (resolved from the snapshot history at build time).
+        version: DiffVersion,
     },
     File {
         path: String,
-        commit: String,
+        version: DiffVersion,
     },
 }
 
@@ -203,5 +232,52 @@ impl ReviewSubmission {
     /// The orchestration layer skips the review call entirely in this case.
     pub fn is_empty(&self) -> bool {
         self.verdict.is_none() && self.summary.is_none() && self.comments.is_empty()
+    }
+}
+
+/// The granular result of a `submit_review` — never an `Err` for a *partial*
+/// success, only for a total one (the MR was unreachable, or the whole batch
+/// was rolled back to nothing). Every step that can partially succeed reports
+/// its own outcome here, so the orchestration layer reconciles each action
+/// independently: a landed comment is cleared, a failed one stays for retry, and
+/// a verdict failure never poisons the comments already posted.
+///
+/// `Err` from `submit_review` means *nothing* landed (atomic backends on a hard
+/// failure, or a total transport failure); the caller keeps the whole draft.
+#[derive(Debug, Clone, Default)]
+pub struct ReviewOutcome {
+    /// One result per `review.comments[i]`, in order. `true` = the comment is
+    /// visible on the forge; `false` = it failed (or was rolled back) and stays
+    /// in the draft. An atomic backend (GitHub) still emits one entry per
+    /// comment — all `true` on success — so the caller's index walk is uniform.
+    pub comment_results: Vec<bool>,
+    /// Whether the summary body (if any) landed.
+    pub summary_ok: bool,
+    /// `None` when no verdict was in the submission; `Some(true)` when it
+    /// landed; `Some(false)` when it was present but failed (stays for retry).
+    pub verdict_ok: Option<bool>,
+}
+
+impl ReviewOutcome {
+    /// A fully-successful outcome for `n` comments — every comment, the
+    /// summary, and the verdict (if present) landed.
+    pub fn all_ok(n: usize, has_verdict: bool) -> Self {
+        ReviewOutcome {
+            comment_results: vec![true; n],
+            summary_ok: true,
+            verdict_ok: has_verdict.then_some(true),
+        }
+    }
+
+    /// Whether every comment in the batch landed (vacuously true when there are
+    /// none). Used to decide whether the review batch as a whole flushed.
+    pub fn comments_ok(&self) -> bool {
+        self.comment_results.iter().all(|&ok| ok)
+    }
+
+    /// Whether the whole submission flushed — comments, summary, and verdict
+    /// (when present). Only a fully-flushed draft triggers a re-fetch.
+    pub fn fully_ok(&self) -> bool {
+        self.comments_ok() && self.summary_ok && self.verdict_ok.unwrap_or(true)
     }
 }
