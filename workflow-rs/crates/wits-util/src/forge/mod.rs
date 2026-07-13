@@ -404,7 +404,7 @@ pub fn detect(repo: &Repository, remotes: &Remotes) -> anyhow::Result<Box<dyn Fo
     // A host override lets a self-hosted GitLab/Gitea behind a custom domain
     // declare itself when the hostname gives nothing away.
     let service = repo
-        .get_config(&format!("workflow.platform.{}.service", target.host))
+        .get_config(&format!("wits.forge.{}.service", target.host))
         .ok()
         .flatten()
         .and_then(|s| Service::parse(&s))
@@ -425,7 +425,7 @@ pub fn detect(repo: &Repository, remotes: &Remotes) -> anyhow::Result<Box<dyn Fo
              (`wits stack sync` still pushes to it)"
         ),
         Service::Unknown => anyhow::bail!(
-            "could not detect the forge for host '{}'; set workflow.platform.{}.service",
+            "could not detect the forge for host '{}'; set wits.forge.{}.service",
             target.host,
             target.host
         ),
@@ -433,7 +433,7 @@ pub fn detect(repo: &Repository, remotes: &Remotes) -> anyhow::Result<Box<dyn Fo
 
     let token = resolve_token(repo, &target.host, service).ok_or_else(|| {
         anyhow::anyhow!(
-            "no API token for {} ({}); set workflow.platform.{}.token or the platform's *_TOKEN env var",
+            "no API token for {} ({}); set wits.forge.{}.token or the platform's *_TOKEN env var",
             target.host,
             service.as_str(),
             target.host
@@ -449,7 +449,7 @@ pub fn detect(repo: &Repository, remotes: &Remotes) -> anyhow::Result<Box<dyn Fo
     };
 
     let api_url_override = repo
-        .get_config(&format!("workflow.platform.{}.api-url", target.host))
+        .get_config(&format!("wits.forge.{}.api-url", target.host))
         .ok()
         .flatten();
 
@@ -487,9 +487,9 @@ pub fn detect(repo: &Repository, remotes: &Remotes) -> anyhow::Result<Box<dyn Fo
 /// secret and the explicit per-host config is the most precise answer.
 fn resolve_token(repo: &Repository, host: &str, service: Service) -> Option<String> {
     let config_keys = [
-        format!("workflow.platform.{host}.token"),
-        format!("workflow.platform.{}.token", service.as_str()),
-        "workflow.platform.token".to_owned(),
+        format!("wits.forge.{host}.token"),
+        format!("wits.forge.{}.token", service.as_str()),
+        "wits.forge.token".to_owned(),
     ];
     for key in &config_keys {
         if let Some(v) = repo.get_config(key).ok().flatten() {

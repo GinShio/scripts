@@ -243,7 +243,7 @@ Parse the messy reality of remote URLs into `host / owner / repo` plus a detecte
 service: scp-syntax (`git@host:owner/repo`), full URIs, SSH alias resolution via
 `ssh -G`, and a small domain-normalization table (e.g. `ssh.github.com` →
 `github.com`). Detection is host-based with a config override
-(`workflow.platform.<host>.service`) so a self-hosted GitLab/Gitea behind a
+(`wits.forge.<host>.service`) so a self-hosted GitLab/Gitea behind a
 custom domain can be told what it is.
 
 ### 7.3 The forge abstraction
@@ -322,8 +322,8 @@ auth header; it does not become a public `wits_util::http` because nothing else 
 it yet.
 
 Token resolution, most specific first:
-`workflow.platform.<host>.token` → `workflow.platform.<service>.token` →
-`workflow.platform.token` → env (`GITHUB_TOKEN` / `GITLAB_TOKEN` /
+`wits.forge.<host>.token` → `wits.forge.<service>.token` →
+`wits.forge.token` → env (`GITHUB_TOKEN` / `GITLAB_TOKEN` /
 `GITEA_TOKEN` / `FORGEJO_TOKEN` / `CODEBERG_TOKEN`). Environment is the most
 deliberate, most ephemeral override, consistent with the rest of the codebase.
 

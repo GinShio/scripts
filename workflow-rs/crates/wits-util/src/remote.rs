@@ -33,7 +33,7 @@ pub enum Service {
 }
 
 impl Service {
-    /// The lowercase name used in config keys (`workflow.platform.<name>.token`)
+    /// The lowercase name used in config keys (`wits.forge.<name>.token`)
     /// and as the value of a `.service` override.
     pub fn as_str(self) -> &'static str {
         match self {

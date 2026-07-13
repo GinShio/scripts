@@ -402,7 +402,7 @@ the main clone share one store — you can review from either.
 Two axes, split by what each is good at:
 
 - **Identity and secrets** — token, service override, api-url — stay in **git
-  config** under `workflow.platform.*`, reused verbatim from `stack`. Per-host,
+  config** under `wits.forge.*`, reused verbatim from `stack`. Per-host,
   per-repo, and appropriate for a secret. `review` needs nothing new here.
 - **Review behaviour** — feeds and their filters (§9), cache policy — goes in
   **TOML**, because it is structured and will grow, and git config is a poor home

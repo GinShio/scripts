@@ -57,16 +57,16 @@ fetch  ─────────►  info.json + comments.json        ◄─�
 
 | Where | Example |
 |---|---|
-| git config, per host | `git config workflow.platform.github.com.token ghp_xxx` |
-| git config, blanket | `git config workflow.platform.token ghp_xxx` |
+| git config, per host | `git config wits.forge.github.com.token ghp_xxx` |
+| git config, blanket | `git config wits.forge.token ghp_xxx` |
 | environment | `export GITHUB_TOKEN=ghp_xxx` (or `GITLAB_TOKEN`) |
 
 The forge (GitHub or GitLab in this version) is detected from the **upstream**
 remote's URL, or `origin` when there is no upstream. A self-hosted instance:
 
 ```sh
-git config workflow.platform.git.acme.com.service gitlab
-git config workflow.platform.git.acme.com.api-url https://git.acme.com/api/v4
+git config wits.forge.git.acme.com.service gitlab
+git config wits.forge.git.acme.com.api-url https://git.acme.com/api/v4
 ```
 
 Only `fetch` and `submit` need a token; the read verbs (`show`, `diff`, `draft`)
@@ -352,19 +352,19 @@ Three surfaces: **environment variables** (locations and tokens),
 - **`HOME`** — Falls back to `$HOME/.config/wits/review.toml` for the feed file
   when neither override nor `XDG_CONFIG_HOME` is set.
 
-### Git config (under `workflow.platform.*`, shared with `stack`)
+### Git config (under `wits.forge.*`, shared with `stack`)
 
 Token resolution tries these in order, most specific first, then the env var:
 
-- **`workflow.platform.<host>.token`** — Token for one host (e.g.
+- **`wits.forge.<host>.token`** — Token for one host (e.g.
   `github.com`). The most precise, and what you usually set.
-- **`workflow.platform.<service>.token`** — Token for a whole service
+- **`wits.forge.<service>.token`** — Token for a whole service
   (`<service>` ∈ `github`, `gitlab`), when several hosts share a service.
-- **`workflow.platform.token`** — A blanket token, the last config fallback
+- **`wits.forge.token`** — A blanket token, the last config fallback
   before the environment.
-- **`workflow.platform.<host>.service`** — Declares a self-hosted host's type
+- **`wits.forge.<host>.service`** — Declares a self-hosted host's type
   (`github` / `gitlab`) when the hostname doesn't reveal it.
-- **`workflow.platform.<host>.api-url`** — The API base for a self-hosted or
+- **`wits.forge.<host>.api-url`** — The API base for a self-hosted or
   enterprise instance (e.g. `https://git.acme.com/api/v4`).
 
 ### Feeds — `review.toml`
@@ -426,7 +426,7 @@ Bounded on purpose, and honest about it:
 | Symptom | Cause and fix |
 |---|---|
 | `no 'origin' or 'upstream' remote…` | `review` keys off the target remote; add one. |
-| `no API token for …` | Set `workflow.platform.<host>.token` or `*_TOKEN` (fetch/submit only). |
+| `no API token for …` | Set `wits.forge.<host>.token` or `*_TOKEN` (fetch/submit only). |
 | `MR N isn't in the store yet` | Run `wits review fetch N` first — read verbs use the local files. |
 | `no feed 'x'` | The repo has no `feed.x` under its `[repo."…"]` section in `review.toml`. |
 | `no feeds configured for …` | Bare `fetch` needs at least one feed; add one, or name an MR. |

@@ -53,10 +53,10 @@ Opening and editing MRs needs an API token. Put it in git config (per host is th
 most precise; a blanket key works too):
 
 ```sh
-git config workflow.platform.github.com.token  ghp_xxx
+git config wits.forge.github.com.token  ghp_xxx
 # or, less specific:
-git config workflow.platform.github.token       ghp_xxx
-git config workflow.platform.token              ghp_xxx
+git config wits.forge.github.token       ghp_xxx
+git config wits.forge.token              ghp_xxx
 ```
 
 Or supply it through the environment, which always works and is handy on CI:
@@ -87,8 +87,8 @@ The forge (GitHub/GitLab/Gitea/Forgejo/Codeberg) is detected from the
 behind a custom domain can be named explicitly:
 
 ```sh
-git config workflow.platform.git.acme.com.service gitlab
-git config workflow.platform.git.acme.com.api-url https://git.acme.com/api/v4
+git config wits.forge.git.acme.com.service gitlab
+git config wits.forge.git.acme.com.api-url https://git.acme.com/api/v4
 ```
 
 ## Building a stack with `slice`
@@ -312,12 +312,12 @@ All keys live under git config's `workflow.*` namespace.
 
 | Setting | Key | Notes |
 |---|---|---|
-| Token (per host) | `workflow.platform.<host>.token` | Most specific; `<host>` is e.g. `github.com` |
-| Token (per service) | `workflow.platform.<service>.token` | `<service>` ∈ github, gitlab, gitea, forgejo, codeberg |
-| Token (blanket) | `workflow.platform.token` | Last config fallback |
+| Token (per host) | `wits.forge.<host>.token` | Most specific; `<host>` is e.g. `github.com` |
+| Token (per service) | `wits.forge.<service>.token` | `<service>` ∈ github, gitlab, gitea, forgejo, codeberg |
+| Token (blanket) | `wits.forge.token` | Last config fallback |
 | Token (env) | `GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITEA_TOKEN`, `FORGEJO_TOKEN`, `CODEBERG_TOKEN` | Used when no config key matches. |
-| Service override | `workflow.platform.<host>.service` | Name a self-hosted host's type |
-| API base override | `workflow.platform.<host>.api-url` | For self-hosted / enterprise endpoints |
+| Service override | `wits.forge.<host>.service` | Name a self-hosted host's type |
+| API base override | `wits.forge.<host>.api-url` | For self-hosted / enterprise endpoints |
 | Branch prefix | `workflow.branch-prefix` | `slice` name suggestions (default: slug of `user.name`, else `stack/`) |
 
 There is intentionally **no** base-branch config key: the base is resolved from
@@ -341,8 +341,8 @@ are in the [behaviour reference](stack/behavior.md).
 
 | Symptom | Cause and fix |
 |---|---|
-| `no API token for …` | Set `workflow.platform.<host>.token` or the platform's `*_TOKEN` env var. |
-| `could not detect the forge for host '…'` | Self-hosted behind a custom domain: set `workflow.platform.<host>.service`. |
+| `no API token for …` | Set `wits.forge.<host>.token` or the platform's `*_TOKEN` env var. |
+| `could not detect the forge for host '…'` | Self-hosted behind a custom domain: set `wits.forge.<host>.service`. |
 | `submit` fails to create an MR ("head not found" or similar) | The branch isn't on `origin` yet — run `wits stack sync` first. |
 | A closed MR isn't reopened | Intended: a closed/merged MR at the current commit is left alone. Pass `--force` to recreate. |
 | `on the base branch '…'` | You're standing on `main`. Check out a stack branch (or use `--all`). |
