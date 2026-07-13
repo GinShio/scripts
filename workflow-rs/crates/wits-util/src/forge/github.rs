@@ -281,14 +281,21 @@ fn parse_review_thread(n: &Value) -> RemoteThread {
         Some("LEFT") => Side::Old,
         _ => Side::New,
     };
+    // A thread's `line`/`startLine` go `null` once it is outdated (the line no
+    // longer exists at the latest head); the `original*` pair is the line at the
+    // commit the comment was written on. Prefer the original — it pairs with
+    // `originalCommit` (the thread's anchor `commit`), so an outdated thread keeps
+    // a real line instead of 0.
+    let line_of =
+        |primary: &str, fallback: &str| n[primary].as_u64().or_else(|| n[fallback].as_u64());
     let anchor = if n["subjectType"].as_str() == Some("FILE") {
         Some(Anchor::File { path })
     } else {
         let end = LineRef {
-            line: n["line"].as_u64().unwrap_or(0) as u32,
+            line: line_of("originalLine", "line").unwrap_or(0) as u32,
             side: side(&n["diffSide"]),
         };
-        let start = n["startLine"].as_u64().map(|sl| LineRef {
+        let start = line_of("originalStartLine", "startLine").map(|sl| LineRef {
             line: sl as u32,
             side: side(&n["startDiffSide"]),
         });
@@ -346,8 +353,10 @@ mod gql {
     pub const THREADS_QUERY: &str = "query($owner:String!,$repo:String!,$number:Int!,$after:String){\
         repository(owner:$owner,name:$repo){pullRequest(number:$number){\
           reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}\
-            nodes{id isResolved isOutdated path line startLine diffSide startDiffSide subjectType \
+            nodes{id isResolved isOutdated path line originalLine startLine originalStartLine \
+              diffSide startDiffSide subjectType \
               comments(first:100){nodes{databaseId author{login} body createdAt originalCommit{oid}}}}}\
+          reviews(first:100){nodes{databaseId author{login} body state createdAt}}\
           comments(first:100){nodes{databaseId author{login} body createdAt}}}}}";
 
     pub const ADD_REVIEW: &str = "mutation($input:AddPullRequestReviewInput!){\
@@ -606,9 +615,30 @@ impl Forge for GitHub {
             if let Some(nodes) = rt["nodes"].as_array() {
                 threads.extend(nodes.iter().map(parse_review_thread));
             }
-            // Conversation comments are not paginated by the thread cursor; take
-            // them once, on the first page.
+            // Conversation comments and review summary bodies aren't paginated by
+            // the thread cursor; take them once, on the first page.
             if first_page {
+                // A review's top-level body (the "Requested changes: …" text that
+                // rides a verdict) is neither a review thread nor an issue
+                // comment, so it must be read from `reviews` or it's invisible.
+                // Skip PENDING (your own unsubmitted) and body-less reviews (a
+                // bare verdict, or one whose remarks are all inline threads).
+                if let Some(nodes) = pr["reviews"]["nodes"].as_array() {
+                    for r in nodes {
+                        let body = r["body"].as_str().unwrap_or_default();
+                        if body.is_empty() || r["state"].as_str() == Some("PENDING") {
+                            continue;
+                        }
+                        threads.push(RemoteThread {
+                            id: r["databaseId"].as_u64().unwrap_or(0).to_string(),
+                            resolved: false,
+                            outdated: false,
+                            anchor: None,
+                            commit: None,
+                            comments: vec![parse_gql_comment(r)],
+                        });
+                    }
+                }
                 if let Some(nodes) = pr["comments"]["nodes"].as_array() {
                     for c in nodes {
                         threads.push(RemoteThread {

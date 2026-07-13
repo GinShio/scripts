@@ -155,14 +155,22 @@ pub struct MrDetails {
 /// delete/add boundary (an old-side start through to a new-side end). Every
 /// forge translates this one shape to its native anchor form (GitHub
 /// `line`/`side`/`startLine`/`startSide`; GitLab `position.line_range`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The `#[serde(tag = "kind")]` shape (`{"kind":"line",…}` / `{"kind":"file",…}`)
+/// is the wire form the `--json` read contract emits directly — there is no
+/// second "placement" mirror type to keep in step. An MR-level conversation
+/// (no code anchor) is `Option<Anchor>::None`, serialized as an absent field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Anchor {
     /// A code line of a changed file. `end` is the anchor line; `start`, when
     /// present, makes it a multi-line span (and may sit on the other side).
     Line {
         path: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         old_path: Option<String>,
         end: LineRef,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         start: Option<LineRef>,
     },
     /// A changed file, no specific line.

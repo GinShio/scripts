@@ -334,7 +334,7 @@ pub(crate) fn stub_info(id: &str, base: &str, source: &str) -> model::Info {
         mr: model::MrInfo {
             id: id.into(),
             display: format!("#{id}"),
-            state: "open".into(),
+            state: wits_util::forge::MrState::Open,
             draft: false,
             title: String::new(),
             author: String::new(),

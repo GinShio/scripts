@@ -137,7 +137,7 @@ const COMMENTS: &str = r##"{
   "schema": 1,
   "threads": [ {
     "id": "remote:9987", "origin": "remote", "resolved": false, "outdated": true,
-    "placement": { "kind": "line", "path": "src/x.c", "end": { "line": 5, "side": "new" } },
+    "anchor": { "kind": "line", "path": "src/x.c", "end": { "line": 5, "side": "new" } },
     "comments": [ { "id": "remote:5", "author": "bob", "origin": "remote",
                     "body": "nit here", "created_at": "2026-07-01T00:00:00Z",
                     "state": "published" } ]

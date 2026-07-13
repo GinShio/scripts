@@ -266,9 +266,10 @@ comment is dropped; repeated resolutions of one thread collapse to the last),
 then handed to the forge as one review. Each platform folds as much as its native
 batch allows into **one notification**:
 
-- **GitLab** — comments (line/file/conversation), replies, the summary, and the
-  verdict all ride a single `bulk_publish`. A bare thread resolve is a separate
-  (quiet) call.
+- **GitLab** — comments (line/file/conversation), replies, the summary, and a
+  `request-changes`/`comment` reviewer state all ride a single `bulk_publish`. An
+  `approve` verdict (a real approval, which `bulk_publish` can't record) and a
+  bare thread resolve are separate (quiet) calls.
 - **GitHub** — the verdict, summary, and line/file comments are one review; a
   conversation (MR-level) comment, replies, and resolves are separate calls, each
   with its own notification (a GitHub API limit, not a choice).
@@ -411,7 +412,7 @@ Bounded on purpose, and honest about it:
 |---|---|
 | Forges | GitHub (GraphQL) and GitLab (REST). Gitea/Forgejo/Codeberg have the trait seam but no review backend. |
 | Thread resolve | Supported on **both** — GitHub via `resolveReviewThread`, GitLab via the discussion API. |
-| `request-changes` on GitLab | **Native** (`reviewer_state: requested_changes`). Instances too old for that parameter fall back to "post the review and unapprove"; detected once from `GET /version`. |
+| `request-changes` on GitLab | **Native** (`reviewer_state: requested_changes`), targeting GitLab ≥ 19; `comment` is native too (`reviewed`). An `approve` verdict is a separate real-approval call (`POST …/approve`), because `bulk_publish`'s `approved` records only a review state, not a formal approval. |
 | Editing/deleting a **published** comment | Not supported; you edit only your pending `local.json`. |
 | Cross-snapshot anchoring | Per-comment on GitLab (each comment anchors to its own snapshot version); review-level on GitHub (its API takes one commit per review, so the batch anchors to one snapshot). Comments without a `commit` use the current snapshot. |
 | Outdating | Computed **locally** and identically for both forges — a thread is outdated when its anchored line changed between the commit it was written on and the current head. Falls back to the forge's own flag only when that commit's objects aren't local. |

@@ -8,10 +8,11 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+use wits_util::forge::{Anchor, Side};
 use wits_util::git::Repository;
 
 use super::model::{
-    bare_thread_id, short, Action, Comment, Local, MrInfo, Placement, Snapshot, StoredCommit,
+    bare_thread_id, short, state_word, Action, Comment, Local, MrInfo, Snapshot, StoredCommit,
     StoredFile, Thread, SCHEMA,
 };
 use super::{local, ShowArgs};
@@ -109,7 +110,7 @@ fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
                 .current()
                 .map(|s| s.base_sha.clone())
                 .unwrap_or_default(),
-            head_sha: info.head().to_owned(),
+            head_sha: info.head().unwrap_or_default().to_owned(),
         },
         snapshots: info.snapshots.clone(),
         neighbors,
@@ -135,18 +136,19 @@ fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
 /// Fold the draft into the remote threads: new comments become local threads,
 /// replies attach to their remote thread as pending comments, resolutions flip
 /// the flag. Pending items get a synthetic `local:<n>` id for display.
-fn merge_threads(mut threads: Vec<Thread>, draft: &Local, head: &str) -> Vec<Thread> {
+fn merge_threads(mut threads: Vec<Thread>, draft: &Local, head: Option<&str>) -> Vec<Thread> {
     for (i, action) in draft.actions.iter().enumerate() {
         let local_id = format!("local:{i}");
         match action {
             Action::Comment { body, .. } => {
-                let placement = action.placement(head).unwrap_or(Placement::Mr);
+                let (anchor, commit) = action.read_anchor(head);
                 threads.push(Thread {
                     id: local_id.clone(),
                     origin: "local".into(),
                     resolved: false,
                     outdated: false,
-                    placement,
+                    anchor,
+                    commit,
                     comments: vec![pending_comment(&local_id, body)],
                 });
             }
@@ -179,44 +181,55 @@ fn pending_comment(id: &str, body: &str) -> Comment {
 }
 
 /// Recompute each line thread's `outdated` locally (redesign §5): a thread is
-/// outdated when its anchored line falls inside a region the file changed
-/// between the commit the comment was written on and the current head. This is
-/// uniform across forges and works offline, from the objects `fetch` already
-/// pins. The forge's own flag is kept only as a **fallback**, when the anchor
-/// commit's objects aren't present locally (a thread on a commit we never
-/// fetched). File/MR-level threads are never outdated.
-fn recompute_outdated(repo: &Repository, threads: &mut [Thread], head: &str) {
+/// outdated when the line(s) it is anchored to fall inside a region the file
+/// changed between the commit the comment was written on and the current head.
+/// Uniform across forges and offline, from the objects `fetch` already pins.
+///
+/// The anchor's line number is a line in *its own* commit — which is the **old**
+/// side of the `commit..head` diff — so a `New`-side anchor intersects the diff's
+/// old-side hunk ranges (a multi-line span uses its whole `[start, end]`). An
+/// `Old`-side (deleted-line) anchor names a line in a base we don't diff here, so
+/// it can't be computed cleanly and keeps whatever the forge reported. The forge
+/// flag is also the fallback when the anchor commit's objects aren't local.
+/// File/MR-level threads are never outdated.
+fn recompute_outdated(repo: &Repository, threads: &mut [Thread], head: Option<&str>) {
     use std::collections::HashMap;
-    if head.is_empty() {
-        return;
-    }
+    let Some(head) = head else { return };
     let mut cache: HashMap<(String, String), Vec<(u32, u32)>> = HashMap::new();
     for t in threads.iter_mut() {
-        let Placement::Line {
-            path, end, commit, ..
-        } = &t.placement
+        let (
+            Some(Anchor::Line {
+                path, end, start, ..
+            }),
+            Some(commit),
+        ) = (&t.anchor, t.commit.clone())
         else {
-            continue;
-        };
-        // No recorded anchor commit → keep whatever the forge reported.
-        let Some(commit) = commit.clone() else {
             continue;
         };
         if commit == head {
             t.outdated = false;
             continue;
         }
+        // A deleted-line anchor can't be mapped onto commit..head — keep the flag.
+        if end.side != Side::New {
+            continue;
+        }
         // Objects for the anchor commit aren't local → fall back to the forge flag.
         if repo.rev_parse(&commit).is_none() {
             continue;
         }
+        // The new-side span this comment covers, in `commit`'s line numbers.
+        let (lo, hi) = match start.filter(|s| s.side == Side::New) {
+            Some(s) => (s.line.min(end.line), s.line.max(end.line)),
+            None => (end.line, end.line),
+        };
         let ranges = cache
             .entry((commit.clone(), path.clone()))
             .or_insert_with(|| changed_old_ranges(repo, &commit, head, path));
-        let line = end.line;
+        // Overlap of [lo, hi] (inclusive) with a changed hunk [start, start+count).
         t.outdated = ranges
             .iter()
-            .any(|(start, count)| line >= *start && line < start + count);
+            .any(|&(start, count)| count > 0 && hi >= start && lo < start + count);
     }
 }
 
@@ -253,15 +266,12 @@ fn apply_filters(threads: &mut Vec<Thread>, args: &ShowArgs) {
         threads.retain(|t| t.comments.last().is_some_and(|c| c.origin == "remote"));
     }
     if let Some(path) = &args.file {
-        threads.retain(|t| placement_path(&t.placement) == Some(path.as_str()));
+        threads.retain(|t| anchor_path(t.anchor.as_ref()) == Some(path.as_str()));
     }
 }
 
-fn placement_path(p: &Placement) -> Option<&str> {
-    match p {
-        Placement::Line { path, .. } | Placement::File { path, .. } => Some(path),
-        Placement::Mr => None,
-    }
+fn anchor_path(a: Option<&Anchor>) -> Option<&str> {
+    a.map(Anchor::path)
 }
 
 fn pending_count(draft: &Local) -> usize {
@@ -312,7 +322,10 @@ fn show_inbox(ctx: &super::Local, args: &ShowArgs) -> Result<()> {
             };
             println!(
                 "{:<7} [{}] {}  ({}){pending}",
-                item.mr.display, item.mr.state, item.mr.title, item.mr.author
+                item.mr.display,
+                state_word(item.mr.state, item.mr.draft),
+                item.mr.title,
+                item.mr.author
             );
         }
     }
@@ -320,7 +333,12 @@ fn show_inbox(ctx: &super::Local, args: &ShowArgs) -> Result<()> {
 }
 
 fn print_detail_human(view: &DetailView) {
-    println!("{} [{}] {}", view.mr.display, view.mr.state, view.mr.title);
+    println!(
+        "{} [{}] {}",
+        view.mr.display,
+        state_word(view.mr.state, view.mr.draft),
+        view.mr.title
+    );
     println!(
         "  by {} · base {} · {}",
         view.mr.author, view.mr.base, view.mr.web_url
@@ -359,7 +377,7 @@ fn print_detail_human(view: &DetailView) {
             } else {
                 format!(" [{flags}]")
             };
-            println!("    {} {}{flags}", t.id, describe_placement(&t.placement));
+            println!("    {} {}{flags}", t.id, describe_anchor(t.anchor.as_ref()));
             for c in &t.comments {
                 println!("      {} ({}): {}", c.author, c.origin, first_line(&c.body));
             }
@@ -375,19 +393,19 @@ fn print_detail_human(view: &DetailView) {
     }
 }
 
-fn describe_placement(p: &Placement) -> String {
-    match p {
-        Placement::Line {
+fn describe_anchor(a: Option<&Anchor>) -> String {
+    match a {
+        Some(Anchor::Line {
             path, end, start, ..
-        } => {
+        }) => {
             let span = match start {
                 Some(s) => format!("{}-{}", s.line, end.line),
                 None => end.line.to_string(),
             };
             format!("{path}:{span} ({})", end.side.as_str())
         }
-        Placement::File { path, .. } => format!("{path} (file)"),
-        Placement::Mr => "(conversation)".to_owned(),
+        Some(Anchor::File { path }) => format!("{path} (file)"),
+        None => "(conversation)".to_owned(),
     }
 }
 
@@ -429,13 +447,14 @@ fn ingest(ctx: &super::Local, id: &str, input: &std::path::Path) -> Result<()> {
     let head = ctx
         .store
         .load_info(id)
-        .map(|i| i.head().to_owned())
-        .unwrap_or_default();
+        .and_then(|i| i.head().map(str::to_owned));
     let mut actions = batch.actions;
-    for action in &mut actions {
-        if let Action::Comment { ref mut commit, .. } = action {
-            if commit.is_none() && !head.is_empty() {
-                *commit = Some(head.clone());
+    if let Some(head) = &head {
+        for action in &mut actions {
+            if let Action::Comment { ref mut commit, .. } = action {
+                if commit.is_none() {
+                    *commit = Some(head.clone());
+                }
             }
         }
     }
@@ -480,7 +499,7 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
     for (i, action) in draft.actions.iter().enumerate() {
         match action {
             Action::Comment { body, commit, .. } => {
-                let where_ = describe_placement(&action.placement("").unwrap_or(Placement::Mr));
+                let where_ = describe_anchor(action.read_anchor(None).0.as_ref());
                 let at = commit
                     .as_deref()
                     .map(|s| format!(" @{}", short(s)))

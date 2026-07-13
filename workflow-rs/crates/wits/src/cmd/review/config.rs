@@ -53,15 +53,18 @@ struct FeedDef {
 }
 
 impl FeedDef {
-    fn into_query(self, updated_after: Option<String>) -> FeedQuery {
+    /// Resolve this feed definition into a query. Borrows `self` (the fields are
+    /// cloned into the owned [`FeedQuery`] regardless), so the lookup needs no
+    /// hand-written clone of `FeedDef`.
+    fn to_query(&self, updated_after: Option<String>) -> FeedQuery {
         FeedQuery {
             states: parse_states(self.state.as_deref()),
-            labels: self.labels,
-            exclude_labels: self.exclude_labels,
-            author: self.author,
-            assignee: self.assignee,
-            reviewer: self.reviewer,
-            search: self.search,
+            labels: self.labels.clone(),
+            exclude_labels: self.exclude_labels.clone(),
+            author: self.author.clone(),
+            assignee: self.assignee.clone(),
+            reviewer: self.reviewer.clone(),
+            search: self.search.clone(),
             updated_after,
             limit: self.limit.unwrap_or(DEFAULT_LIMIT),
         }
@@ -118,7 +121,7 @@ impl Config {
     /// `updated_after` threads an incremental-sync cursor into the query.
     pub fn feed(&self, key: &str, name: &str, updated_after: Option<String>) -> Option<FeedQuery> {
         let def = self.file.repo.get(key)?.feed.get(name)?;
-        Some(clone_def(def).into_query(updated_after))
+        Some(def.to_query(updated_after))
     }
 
     /// The names of every feed configured for a repo, for listing/help.
@@ -131,21 +134,6 @@ impl Config {
             .unwrap_or_default();
         names.sort();
         names
-    }
-}
-
-/// `FeedDef` is not `Clone` (it holds owned `Vec`s we'd rather not clone
-/// casually), so lift the one field-by-field copy the `feed` lookup needs here.
-fn clone_def(d: &FeedDef) -> FeedDef {
-    FeedDef {
-        state: d.state.clone(),
-        labels: d.labels.clone(),
-        exclude_labels: d.exclude_labels.clone(),
-        author: d.author.clone(),
-        assignee: d.assignee.clone(),
-        reviewer: d.reviewer.clone(),
-        search: d.search.clone(),
-        limit: d.limit,
     }
 }
 

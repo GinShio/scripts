@@ -17,7 +17,7 @@ schema it doesn't know should refuse rather than guess.
 |---|---|---|
 | Id prefix | `remote:<forge-id>` / `local:<n>` | Whether the forge owns the object, or it's a pending draft item. |
 | `side` | `new` / `old` | Post-image (added/context) / pre-image (deleted line). |
-| `state` (MR) | `open` / `draft` / `merged` / `closed` | The MR's lifecycle, draft folded in. |
+| `state` (MR) | `open` / `merged` / `closed` | The MR's lifecycle. Draft-ness is the separate `draft` bool, not folded in. |
 | `verdict` | `approve` / `request-changes` / `comment` | The reviewer's disposition. |
 | `origin` (comment) | `remote` / `local` | On the forge / pending in your draft. |
 | `state` (comment) | `published` / `pending` | On the forge / not yet submitted. |
@@ -67,7 +67,7 @@ The detail view, with the pending draft folded into the remote discussion.
 |---|---|---|
 | `id` | string | The MR number (the address you pass to commands). |
 | `display` | string | Human form (`#123` / `!123`). |
-| `state` | string | `open`/`draft`/`merged`/`closed`. |
+| `state` | string | `open`/`merged`/`closed` (lifecycle only). |
 | `draft` | bool | Whether the MR is a draft/WIP. |
 | `title`, `author` | string | As on the forge. |
 | `base` | string | Target branch (what it merges into). |
@@ -94,16 +94,20 @@ The detail view, with the pending draft folded into the remote discussion.
 | `origin` | string | `remote` / `local`. |
 | `resolved` | bool | Resolved on the forge (reflects a pending resolve too). |
 | `outdated` | bool | The anchored line has left the current diff. |
-| `placement` | object | Where the thread sits (table below). |
+| `anchor` | object? | The code anchor (table below); **absent** for an MR-level conversation thread. |
+| `commit` | string? | The snapshot SHA the anchor was written against (drives outdate); omitted when unknown. |
 | `comments` | array | The thread's comments; a pending reply is appended with `origin: local`, `state: pending`. |
 
-`placement` is one of:
+`anchor`, when present, is tagged on `kind`:
 
 | `kind` | Fields | Meaning |
 |---|---|---|
-| `line` | `path`, `end` {`line`, `side`}, `start`? {`line`, `side`}, `old_path?`, `commit?` | A code line. `end` is the anchor line; `start`, when present, makes a multi-line span and may carry a different `side` (a cross-side span). `commit` is the reviewed SHA. |
-| `file` | `path`, `commit?` | A whole changed file, no line. |
-| `mr` | — | The MR conversation, no code anchor. |
+| `line` | `path`, `end` {`line`, `side`}, `start`? {`line`, `side`}, `old_path?` | A code line. `end` is the anchor line; `start`, when present, makes a multi-line span and may carry a different `side` (a cross-side span). |
+| `file` | `path` | A whole changed file, no line. |
+
+An **MR-level** conversation thread carries no `anchor` field at all. This is the
+same `Anchor` type the tool speaks internally — there is no separate "placement"
+shape.
 
 `Comment` object: `id`, `author`, `origin`, `body`, `created_at?`, `state`.
 
@@ -247,11 +251,12 @@ remove a queued action, edit the file.
   `resolve` of one thread collapses to the last stated value.
 - **Batching:** the whole review is handed to the forge as one batch, folded
   into as few notifications as the platform allows. On GitLab comments (line/
-  file/conversation), replies, the summary, and the verdict ride one
-  `bulk_publish`; a bare resolve is a separate call. On GitHub the verdict +
-  summary + line/file comments are one review, while conversation comments,
-  replies, and resolves are separate calls. `submit` reports the real
-  notification count.
+  file/conversation), replies, the summary (`note`), and a `request-changes`/
+  `comment` reviewer state ride one `bulk_publish`; an `approve` verdict (a real
+  approval, which `bulk_publish` can't record) and a bare resolve are separate
+  calls. On GitHub the verdict + summary + line/file comments are one review,
+  while conversation comments, replies, and resolves are separate calls.
+  `submit` reports the real notification count.
 - **Anchoring:** each comment carries its own `commit` — the snapshot head its
   line anchors were written against. `submit` resolves it against the snapshot
   history to the full `{base, start, head}` version and anchors the comment to it.

@@ -18,10 +18,13 @@ use wits_util::forge::{
     Anchor, DiffVersion, LineRef, MrState, MrSummary, RemoteComment, RemoteThread, Side, Verdict,
 };
 
-/// The store/JSON schema version. Bumped on an incompatible shape change.
+/// The store/JSON schema version. (Personal tooling — shapes change freely
+/// without a bump; this stays `1`.)
 pub const SCHEMA: u32 = 1;
 
-/// The normalized state word used in JSON, folding draft-ness in.
+/// The human/inbox state word, folding draft-ness into the lifecycle for a
+/// one-glance label. `--json` keeps `state` and `draft` as separate typed fields
+/// (below); this is only for the terse human line.
 pub fn state_word(state: MrState, draft: bool) -> &'static str {
     match state {
         MrState::Open if draft => "draft",
@@ -32,12 +35,13 @@ pub fn state_word(state: MrState, draft: bool) -> &'static str {
 }
 
 /// One MR's necessary metadata — the inbox row, and the header of the detail
-/// view.
+/// view. `state` is the typed lifecycle (`open`/`merged`/`closed`); draft-ness is
+/// the separate `draft` flag, not folded into a stringly-typed state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MrInfo {
     pub id: String,
     pub display: String,
-    pub state: String,
+    pub state: MrState,
     pub draft: bool,
     pub title: String,
     pub author: String,
@@ -53,9 +57,9 @@ pub struct MrInfo {
 impl From<MrSummary> for MrInfo {
     fn from(s: MrSummary) -> Self {
         MrInfo {
-            state: state_word(s.state, s.draft).to_owned(),
             id: s.id,
             display: s.display,
+            state: s.state,
             draft: s.draft,
             title: s.title,
             author: s.author,
@@ -130,9 +134,10 @@ impl Info {
         self.snapshots.last()
     }
 
-    /// The current snapshot's head SHA, or empty when none is fetched.
-    pub fn head(&self) -> &str {
-        self.current().map(|s| s.head_sha.as_str()).unwrap_or("")
+    /// The current snapshot's head SHA — `None` until a full `fetch <mr>` has
+    /// recorded a snapshot (a feed refresh leaves the history empty).
+    pub fn head(&self) -> Option<&str> {
+        self.current().map(|s| s.head_sha.as_str())
     }
 
     /// Record a freshly-fetched snapshot, appending it only when the head moved
@@ -144,58 +149,8 @@ impl Info {
     }
 }
 
-/// Where a comment sits, in the read/output view. The line placement uses the
-/// nested [`LineRef`] shape so a multi-line span can cross diff sides.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum Placement {
-    Line {
-        path: String,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        old_path: Option<String>,
-        /// The anchor (end) line.
-        end: LineRef,
-        /// The start line of a multi-line span, when set.
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        start: Option<LineRef>,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        commit: Option<String>,
-    },
-    File {
-        path: String,
-        #[serde(skip_serializing_if = "Option::is_none", default)]
-        commit: Option<String>,
-    },
-    Mr,
-}
-
-/// Project a forge [`Anchor`] (plus the commit the thread was written against)
-/// into the JSON read-view [`Placement`]. `None` is the MR-level conversation.
-/// This is the one place the forge anchor becomes an output placement.
-fn placement_of(anchor: Option<&Anchor>, commit: Option<String>) -> Placement {
-    match anchor {
-        Some(Anchor::Line {
-            path,
-            old_path,
-            end,
-            start,
-        }) => Placement::Line {
-            path: path.clone(),
-            old_path: old_path.clone(),
-            end: *end,
-            start: *start,
-            commit,
-        },
-        Some(Anchor::File { path }) => Placement::File {
-            path: path.clone(),
-            commit,
-        },
-        None => Placement::Mr,
-    }
-}
-
-/// The single source of the placement-inference rule, shared by the read view
-/// ([`Action::placement`]) and submit (`to_submit_comment`): `file`+`line` ⇒ a
+/// The single source of the anchor-inference rule, shared by the read view
+/// ([`Action::read_anchor`]) and submit (`build_batch`): `file`+`line` ⇒ a
 /// line anchor, `file` alone ⇒ a file anchor, neither ⇒ `None` (an MR-level
 /// conversation comment, which carries no code anchor). `side` defaults to
 /// `New`; a multi-line `start`'s side defaults to `end`'s unless overridden.
@@ -254,14 +209,20 @@ impl Comment {
     }
 }
 
-/// A discussion thread in the read/output view.
+/// A discussion thread in the read/output view. `anchor` is the code anchor
+/// (absent for an MR-level conversation), serialized directly as `{"kind":…}`;
+/// `commit` is the snapshot SHA the anchor was written against, and drives local
+/// outdate computation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
     pub id: String,
     pub origin: String,
     pub resolved: bool,
     pub outdated: bool,
-    pub placement: Placement,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub anchor: Option<Anchor>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub commit: Option<String>,
     pub comments: Vec<Comment>,
 }
 
@@ -272,7 +233,8 @@ impl From<RemoteThread> for Thread {
             origin: "remote".into(),
             resolved: t.resolved,
             outdated: t.outdated,
-            placement: placement_of(t.anchor.as_ref(), t.commit),
+            anchor: t.anchor,
+            commit: t.commit,
             comments: t.comments.into_iter().map(Comment::from_remote).collect(),
         }
     }
@@ -339,11 +301,12 @@ pub enum Action {
 }
 
 impl Action {
-    /// The output placement for a comment action, via the shared
-    /// [`comment_anchor`] inference. The commit comes from the action itself
-    /// (per-comment snapshot); `head` is the fallback for actions that predate
-    /// per-comment stamping. Non-comment actions have no placement.
-    pub fn placement(&self, head: &str) -> Option<Placement> {
+    /// The read-view anchor and the commit it was written against, for a comment
+    /// action, via the shared [`comment_anchor`] inference. The commit is the
+    /// action's own (per-comment snapshot), falling back to `head` for actions
+    /// that predate per-comment stamping. Returns `(None, None)` for a non-comment
+    /// action and for an MR-level comment (no code anchor).
+    pub fn read_anchor(&self, head: Option<&str>) -> (Option<Anchor>, Option<String>) {
         match self {
             Action::Comment {
                 file,
@@ -354,9 +317,7 @@ impl Action {
                 commit,
                 ..
             } => {
-                let commit = commit
-                    .clone()
-                    .or_else(|| (!head.is_empty()).then(|| head.to_owned()));
+                let commit = commit.clone().or_else(|| head.map(str::to_owned));
                 let anchor = comment_anchor(
                     file.as_deref(),
                     *line,
@@ -365,9 +326,9 @@ impl Action {
                     *start_side,
                     None,
                 );
-                Some(placement_of(anchor.as_ref(), commit))
+                (anchor, commit)
             }
-            _ => None,
+            _ => (None, None),
         }
     }
 }

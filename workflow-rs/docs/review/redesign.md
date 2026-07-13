@@ -165,23 +165,26 @@ aliases, so they cost one HTTP round trip with per-alias outcomes.
 | Need | Endpoint | Key fields |
 |---|---|---|
 | Draft a diff/file/reply/resolve note | `POST …/merge_requests/:iid/draft_notes` | `note!`; `position{base_sha,start_sha,head_sha,new_path,old_path,new_line/old_line,line_range,position_type}` (`file` since 16.4); `in_reply_to_discussion_id`; `resolve_discussion`; `commit_id` |
-| Publish the whole batch | `POST …/draft_notes/bulk_publish` | **`reviewer_state`** (`approved`/`requested_changes`/`reviewed`), **`note`** (summary body), `internal` — all optional; publishes *all* of the user's pending drafts on the MR as one review |
+| Publish the whole batch | `POST …/draft_notes/bulk_publish` | **`reviewer_state`** (`requested_changes`/`reviewed` — **not** `approved`: the endpoint routes through `UpdateReviewerStateService`, which sets a review state, never a formal approval), **`note`** (summary body), `internal` — all optional; publishes *all* of the user's pending drafts on the MR as one review |
 | Delete a draft (rollback) | `DELETE …/draft_notes/:id` | — |
 | Read discussions | `GET …/merge_requests/:iid/discussions` | notes with `position`, `resolvable`, `resolved`, `system` |
 
 Consequence for GitLab submit: **one** `bulk_publish` publishes line comments,
-file comments, replies (`in_reply_to_discussion_id`), resolutions
-(`resolve_discussion`), the summary (`note`), and the verdict (`reviewer_state`)
-together — one notification. `Approve → reviewer_state:"approved"`,
-`RequestChanges → "requested_changes"` (native! no more unapprove hack),
-`Comment → "reviewed"` or omit. MR-level conversation comments are position-less
-draft notes, so they ride the same batch.
+file comments, replies (`in_reply_to_discussion_id`), the summary (`note`), and
+the reviewer state (`reviewer_state`) together — one notification.
+`RequestChanges → "requested_changes"`, `Comment → "reviewed"`. **`Approve` is
+the exception:** `reviewer_state: "approved"` routes through
+`UpdateReviewerStateService` and records only a *review state*, not a formal
+approval (`ApprovalService`), so an approve verdict is a *separate*
+`POST …/approve` after the publish — never folded in, or the MR would silently
+not be approved. MR-level conversation comments are position-less draft notes, so
+they ride the batch; a bare resolve is a separate PUT (a draft note needs a body).
 
-**Version gate.** `reviewer_state`/`note` on `bulk_publish` are recent
-(GitLab ~18.x). The backend probes once (via `GET /version`, cached) or catches a
-`400`/`404` on the new params and falls back to the v1 path (publish with empty
-body, then a separate `approve`/unapprove). The fallback is the *degraded* path,
-not the design center.
+**Version target.** `reviewer_state`/`note` on `bulk_publish` and the boolean
+`draft` list filter all landed by GitLab 19.0, which is our floor. There is no
+version probe and no fallback path — we assume ≥ 19, keeping the backend a single
+clean mapping instead of a forked one. (Personal tooling; bumping the floor is
+free.)
 
 ---
 
@@ -250,19 +253,19 @@ operation, not an API call.
    - reply → `in_reply_to_discussion_id`;
    - resolve → `resolve_discussion: true` on a reply-less draft (or on the reply
      that resolves it).
-2. **`bulk_publish`** with `note` = summary, `reviewer_state` = verdict. One
-   atomic publish, one notification.
+2. **`bulk_publish`** with `note` = summary and `reviewer_state` = the verdict
+   *when it is `request-changes`/`comment`*. One atomic publish, one notification.
+   An `approve` verdict is **not** a `reviewer_state` (that records only a review
+   state, not a real approval) — it is a separate `POST …/approve` after the
+   publish. A bare resolve is a separate PUT.
 3. **Reconcile.** Any draft POST that failed ⇒ roll back the drafts that landed
    (`DELETE`) and keep the whole batch local for a clean retry — the v1
    all-or-nothing-per-attempt discipline (design.md §11) is retained, now
    covering the *entire* review, not just line comments.
 
-Fallback (old instances): `bulk_publish` without the new params, then a separate
-`approve`/unapprove; replies/resolves degrade to their own calls. Detected once
-and remembered for the run.
-
-This deletes the summary-as-lone-draft dance, the separate approve/unapprove
-step, and the design.md **A3** caveat.
+No old-instance fallback: GitLab ≥ 19 is assumed (§2.2), so there is no version
+probe. This deletes the summary-as-lone-draft dance and the RequestChanges-as-
+unapprove hack, leaving `approve` as the one deliberately-separate verdict call.
 
 ---
 
@@ -313,7 +316,13 @@ enough to link a stack and to `checkout --next/--prev` without a full `fetch`.
   `--absolute-git-dir`, so running `review` from inside a `checkout` worktree
   finds the same store. (Pins already live in the common ref store.)
 - **Permalink path encoding** — URL-encode path segments in both backends.
-- **`User-Agent`** — `wits-review` on review calls (cosmetic).
+- **`User-Agent`** — one honest `wits/<version>` for every forge call (`stack`
+  and `review` share the transport); the split `wits-stack`/`wits-review` bought
+  nothing.
+- **GitHub outdated-thread line** — a `reviewThread`'s `line`/`startLine` go
+  `null` once the thread is outdated; read `originalLine`/`originalStartLine`
+  (which pair with `originalCommit`, the thread's anchor commit) so an outdated
+  thread keeps a real line instead of `0`.
 - **`iso_date_to_epoch_day`** — reject impossible days (`02-31`).
 - **Pre-submit local validation (optional, opt-in)** — since the diff and thread
   list are local, `submit`/`draft` can warn on a comment whose file/line is not
@@ -331,7 +340,8 @@ enough to link a stack and to `checkout --next/--prev` without a full `fetch`.
 | Batch: **file-level** comments | yes, via pending review + `addPullRequestReviewThread(FILE)` + submit (still one review) | yes, `position_type:file` draft note |
 | Batch: **MR-level** comments | **no** — `addComment` is a separate issue comment | yes, position-less draft note |
 | Batch: replies / resolves | separate mutations, one HTTP doc via aliases | yes, ride the draft batch (`in_reply_to`/`resolve_discussion`) |
-| `request-changes` verdict | native (`REQUEST_CHANGES`) | **native** (`reviewer_state:"requested_changes"`) |
+| `request-changes` / `comment` verdict | native (`REQUEST_CHANGES`/`COMMENT`) | **native** (`reviewer_state:"requested_changes"`/`"reviewed"`) |
+| `approve` verdict | part of the review | **separate `POST …/approve`** (`bulk_publish`'s `"approved"` sets only a review state, not a real approval) |
 | Thread resolve/unresolve | **supported** (`resolveReviewThread`) | supported (`resolve_discussion` / discussion PUT) |
 | `resolved` read-back | `isResolved` | notes' `resolved`/`resolvable` |
 | `outdated` | **local** (forge `isOutdated` as fallback) | **local** (no forge fallback) |
@@ -355,7 +365,7 @@ GitLab-only). Both are real API limits, documented, not papered over.
 `show.rs` (local outdated), `store.rs` (git-common-dir), `config`/feed (limit
 cap). Docs: fold this into `design.md`, refresh `review.md`/`json.md`/`store.md`,
 update `README.md`. **No backward-compat constraint** (personal tooling), so the
-schema can change freely; `schema` bumps to `2` if any stored shape changes.
+schema can change freely and stays `1` — stored shapes change without a bump.
 
 **Suggested order (worst-first, each independently testable):**
 1. `Anchor` consolidation + single inference (pure refactor, unblocks the rest).
@@ -374,9 +384,9 @@ are absent (§5).
 
 **Open decisions still to settle:**
 
-- **O3 — GitLab version gate.** Probe `GET /version` once (clean, one extra
-  call), or detect by catching the first `bulk_publish` param rejection (no extra
-  call, but one wasted attempt on old instances)?
+- **O3 — GitLab version gate. Resolved: dropped.** We target GitLab ≥ 19 and use
+  the `bulk_publish` `reviewer_state`/`note` params and the boolean `draft` list
+  filter unconditionally — no `GET /version` probe, no fallback path.
 - **O4 — MR-level comment on GitHub.** Accept the extra notification (it's a
   genuine API limit), or drop MR-level comments from a GitHub *review* batch and
   document them as always-separate?

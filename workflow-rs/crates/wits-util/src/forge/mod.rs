@@ -32,7 +32,8 @@ use crate::remote::{Remotes, Service};
 
 /// An MR's lifecycle, normalized across platforms that spell it differently
 /// (GitHub folds "merged" into "closed"; GitLab keeps them apart).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MrState {
     Open,
     Merged,
@@ -231,7 +232,7 @@ fn send_with_retry(
     for attempt in 0..=max_retries {
         let mut req = ureq::request(method, url)
             .set("Accept", "application/json")
-            .set("User-Agent", "wits-stack");
+            .set("User-Agent", USER_AGENT);
         req = match auth {
             Auth::Bearer(t) => req.set("Authorization", &format!("Bearer {t}")),
             Auth::Token(t) => req.set("Authorization", &format!("token {t}")),
@@ -328,6 +329,10 @@ pub(crate) fn request_paginated<T>(
     }
     Ok(all)
 }
+
+/// The `User-Agent` every forge request carries. One honest identity for the
+/// whole tool (`stack` and `review` share this transport), version-stamped.
+const USER_AGENT: &str = concat!("wits/", env!("CARGO_PKG_VERSION"));
 
 /// The literal a caller passes for "the authenticated user".
 pub(crate) const SELF_REF: &str = "@me";

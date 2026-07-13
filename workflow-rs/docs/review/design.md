@@ -233,12 +233,13 @@ convenience.
 ### 5.3 `Thread` + `Comment`, and the three placements
 
 ```
-Thread  { id, placement, resolved: bool, outdated: bool, comments: Vec<Comment> }
+Thread  { id, anchor: Option<Anchor>, commit: Option<Sha>, resolved: bool, outdated: bool, comments: Vec<Comment> }
 Comment { id, author, body, origin: Local | Remote, created_at, state: Pending | Published }
 ```
 
-A thread's **placement** is one of three, and the boundary between them is a
-forge reality, not a preference:
+A thread's **anchor** is one of three placements — `Anchor::Line`, `Anchor::File`,
+or *absent* (`None`, the MR-level conversation) — and the boundary between them is
+a forge reality, not a preference:
 
 - **`line`** — anchored to a code line (a review comment). Allowed on any line of
   a file the MR *touches*, including unchanged/context lines — this is the
@@ -494,8 +495,8 @@ hidden, because a reviewer needs to know them:
 | **MR-level** (conversation) comment | **separate** `addComment` (its own notification) | position-less draft note (rides the batch) |
 | Reply to an existing thread | separate `addPullRequestReviewThreadReply` (bundle-able in one GraphQL doc) | draft note with `in_reply_to_discussion_id` (rides the batch) |
 | Resolve / unresolve | **supported** — `resolveReviewThread`/`unresolveReviewThread` | separate `PUT …/discussions/:id` (a draft note needs a body, so a bare resolve can't ride the batch) |
-| `request-changes` verdict | native (`REQUEST_CHANGES`) | **native** — `bulk_publish` `reviewer_state: requested_changes`, with a version fallback to unapprove (A3) |
-| `approve` verdict | part of the review | `reviewer_state: approved` (fallback: POST approve) |
+| `request-changes` verdict | native (`REQUEST_CHANGES`) | **native** — `bulk_publish` `reviewer_state: requested_changes` (A3) |
+| `approve` verdict | part of the review | **separate `POST …/approve`** — `bulk_publish`'s `reviewer_state: approved` records only a review state, not a formal approval, so approve never rides the publish (A3) |
 | Partial failure handling | the review call is atomic — failure leaves nothing | **all-or-nothing per attempt**: a draft failure aborts the publish and rolls back (DELETE) what posted (§11) |
 | Diff-line comment anchor | one review-level `commitOID`; the batch anchors to one snapshot | **per-comment** `position{base/start/head_sha}`; each anchors to its own version (A1) |
 | Cross-snapshot drafting | not in one review (one `commitOID`) | **delivered** — each comment carries its own version |
@@ -511,12 +512,15 @@ The named caveats behind the matrix:
   pushed MR commits) always satisfies this; commenting on an un-pushed local
   intermediate commit does not, and degrades to an `mr` comment. GitHub is more
   lenient. Captured by keeping the version SHAs on the snapshot (§5.1).
-- **A3 — `request-changes` on GitLab is now native.** GitLab's `bulk_publish`
-  accepts `reviewer_state` (`approved` / `requested_changes` / `reviewed`), so the
-  verdict rides the same one publish. Older instances that predate that parameter
-  fall back to the version-independent path (post the review, then POST/DELETE the
-  approve endpoint). Capability is probed once via `GET /version` and cached; a
-  wrong guess only costs the native reviewer-state nicety, never correctness.
+- **A3 — GitLab verdicts (targets GitLab ≥ 19).** `bulk_publish` accepts
+  `reviewer_state`, so `request-changes` (`requested_changes`) and `comment`
+  (`reviewed`) ride the one publish. `approve` is the exception and is *always* a
+  separate `POST …/approve`: `bulk_publish`'s `reviewer_state: "approved"` routes
+  through `UpdateReviewerStateService` and sets only a review state, never a
+  formal approval (`ApprovalService`) — so folding it into the publish would
+  silently *not* approve the MR. There is no version probe or fallback: we assume
+  ≥ 19 (`draft_notes` `reviewer_state`/`note`, the `draft` list filter), which
+  keeps the backend one clean path instead of a forked one.
 - **A5 — batching is best-effort per platform, and `notifications` is honest.**
   On GitLab nearly everything folds into one `bulk_publish`; a bare resolve is a
   separate quiet PUT. On GitHub the review (verdict + summary + line/file
@@ -719,9 +723,10 @@ stack navigation, `prune` (day count or ISO date), and parallel submit with
 Delivered by the API-native revision (§10/§11, [`redesign.md`](redesign.md)): the
 **whole GitHub forge on GraphQL**; **thread resolve/unresolve on both forges**
 (GitHub `resolveReviewThread`, GitLab discussion PUT); **native GitLab
-`request-changes`** (`reviewer_state`, with a version fallback); GitLab's
-**single `bulk_publish`** carrying comments + replies + summary + verdict; and
-**locally-computed, uniform outdating** (§6).
+`request-changes`/`comment`** (`bulk_publish reviewer_state`; `approve` stays a
+separate real-approval call, A3); GitLab's **single `bulk_publish`** carrying
+comments + replies + summary (`note`) + reviewer state; and
+**locally-computed, uniform, side-aware outdating** (§6).
 
 Deliberately deferred, and honest about it:
 
