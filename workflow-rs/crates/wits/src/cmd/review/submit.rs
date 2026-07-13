@@ -69,11 +69,50 @@ fn submit_one(ctx: &Online, id: &str) -> Result<()> {
     let store = &ctx.local.store;
     let forge = ctx.forge.as_ref();
 
-    let mut local = store.load_local(id)?;
-    if local.is_empty() {
+    let local = store.load_local(id)?;
+    let stale = store.load_inflight(id);
+    if local.is_empty() && stale.is_empty() {
         log::info!("MR {id}: nothing to submit");
         return Ok(());
     }
+
+    // Cleanup-only: the draft is gone but a prior submit deferred an in-flight
+    // cleanup. Hand the forge an empty batch carrying just the stale ids, so its
+    // pre-flight discards them; nothing else to post.
+    if local.is_empty() {
+        if wits_log::is_dry_run() {
+            wits_log::dry_run(&format!(
+                "submit {} {id}: clear {} deferred forge object(s)",
+                forge.noun(),
+                stale.len()
+            ));
+            return Ok(());
+        }
+        let batch = ReviewBatch {
+            verdict: None,
+            summary: None,
+            actions: Vec::new(),
+            version: DiffVersion::default(),
+            stale,
+        };
+        let outcome = forge.submit(id, &batch)?;
+        store.save_inflight(id, &outcome.inflight)?;
+        if outcome.inflight.is_empty() {
+            log::info!("MR {id}: cleaned up deferred forge state");
+            Ok(())
+        } else {
+            anyhow::bail!("deferred cleanup did not complete; it will retry next submit")
+        }
+    } else {
+        submit_draft(ctx, id, local, stale)
+    }
+}
+
+/// Flush a non-empty draft. `stale` is any deferred in-flight cleanup to run
+/// first (see [`Store::load_inflight`]).
+fn submit_draft(ctx: &Online, id: &str, mut local: Local, stale: Vec<String>) -> Result<()> {
+    let store = &ctx.local.store;
+    let forge = ctx.forge.as_ref();
 
     let info = store
         .load_info(id)
@@ -100,7 +139,7 @@ fn submit_one(ctx: &Online, id: &str) -> Result<()> {
     // Hand the whole review to the forge as one batch; it folds what it can into
     // one notification and reports each action's landing by key. A hard `Err`
     // means *nothing* landed — the whole (normalized) draft stays for retry.
-    let batch = build_batch(&local, &version, &info.snapshots, &info.files, forge);
+    let batch = build_batch(&local, &version, &info.snapshots, &info.files, forge, stale);
     let outcome = match forge.submit(id, &batch) {
         Ok(o) => o,
         Err(e) => {
@@ -135,6 +174,9 @@ fn submit_one(ctx: &Online, id: &str) -> Result<()> {
         local.verdict = None;
     }
     store.save_local(id, &local)?;
+    // Persist any forge-side objects this attempt left unpublished, so the next
+    // submit's pre-flight cleans them (empty ⇒ the file is removed).
+    store.save_inflight(id, &outcome.inflight)?;
 
     if kept > 0 {
         log::warn!("MR {id}: {kept} action(s) did not submit; they remain in the draft");
@@ -167,6 +209,7 @@ fn build_batch(
     snapshots: &[Snapshot],
     files: &[StoredFile],
     forge: &dyn Forge,
+    stale: Vec<String>,
 ) -> ReviewBatch {
     let actions = local
         .actions
@@ -219,6 +262,7 @@ fn build_batch(
             .map(|s| expand_refs(s, forge, &version.head_sha)),
         actions,
         version: version.clone(),
+        stale,
     }
 }
 

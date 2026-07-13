@@ -274,8 +274,9 @@ remove a queued action, edit the file.
   `[[src/y.c:20-30]]`, `[[src/y.c]]`, `[[src/y.c:20@main]]`. Unparseable tokens are
   left as written.
 - **Failure / retry:** reconciliation is per action — whatever landed is cleared,
-  whatever failed stays in the draft. On GitLab a partial failure is rolled back
-  (the drafts that did post are deleted), so a retry is clean and duplicates
-  nothing; a verdict failure never duplicates already-posted comments. An empty
-  draft post-`submit` triggers a re-fetch so your comments return as remote
-  threads.
+  whatever failed stays in the draft. If an attempt creates forge-side state it
+  can't publish (GitLab draft notes, a GitHub pending review), it records those
+  ids and the *next* submit deletes them first (deferred, idempotent cleanup that
+  only ever touches ids the tool itself created), so a retry duplicates nothing.
+  An empty draft post-`submit` triggers a re-fetch so your comments return as
+  remote threads.

@@ -560,26 +560,40 @@ right:
   file comments matched to a `Vec<bool>` by order, everything else by side calls),
   which was correct-but-fragile. An `Err` from `submit` means nothing landed — the
   whole (normalized) draft stays.
-- **GitLab is all-or-nothing per attempt, with rollback.** Its draft-notes →
-  `bulk_publish` shape has a real partial state, so the backend owns atomicity:
-  any comment/reply draft-note failure aborts the publish and `DELETE`s what
-  posted; a `bulk_publish` failure does the same. Everything reverts to
-  not-landed and the whole draft stays local for a clean retry — no orphans, no
-  duplicates. The verdict rides the publish natively (`reviewer_state`) where
-  supported, else a separate approve/unapprove *after* the batch landed, so a
-  verdict failure never duplicates visible comments. (The double-failure edge —
-  rollback's own `DELETE` failing — is bounded: a leftover orphan surfaces only if
-  a *later* `bulk_publish` runs.) Resolves are separate PUTs, reconciled by their
-  own key.
-- **GitHub's review is atomic; the rest is independent.** The review
-  (`addPullRequestReview`, or the pending-review flow when file comments or
-  replies are present) lands as one unit — line/file/reply keys all succeed or
-  all fail together, since replies now join the pending review. MR-level
-  conversation comments and resolves are independent GraphQL calls, each
-  reconciled by its own key, so a failure in one never poisons the review.
+- **Cleanup is deferred and id-keyed, not this-attempt rollback.** Both backends
+  can create forge-side state (GitLab draft notes, a GitHub *pending* review) that
+  they then fail to publish. Rather than `DELETE`-ing it in the same attempt —
+  where the delete can *itself* fail, leaving an orphan a later run republishes —
+  the failing attempt **records the ids it left behind** in `BatchOutcome.inflight`
+  and returns "nothing landed". `submit` persists them (`<id>/inflight.json`), and
+  the *next* attempt hands them back as `ReviewBatch.stale`; the backend deletes
+  them **first**, before doing anything else. Cleanup is thus idempotent and
+  eventually-consistent (retried every attempt until it succeeds), and it only
+  ever deletes ids **we** recorded — a draft or review the user created by hand is
+  never touched (which is why blanket pre-flight deletion, §16, was rejected but
+  this keyed form is safe). `submit --all` includes MRs that have only a pending
+  cleanup, so an orphan is chased down even after its draft is gone.
+- **GitLab: nothing publishes until the slate is clean.** Pre-flight deletes the
+  recorded `stale` draft ids (a `404` counts as already-gone); a *real* delete
+  failure aborts before any POST — so an undeleted orphan can never be swept into
+  this run's `bulk_publish` and duplicated. A draft-note POST failure, or a
+  `bulk_publish` failure, records the posted-but-unpublished ids as `inflight` and
+  aborts (no this-attempt delete). The verdict rides `reviewer_state` natively,
+  except `approve` which is a separate real-approval call afterwards; resolves are
+  separate PUTs, reconciled by their own key.
+- **GitHub: the single-pending-review invariant makes cleanup self-healing.** A
+  PR allows one pending review per user, so a leftover orphan is unambiguous.
+  Pre-flight best-effort `deletePullRequestReview`s the recorded `stale` id; if
+  that delete transiently fails, the create below fails ("already pending"), and
+  we *re-discover* the orphan's id (`reviews(states: PENDING)`, `viewerDidAuthor`)
+  and record it again — so the next attempt retries the delete. On submit failure
+  the orphaned pending review's id is recorded as `inflight`. The atomic path (no
+  file comments or replies) creates no pending review, so it can't orphan. MR-level
+  conversation comments and resolves remain independent calls, reconciled by key.
 - **The local write happens per-MR inside the fan-out.** Each MR writes to a
-  distinct store path (`<id>/local.json`), so the per-MR tasks are independent and
-  there is never a race or a half-cleared draft; the safety comes from path
+  distinct store path (`<id>/local.json`, `<id>/inflight.json`), so the per-MR
+  tasks are independent and there is never a race or a half-cleared draft; the
+  safety comes from path
   isolation, not from a single post-join write pass.
 
 ## 12. Editor interface — read via `--json`, write by editing `local.json`

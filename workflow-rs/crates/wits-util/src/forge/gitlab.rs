@@ -254,29 +254,10 @@ fn parse_range_endpoint(v: &Value) -> Option<LineRef> {
     Some(LineRef { line, side })
 }
 
-/// Best-effort delete the draft notes posted in this attempt, so a retry
-/// starts clean. Called when the batch must abort — a draft note POST failed,
-/// or `bulk_publish` failed after the drafts landed. Each DELETE is
-/// independent; a failure here only warns: a leftover orphan would surface as a
-/// duplicate only if a *later* `bulk_publish` runs, the rare double-failure
-/// edge documented in the design.
-fn rollback_drafts(id: &str, draft_url: &str, posted_ids: &[u64], auth: &Auth) {
-    for did in posted_ids {
-        if let Err(e) = request("DELETE", &format!("{draft_url}/{did}"), auth, None) {
-            log::warn!("MR {id}: rollback of draft {did} failed: {e}");
-        }
-    }
-}
-
-/// A [`BatchOutcome`] in which nothing landed — every action stays in the draft
-/// for a clean retry (used on a rollback path).
-fn all_failed(batch: &ReviewBatch) -> BatchOutcome {
-    BatchOutcome {
-        landed: batch.actions.iter().map(|a| (a.key(), false)).collect(),
-        summary_ok: false,
-        verdict_ok: batch.verdict.is_some().then_some(false),
-        notifications: 0,
-    }
+/// Draft-note ids as the forge-neutral string tokens carried in
+/// [`BatchOutcome::inflight`] / [`ReviewBatch::stale`].
+fn u64_ids(ids: &[u64]) -> Vec<String> {
+    ids.iter().map(u64::to_string).collect()
 }
 
 /// Numeric ids of the users currently in `field` (`assignees`/`reviewers`) on an
@@ -668,10 +649,23 @@ impl Forge for GitLab {
     }
 
     fn submit(&self, id: &str, batch: &ReviewBatch) -> anyhow::Result<BatchOutcome> {
+        let draft_url = self.draft_notes_url(id);
+
+        // Pre-flight (deferred cleanup): delete the draft notes a *prior* failed
+        // attempt left unpublished, before doing anything else. This must succeed
+        // (404 = already gone) — an undeleted orphan would be swept into this
+        // run's `bulk_publish` and duplicated — so on a real delete failure we
+        // abort and keep the ids for the next attempt. We only ever delete ids we
+        // ourselves recorded, so a draft the user wrote by hand is never touched.
+        for did in &batch.stale {
+            if let Err(e) = super::delete_idempotent(&format!("{draft_url}/{did}"), &self.auth) {
+                log::warn!("MR {id}: could not clear stale draft {did} ({e}); deferring");
+                return Ok(BatchOutcome::none_landed(batch, batch.stale.clone()));
+            }
+        }
         if batch.is_empty() {
             return Ok(BatchOutcome::default());
         }
-        let draft_url = self.draft_notes_url(id);
 
         // GitLab's native batch is draft notes + `bulk_publish`: comments
         // (line / file / MR-level) and replies become draft notes, published as
@@ -752,14 +746,17 @@ impl Forge for GitLab {
         let drafts_all_ok = ok.into_inner().unwrap();
         let posted_ids: Vec<u64> = posted.into_inner().unwrap();
 
-        // A comment/reply draft failed → roll back, nothing lands.
+        // A comment/reply draft failed → nothing lands. Defer cleanup: keep the
+        // posted-but-unpublished draft ids so the *next* attempt deletes them
+        // first. We do *not* delete now — a this-attempt delete that itself
+        // failed would leave an orphan that a later `bulk_publish` republishes;
+        // deferring makes cleanup idempotent and eventually-consistent.
         if !drafts_all_ok {
             log::warn!(
-                "MR {id}: a draft note failed; rolling back {} posted draft(s)",
+                "MR {id}: a draft note failed; deferring cleanup of {} posted draft(s)",
                 posted_ids.len()
             );
-            rollback_drafts(id, &draft_url, &posted_ids, &self.auth);
-            return Ok(all_failed(batch));
+            return Ok(BatchOutcome::none_landed(batch, u64_ids(&posted_ids)));
         }
 
         // --- Phase 2: one `bulk_publish` carries the pending drafts, the summary
@@ -797,9 +794,11 @@ impl Forge for GitLab {
                     summary_ok = true;
                 }
                 Err(e) => {
-                    log::warn!("MR {id}: bulk_publish failed, rolling back: {e}");
-                    rollback_drafts(id, &draft_url, &posted_ids, &self.auth);
-                    return Ok(all_failed(batch));
+                    log::warn!(
+                        "MR {id}: bulk_publish failed ({e}); deferring cleanup of {} draft(s)",
+                        posted_ids.len()
+                    );
+                    return Ok(BatchOutcome::none_landed(batch, u64_ids(&posted_ids)));
                 }
             }
         }
@@ -844,6 +843,7 @@ impl Forge for GitLab {
             summary_ok,
             verdict_ok,
             notifications,
+            inflight: Vec::new(),
         })
     }
 

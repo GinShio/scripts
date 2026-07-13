@@ -171,7 +171,7 @@ unavoidable separate notification (`addComment`).
 |---|---|---|
 | Draft a diff/file/reply/resolve note | `POST …/merge_requests/:iid/draft_notes` | `note!`; `position{base_sha,start_sha,head_sha,new_path,old_path,new_line/old_line,line_range,position_type}` (`file` since 16.4); `in_reply_to_discussion_id`; `resolve_discussion`; `commit_id` |
 | Publish the whole batch | `POST …/draft_notes/bulk_publish` | **`reviewer_state`** (`requested_changes`/`reviewed` — **not** `approved`: the endpoint routes through `UpdateReviewerStateService`, which sets a review state, never a formal approval), **`note`** (summary body), `internal` — all optional; publishes *all* of the user's pending drafts on the MR as one review |
-| Delete a draft (rollback) | `DELETE …/draft_notes/:id` | — |
+| Delete a draft (deferred cleanup) | `DELETE …/draft_notes/:id` (404 ⇒ already gone) | — |
 | Read discussions | `GET …/merge_requests/:iid/discussions` | notes with `position`, `resolvable`, `resolved`, `system` |
 
 Consequence for GitLab submit: **one** `bulk_publish` publishes line comments,
@@ -251,22 +251,27 @@ operation, not an API call.
 
 `submit` on GitLab is:
 
+0. **Pre-flight cleanup.** `DELETE` the draft-note ids a prior failed attempt
+   recorded (`ReviewBatch.stale`), treating `404` as already-gone. A *real*
+   delete failure aborts here, before any POST — an undeleted orphan would be
+   swept into this run's `bulk_publish` and duplicated.
 1. **Draft every action** as a draft note, in bounded-parallel POSTs, recording
    each draft's id under its `ActionKey`:
    - line/file comment → `position` (per-comment `version`, cross-snapshot intact);
    - MR-level comment → position-less note;
-   - reply → `in_reply_to_discussion_id`;
-   - resolve → `resolve_discussion: true` on a reply-less draft (or on the reply
-     that resolves it).
+   - reply → `in_reply_to_discussion_id`.
+   (Resolves are not draft notes — see §8 — so they are separate PUTs.)
 2. **`bulk_publish`** with `note` = summary and `reviewer_state` = the verdict
    *when it is `request-changes`/`comment`*. One atomic publish, one notification.
    An `approve` verdict is **not** a `reviewer_state` (that records only a review
    state, not a real approval) — it is a separate `POST …/approve` after the
-   publish. A bare resolve is a separate PUT.
-3. **Reconcile.** Any draft POST that failed ⇒ roll back the drafts that landed
-   (`DELETE`) and keep the whole batch local for a clean retry — the v1
-   all-or-nothing-per-attempt discipline (design.md §11) is retained, now
-   covering the *entire* review, not just line comments.
+   publish.
+3. **Reconcile — deferred cleanup, not this-attempt rollback.** A draft-note POST
+   failure, or a `bulk_publish` failure, records the posted-but-unpublished ids in
+   `BatchOutcome.inflight` and keeps the whole batch local; it does **not** delete
+   now. `submit` persists those ids and step 0 of the *next* attempt deletes them.
+   Deferring makes cleanup idempotent (retried until it succeeds) and removes the
+   double-failure orphan the old this-attempt `DELETE` could leave behind.
 
 No old-instance fallback: GitLab ≥ 19 is assumed (§2.2), so there is no version
 probe. This deletes the summary-as-lone-draft dance and the RequestChanges-as-

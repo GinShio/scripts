@@ -132,6 +132,23 @@ impl GitHub {
             .ok_or_else(|| anyhow::anyhow!("could not resolve PR node id for {id}"))
     }
 
+    /// The viewer's pending (unpublished) review on this PR, if any — GitHub
+    /// allows at most one, so this uniquely identifies an orphan left by a failed
+    /// submit, for deferred cleanup.
+    fn viewer_pending_review(&self, number: u64) -> anyhow::Result<Option<String>> {
+        let data = self.graphql(
+            gql::VIEWER_PENDING,
+            json!({ "owner": self.owner, "repo": self.repo, "number": number }),
+        )?;
+        Ok(data["repository"]["pullRequest"]["reviews"]["nodes"]
+            .as_array()
+            .and_then(|arr| {
+                arr.iter()
+                    .find(|r| r["viewerDidAuthor"].as_bool().unwrap_or(false))
+                    .and_then(|r| r["id"].as_str().map(str::to_owned))
+            }))
+    }
+
     /// Resolve a user login (or `@me`) to a GraphQL user node id.
     fn user_node_id(&self, login: &str) -> anyhow::Result<Option<String>> {
         if login == SELF_REF {
@@ -369,6 +386,11 @@ mod gql {
         addComment(input:$input){clientMutationId}}";
     pub const ADD_REPLY: &str = "mutation($input:AddPullRequestReviewThreadReplyInput!){\
         addPullRequestReviewThreadReply(input:$input){comment{id}}}";
+    pub const DELETE_REVIEW: &str = "mutation($id:ID!){\
+        deletePullRequestReview(input:{pullRequestReviewId:$id}){clientMutationId}}";
+    pub const VIEWER_PENDING: &str = "query($owner:String!,$repo:String!,$number:Int!){\
+        repository(owner:$owner,name:$repo){pullRequest(number:$number){\
+          reviews(first:20,states:[PENDING]){nodes{id viewerDidAuthor}}}}}";
     pub const RESOLVE: &str =
         "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}";
     pub const UNRESOLVE: &str =
@@ -663,10 +685,22 @@ impl Forge for GitHub {
     }
 
     fn submit(&self, id: &str, batch: &ReviewBatch) -> anyhow::Result<BatchOutcome> {
+        let number = self.number(id)?;
+
+        // Pre-flight (deferred cleanup): discard the pending review a *prior*
+        // failed attempt left orphaned, before creating a new one — GitHub allows
+        // only one pending review per PR, so a leftover would otherwise block
+        // every future submit. Best-effort: if the delete fails, a truly-still-
+        // pending review makes the create below fail, and we re-discover and
+        // re-record it (self-healing); a review that has since published simply
+        // can't be re-deleted, which is fine. We only delete ids we recorded.
+        for rid in &batch.stale {
+            let _ = self.graphql(gql::DELETE_REVIEW, json!({ "id": rid }));
+        }
         if batch.is_empty() {
             return Ok(BatchOutcome::default());
         }
-        let number = self.number(id)?;
+
         // Resolve the PR node id first — `Err` here means we couldn't even start,
         // so nothing landed and the caller keeps the whole draft.
         let data = self.graphql(
@@ -722,6 +756,9 @@ impl Forge for GitHub {
         let mut notifications = 0u32;
         let mut summary_ok = batch.summary.is_none();
         let mut verdict_ok = batch.verdict.map(|_| false);
+        // Forge-side pending review this attempt leaves unpublished, if any, for
+        // the next attempt to clean up (see the pre-flight above).
+        let mut inflight: Vec<String> = Vec::new();
 
         // --- The review: line threads + file threads + replies + summary +
         // verdict, folded into ONE review (one notification), exactly as the web
@@ -819,6 +856,10 @@ impl Forge for GitHub {
                                 for k in review_keys() {
                                     landed.insert(k, false);
                                 }
+                                // The pending review + its attached comments stay
+                                // on GitHub, orphaned — record it so the next
+                                // attempt's pre-flight discards it before retrying.
+                                inflight.push(review_id.clone());
                             }
                         }
                     }
@@ -826,6 +867,12 @@ impl Forge for GitHub {
                         log::warn!("MR {id}: creating the review failed: {e}");
                         for k in review_keys() {
                             landed.insert(k, false);
+                        }
+                        // Create can fail because a prior orphaned pending review
+                        // still blocks the slot (pre-flight couldn't clear it).
+                        // Re-discover it so the next attempt can delete it.
+                        if let Ok(Some(rid)) = self.viewer_pending_review(number) {
+                            inflight.push(rid);
                         }
                     }
                 }
@@ -868,6 +915,7 @@ impl Forge for GitHub {
             summary_ok,
             verdict_ok,
             notifications,
+            inflight,
         })
     }
 

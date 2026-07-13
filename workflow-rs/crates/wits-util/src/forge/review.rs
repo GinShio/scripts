@@ -265,12 +265,19 @@ impl BatchAction {
 /// The whole review to flush for one MR, forge-neutral: a verdict, an optional
 /// summary body, and the ordered actions. `version` is the current snapshot —
 /// the fallback anchor for a comment, and GitHub's single review `commitOID`.
+///
+/// `stale` carries the forge-side, unpublished in-flight ids a *prior* failed
+/// attempt left behind (a GitHub pending-review id, GitLab draft-note ids), so
+/// this attempt can clean them up **before** doing anything — the "delete next
+/// time, keyed to what we recorded" discipline that makes retries idempotent
+/// without ever touching drafts the user created by hand (§ failure handling).
 #[derive(Debug, Clone)]
 pub struct ReviewBatch {
     pub verdict: Option<Verdict>,
     pub summary: Option<String>,
     pub actions: Vec<BatchAction>,
     pub version: DiffVersion,
+    pub stale: Vec<String>,
 }
 
 impl ReviewBatch {
@@ -304,6 +311,11 @@ pub struct BatchOutcome {
     /// honest, testable number, not a promise (a reviewer minimises it, but the
     /// platform ultimately decides).
     pub notifications: u32,
+    /// Forge-side, unpublished in-flight ids this attempt created but did **not**
+    /// publish (an orphaned GitHub pending review, GitLab draft notes). The
+    /// caller persists these and feeds them back as [`ReviewBatch::stale`] so the
+    /// *next* attempt deletes them first. Empty on a clean, fully-published run.
+    pub inflight: Vec<String>,
 }
 
 impl BatchOutcome {
@@ -313,7 +325,8 @@ impl BatchOutcome {
     }
 
     /// A fully-successful outcome: every listed action key, the summary, and the
-    /// verdict (if present) landed, in `notifications` notification(s).
+    /// verdict (if present) landed, in `notifications` notification(s). Nothing
+    /// left in flight.
     pub fn all_ok(
         keys: impl IntoIterator<Item = ActionKey>,
         has_verdict: bool,
@@ -324,6 +337,20 @@ impl BatchOutcome {
             summary_ok: true,
             verdict_ok: has_verdict.then_some(true),
             notifications,
+            inflight: Vec::new(),
+        }
+    }
+
+    /// The outcome of an aborted attempt: *nothing* landed, so the whole draft
+    /// stays for retry, and `inflight` records the forge-side ids (if any) this
+    /// attempt left unpublished for the next run to clean up.
+    pub fn none_landed(batch: &ReviewBatch, inflight: Vec<String>) -> Self {
+        BatchOutcome {
+            landed: batch.actions.iter().map(|a| (a.key(), false)).collect(),
+            summary_ok: false,
+            verdict_ok: batch.verdict.is_some().then_some(false),
+            notifications: 0,
+            inflight,
         }
     }
 }

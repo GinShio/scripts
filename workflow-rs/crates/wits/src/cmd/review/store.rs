@@ -100,6 +100,25 @@ impl Store {
         write_json(&path, local)
     }
 
+    // -- in-flight cleanup (deferred, id-keyed) ------------------------------
+
+    /// The forge-side ids a prior failed `submit` left unpublished (a GitHub
+    /// pending-review id, GitLab draft-note ids), to be cleaned up at the start of
+    /// the next `submit`. Empty (or absent) means nothing to clean.
+    pub fn load_inflight(&self, id: &str) -> Vec<String> {
+        read_json(&self.mr_dir(id).join("inflight.json")).unwrap_or_default()
+    }
+
+    /// Record the in-flight ids to clean next time, or delete the file once there
+    /// are none — a clean, fully-published submit leaves nothing behind.
+    pub fn save_inflight(&self, id: &str, ids: &[String]) -> Result<()> {
+        let path = self.mr_dir(id).join("inflight.json");
+        if ids.is_empty() {
+            return remove_if_present(&path);
+        }
+        write_json(&path, &ids)
+    }
+
     // -- enumeration & removal -----------------------------------------------
 
     /// Every MR's `info`, for the inbox and stack reconstruction.
@@ -110,11 +129,16 @@ impl Store {
             .collect()
     }
 
-    /// The ids of MRs that have a non-empty local draft.
+    /// The ids of MRs with pending work: a non-empty local draft, or an in-flight
+    /// cleanup a prior failed submit deferred. `submit --all` uses this, so a
+    /// deferred cleanup is retried even after the draft that spawned it is gone.
     pub fn local_ids(&self) -> Vec<String> {
         self.mr_ids()
             .into_iter()
-            .filter(|id| self.mr_dir(id).join("local.json").exists())
+            .filter(|id| {
+                let dir = self.mr_dir(id);
+                dir.join("local.json").exists() || dir.join("inflight.json").exists()
+            })
             .collect()
     }
 
@@ -245,6 +269,24 @@ mod tests {
                 },
             )
             .unwrap();
+        assert!(store.local_ids().is_empty());
+    }
+
+    #[test]
+    fn inflight_round_trips_and_counts_as_pending_work() {
+        let (_g, store) = store();
+        assert!(store.load_inflight("7").is_empty());
+        assert!(store.local_ids().is_empty());
+
+        // A deferred cleanup (no draft) still counts as pending work, so
+        // `submit --all` retries it even after the draft is gone.
+        store.save_inflight("7", &["PRR_abc".into()]).unwrap();
+        assert_eq!(store.load_inflight("7"), ["PRR_abc"]);
+        assert_eq!(store.local_ids(), ["7"]);
+
+        // Clearing it removes the file and the pending-work marker.
+        store.save_inflight("7", &[]).unwrap();
+        assert!(store.load_inflight("7").is_empty());
         assert!(store.local_ids().is_empty());
     }
 

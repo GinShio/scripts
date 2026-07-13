@@ -230,14 +230,12 @@ fn send_with_retry(
     let mut backoff_ms = 1000u64;
 
     for attempt in 0..=max_retries {
-        let mut req = ureq::request(method, url)
-            .set("Accept", "application/json")
-            .set("User-Agent", USER_AGENT);
-        req = match auth {
-            Auth::Bearer(t) => req.set("Authorization", &format!("Bearer {t}")),
-            Auth::Token(t) => req.set("Authorization", &format!("token {t}")),
-            Auth::PrivateToken(t) => req.set("PRIVATE-TOKEN", t),
-        };
+        let req = apply_auth(
+            ureq::request(method, url)
+                .set("Accept", "application/json")
+                .set("User-Agent", USER_AGENT),
+            auth,
+        );
 
         let response = match body {
             Some(b) => req.send_json(b),
@@ -270,11 +268,40 @@ fn send_with_retry(
     unreachable!("retry loop must return before exhausting attempts")
 }
 
+/// Attach the platform's credential header to a request. The differences are
+/// small but real (see [`Auth`]); centralised so every code path presents
+/// credentials identically.
+fn apply_auth(req: ureq::Request, auth: &Auth) -> ureq::Request {
+    match auth {
+        Auth::Bearer(t) => req.set("Authorization", &format!("Bearer {t}")),
+        Auth::Token(t) => req.set("Authorization", &format!("token {t}")),
+        Auth::PrivateToken(t) => req.set("PRIVATE-TOKEN", t),
+    }
+}
+
 /// Whether a status code warrants a retry. Only codes where the server
 /// explicitly signals a transient condition are included — 4xx errors (other
 /// than 429) are permanent and retrying them wastes time.
 fn is_retryable(code: u16) -> bool {
     matches!(code, 429 | 502 | 503)
+}
+
+/// DELETE a resource, treating **404 as success** (already gone). Deferred
+/// cleanup re-deletes ids a prior attempt recorded; by the time it runs the
+/// object may have been removed already, or published (so it is no longer a
+/// draft) — either way it is "gone", which is exactly what the cleanup wanted.
+/// A real failure (auth, 5xx, network) is still an error, so a caller that must
+/// confirm the id is gone before proceeding (GitLab) can abort on it.
+pub(crate) fn delete_idempotent(url: &str, auth: &Auth) -> anyhow::Result<()> {
+    match apply_auth(ureq::request("DELETE", url), auth).call() {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(404, _)) => Ok(()),
+        Err(ureq::Error::Status(code, r)) => {
+            let detail = r.into_string().unwrap_or_default();
+            anyhow::bail!("HTTP {code}: {}", detail.trim())
+        }
+        Err(e) => Err(anyhow::anyhow!("DELETE {url} failed: {e}")),
+    }
 }
 
 /// Issue one request and decode the JSON reply. A non-2xx status is turned into
