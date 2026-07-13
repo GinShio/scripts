@@ -694,11 +694,25 @@ impl Forge for GitHub {
         // pending review makes the create below fail, and we re-discover and
         // re-record it (self-healing); a review that has since published simply
         // can't be re-deleted, which is fine. We only delete ids we recorded.
+        // A stale delete that *fails* is kept as still-in-flight so the next
+        // attempt retries it — otherwise a cleanup-only submit (empty batch)
+        // would clear the record and orphan the review forever. On the non-empty
+        // path a truly-still-pending review also makes the create below fail and
+        // is re-discovered, so the id is deduped at the end.
+        let mut inflight: Vec<String> = Vec::new();
         for rid in &batch.stale {
-            let _ = self.graphql(gql::DELETE_REVIEW, json!({ "id": rid }));
+            if self
+                .graphql(gql::DELETE_REVIEW, json!({ "id": rid }))
+                .is_err()
+            {
+                inflight.push(rid.clone());
+            }
         }
         if batch.is_empty() {
-            return Ok(BatchOutcome::default());
+            return Ok(BatchOutcome {
+                inflight,
+                ..Default::default()
+            });
         }
 
         // Resolve the PR node id first — `Err` here means we couldn't even start,
@@ -756,9 +770,8 @@ impl Forge for GitHub {
         let mut notifications = 0u32;
         let mut summary_ok = batch.summary.is_none();
         let mut verdict_ok = batch.verdict.map(|_| false);
-        // Forge-side pending review this attempt leaves unpublished, if any, for
-        // the next attempt to clean up (see the pre-flight above).
-        let mut inflight: Vec<String> = Vec::new();
+        // `inflight` (forge-side reviews this attempt leaves unpublished) was
+        // seeded above with any stale id whose pre-flight delete failed.
 
         // --- The review: line threads + file threads + replies + summary +
         // verdict, folded into ONE review (one notification), exactly as the web
@@ -769,10 +782,20 @@ impl Forge for GitHub {
         // atomic `addPullRequestReview`. ---
         let event = batch.verdict.map(verdict_event).unwrap_or("COMMENT");
         let needs_pending = !file_comments.is_empty() || !replies.is_empty();
-        let has_review = !line_threads.is_empty()
-            || needs_pending
-            || batch.summary.is_some()
-            || batch.verdict.is_some();
+        let has_content = !line_threads.is_empty() || needs_pending || batch.summary.is_some();
+        // GitHub rejects a COMMENT/REQUEST_CHANGES review carrying neither a body
+        // nor a comment; only APPROVE may be empty. So attempt the review when
+        // there is content, or when the verdict is a (possibly bare) approval.
+        let has_review = has_content || batch.verdict == Some(Verdict::Approve);
+        if !has_review {
+            if let Some(v @ (Verdict::Comment | Verdict::RequestChanges)) = batch.verdict {
+                log::warn!(
+                    "MR {id}: a '{}' verdict needs a comment or summary on GitHub; \
+                     it stays in the draft",
+                    v.display_str()
+                );
+            }
+        }
         let line_keys = || line_threads.iter().map(|(k, _)| *k);
         let review_keys = || {
             line_keys()
@@ -909,6 +932,11 @@ impl Forge for GitHub {
             }
             landed.insert(*k, ok);
         }
+
+        // A failed stale delete and a re-discovered orphan can be the same id;
+        // keep the record unique so cleanup doesn't try the same delete twice.
+        inflight.sort();
+        inflight.dedup();
 
         Ok(BatchOutcome {
             landed,

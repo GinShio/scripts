@@ -50,48 +50,38 @@ pub struct StoredFile {
     pub status: String,
 }
 
-/// One fetched, pinned review point — a *snapshot*, distinct from an ad-hoc diff
-/// *range*: a snapshot is a historical identity whose objects are held alive by a
-/// `refs/wits/review/*` pin, whereas a range is a throwaway query.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Snapshot {
-    pub base_sha: String,
-    pub start_sha: String,
-    pub head_sha: String,
-    /// Unix timestamp of the fetch that first recorded this snapshot.
-    pub fetched_at: String,
-}
-
-impl Snapshot {
-    /// The forge diff-version SHAs for anchoring a comment on this snapshot.
-    pub fn version(&self) -> DiffVersion {
-        DiffVersion {
-            base_sha: self.base_sha.clone(),
-            start_sha: self.start_sha.clone(),
-            head_sha: self.head_sha.clone(),
-        }
-    }
-}
-
 /// `info.json` — the MR's necessary metadata and its snapshot history. A pure
 /// **cache**: `fetch` overwrites it, so it is not meant to be hand-edited. A feed
 /// refresh fills only `mr`, leaving the snapshot history empty until a full
 /// `fetch <mr>`. `commits`/`files` describe the current (latest) snapshot.
+///
+/// A *snapshot* in the history is exactly a [`DiffVersion`] — the `base/start/
+/// head` triple we diff against and pin (`refs/wits/review/*`), distinct from an
+/// ad-hoc diff *range* (a throwaway query). When each was first seen is
+/// deliberately **not** stored per-snapshot: dormancy is about the last time the
+/// MR was synced, so that lives once on [`Info::fetched_at`] and is refreshed on
+/// every fetch — a re-fetch of an unchanged head must not look dormant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
     pub schema: u32,
     pub mr: MrSummary,
     /// Every review point we have fetched and pinned, oldest first; the last is
-    /// the current one.
+    /// the current one. Each is a `base/start/head` diff version.
     #[serde(default)]
-    pub snapshots: Vec<Snapshot>,
+    pub snapshots: Vec<DiffVersion>,
+    /// Unix time (seconds) of the last `fetch` that synced this MR — updated on
+    /// *every* fetch, even when the head hasn't moved, so `prune`'s dormancy
+    /// reflects real staleness rather than when a snapshot first appeared. `0`
+    /// means never fully fetched (a feed-only entry).
+    #[serde(default)]
+    pub fetched_at: i64,
     pub commits: Vec<StoredCommit>,
     pub files: Vec<StoredFile>,
 }
 
 impl Info {
     /// The current (latest) snapshot, if any has been fetched.
-    pub fn current(&self) -> Option<&Snapshot> {
+    pub fn current(&self) -> Option<&DiffVersion> {
         self.snapshots.last()
     }
 
@@ -103,9 +93,9 @@ impl Info {
 
     /// Record a freshly-fetched snapshot, appending it only when the head moved
     /// (so a re-fetch of an unchanged MR doesn't grow the history).
-    pub fn record_snapshot(&mut self, snapshot: Snapshot) {
-        if self.snapshots.last().map(|s| &s.head_sha) != Some(&snapshot.head_sha) {
-            self.snapshots.push(snapshot);
+    pub fn record_snapshot(&mut self, version: DiffVersion) {
+        if self.snapshots.last().map(|s| &s.head_sha) != Some(&version.head_sha) {
+            self.snapshots.push(version);
         }
     }
 }

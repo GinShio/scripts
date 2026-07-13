@@ -128,7 +128,8 @@ const INFO: &str = r##"{
           "updated_at": "2026-07-01T00:00:00Z", "labels": [],
           "web_url": "https://github.com/me/proj/pull/__ID__" },
   "snapshots": [ { "base_sha": "base000", "start_sha": "base000",
-                   "head_sha": "__HEAD__", "fetched_at": "1700000000" } ],
+                   "head_sha": "__HEAD__" } ],
+  "fetched_at": 1700000000,
   "commits": [ { "sha": "__HEAD__", "subject": "Add a thing" } ],
   "files": [ { "path": "src/x.c", "status": "M" } ]
 }"##;

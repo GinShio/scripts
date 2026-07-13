@@ -49,15 +49,16 @@ to be hand-edited (edits are overwritten on the next fetch).
 |---|---|
 | `schema` | Store version. |
 | `mr` | The MR object (id, display, state, draft, title, author, base, source, head_sha, updated_at, labels, web_url — see [json.md](json.md#mr-object)). |
-| `snapshots` | The review points fetched so far, oldest first: each `{ base_sha, start_sha, head_sha, fetched_at }`. The last is the current one. Every snapshot's objects are pinned (below). |
+| `snapshots` | The review points fetched so far, oldest first: each a `{ base_sha, start_sha, head_sha }` diff version. The last is the current one. Every snapshot's objects are pinned (below). |
+| `fetched_at` | Unix seconds of the **last** `fetch` that synced this MR — updated on every fetch (even for an unchanged head), so dormancy tracks real staleness. `0` for a feed-only entry (never fully fetched). |
 | `commits` | Commits in the current snapshot's `base..head`, derived **locally** from the fetched objects. |
 | `files` | Files the current snapshot touched, derived locally. |
 
-A **feed** fetch fills only `mr`, leaving `snapshots`/`commits`/`files` empty; a
-full `fetch <mr>` fills them and appends a snapshot when the head has moved. A
-**snapshot** (a stored, pinned review point) is distinct from a diff **range** (a
-throwaway query); `fetched_at` on the current snapshot is what `prune
---older-than` reads.
+A **feed** fetch fills only `mr` (and stamps `fetched_at`), leaving
+`snapshots`/`commits`/`files` empty; a full `fetch <mr>` fills them and appends a
+snapshot when the head has moved. A **snapshot** (a stored, pinned review point)
+is distinct from a diff **range** (a throwaway query). `prune --older-than` reads
+the MR-level `fetched_at`, not a per-snapshot time.
 
 ### `comments.json` — the forge's discussion (a cache)
 

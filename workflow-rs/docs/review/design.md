@@ -174,8 +174,13 @@ Four types, no more, and each maps onto something a forge can actually represent
 
 ### 5.1 `Snapshot` — outdating made structural
 
-A review is always pinned to `Snapshot { base_sha, head_sha }` — the pair we
-diff and the SHAs comments anchor against. **Branch outdate** is then just
+A review is always pinned to a **snapshot** — the `base/head` pair we diff and
+the SHAs comments anchor against. It needs no type of its own: a snapshot *is* a
+`DiffVersion { base_sha, start_sha, head_sha }` (the same triple the forge
+boundary speaks), and the history is a `Vec<DiffVersion>` on `info.json`. When
+each was first synced is deliberately not per-snapshot — that would make a
+re-fetch of an unchanged head look dormant — so the last-sync time lives once on
+the MR (`Info::fetched_at`) and `prune` reads it. **Branch outdate** is then just
 `reviewed.head_sha != current head`; **comment outdate** is just "the anchored
 line does not exist at the current head." Neither needs a state machine; both are
 inferences from "the pinned snapshot is no longer the tip." We never assume the
@@ -497,13 +502,14 @@ hidden, because a reviewer needs to know them:
 | Concern | GitHub (GraphQL) | GitLab (REST) |
 |---|---|---|
 | Batch mechanism | `addPullRequestReview` (one review → one notification) | draft notes → one `bulk_publish` (publishes all of the user's pending drafts) |
-| Verdict + summary + line comments | one review call | one `bulk_publish` |
+| Verdict + summary + line comments | one review call | line comments **and the summary** ride one `bulk_publish` (the summary as a position-less draft note — the released `bulk_publish` takes **no body**); the verdict is a **separate** call (A3) |
 | **File-level** comment in the batch | yes — pending review + `addPullRequestReviewThread(subjectType: FILE)` + submit (still one review) | yes — `position_type: file` draft note |
 | **MR-level** (conversation) comment | **separate** `addComment` (its own notification) | position-less draft note (rides the batch) |
 | Reply to an existing thread | **rides the review** — `addPullRequestReviewThreadReply` with the *pending* review's id, published on submit (one notification, exactly as the web UI does) | draft note with `in_reply_to_discussion_id` (rides the batch) |
 | Resolve / unresolve | **supported** — `resolveReviewThread`/`unresolveReviewThread` | separate `PUT …/discussions/:id` (a draft note needs a body, so a bare resolve can't ride the batch) |
-| `request-changes` verdict | native (`REQUEST_CHANGES`) | **native** — `bulk_publish` `reviewer_state: requested_changes` (A3) |
-| `approve` verdict | part of the review | **separate `POST …/approve`** — `bulk_publish`'s `reviewer_state: approved` records only a review state, not a formal approval, so approve never rides the publish (A3) |
+| `request-changes` verdict | native (`REQUEST_CHANGES`) | **no released API** — mapped to `POST …/unapprove`, its concrete released effect (A3) |
+| `comment` verdict | native (`COMMENT`) | **no-op** — leaving notes no longer sets `reviewed`, and no released API sets it; the comments/summary are the review (A3) |
+| `approve` verdict | part of the review | **separate `POST …/approve`** (A3) |
 | Partial failure handling | the review call is atomic — failure leaves nothing | **all-or-nothing per attempt**: a draft failure aborts the publish and rolls back (DELETE) what posted (§11) |
 | Diff-line comment anchor | one review-level `commitOID`; the batch anchors to one snapshot | **per-comment** `position{base/start/head_sha}`; each anchors to its own version (A1) |
 | Cross-snapshot drafting | not in one review (one `commitOID`) | **delivered** — each comment carries its own version |
@@ -519,24 +525,30 @@ The named caveats behind the matrix:
   pushed MR commits) always satisfies this; commenting on an un-pushed local
   intermediate commit does not, and degrades to an `mr` comment. GitHub is more
   lenient. Captured by keeping the version SHAs on the snapshot (§5.1).
-- **A3 — GitLab verdicts (targets GitLab ≥ 19).** `bulk_publish` accepts
-  `reviewer_state`, so `request-changes` (`requested_changes`) and `comment`
-  (`reviewed`) ride the one publish. `approve` is the exception and is *always* a
-  separate `POST …/approve`: `bulk_publish`'s `reviewer_state: "approved"` routes
-  through `UpdateReviewerStateService` and sets only a review state, never a
-  formal approval (`ApprovalService`) — so folding it into the publish would
-  silently *not* approve the MR. There is no version probe or fallback: we assume
-  ≥ 19 (`draft_notes` `reviewer_state`/`note`, the `draft` list filter), which
-  keeps the backend one clean path instead of a forked one.
+- **A3 — GitLab verdicts map onto the *released* API, not the unmerged
+  `bulk_publish` extension.** A `reviewer_state`/`note` body on `bulk_publish`
+  would let the verdict and summary ride the one publish, but that is the
+  **unmerged** proposal gitlab-org/gitlab!237813 — it is in *no* shipped release,
+  and GitLab's Grape API silently ignores the undeclared params, so relying on it
+  would drop the summary and verdict while reporting success. So the released
+  surface is used instead: the **summary** rides as a position-less draft note
+  (published by the bodyless `bulk_publish`); **`approve`** is `POST …/approve`;
+  **`request-changes`** is `POST …/unapprove` (there is no released API for the
+  formal `requested_changes` reviewer state, and unapproving is its concrete
+  released effect — a reviewer requesting changes has their approval removed);
+  **`comment`** is a no-op (leaving notes no longer auto-sets `reviewed`, and no
+  released API sets it). The `draft` boolean list filter *is* released (GitLab
+  ≥ 16), so the feed path is unaffected.
 - **A5 — batching is best-effort per platform, and `notifications` is honest.**
-  On GitLab nearly everything folds into one `bulk_publish`; a bare resolve is a
-  separate quiet PUT. On GitHub the review (verdict + summary + line/file
-  comments **and replies**) is one notification — replies join the *pending*
-  review by id and publish with it, the same fold the web UI performs. The one
-  unfoldable case is an MR-level conversation comment: it is a separate
-  `addComment` (a real API limit) with its own notification. Resolves are
-  separate mutations but do not notify. `BatchOutcome.notifications` reports the
-  true count rather than promising "one".
+  On GitLab the comments, replies **and the summary** fold into one
+  `bulk_publish`; a bare resolve is a separate quiet PUT, and the verdict is a
+  separate `approve`/`unapprove` call (A3). On GitHub the review (verdict +
+  summary + line/file comments **and replies**) is one notification — replies
+  join the *pending* review by id and publish with it, the same fold the web UI
+  performs. The one unfoldable case is an MR-level conversation comment: it is a
+  separate `addComment` (a real API limit) with its own notification. Resolves
+  are separate mutations but do not notify. `BatchOutcome.notifications` reports
+  the true count rather than promising "one".
 
 Transport is **GraphQL over `ureq` on GitHub** (the whole forge — threads,
 resolution, PR search, and the stack half all live there; REST is used only for
@@ -578,9 +590,10 @@ right:
   failure aborts before any POST — so an undeleted orphan can never be swept into
   this run's `bulk_publish` and duplicated. A draft-note POST failure, or a
   `bulk_publish` failure, records the posted-but-unpublished ids as `inflight` and
-  aborts (no this-attempt delete). The verdict rides `reviewer_state` natively,
-  except `approve` which is a separate real-approval call afterwards; resolves are
-  separate PUTs, reconciled by their own key.
+  aborts (no this-attempt delete). The summary rides as a position-less draft
+  note; the verdict is a separate call on the released API
+  (`approve`→`/approve`, `request-changes`→`/unapprove`, `comment`→no-op; A3);
+  resolves are separate PUTs, reconciled by their own key.
 - **GitHub: the single-pending-review invariant makes cleanup self-healing.** A
   PR allows one pending review per user, so a leftover orphan is unambiguous.
   Pre-flight best-effort `deletePullRequestReview`s the recorded `stale` id; if
@@ -746,11 +759,13 @@ stack navigation, `prune` (day count or ISO date), and parallel submit with
 
 Delivered by the API-native revision (§10/§11, [`redesign.md`](redesign.md)): the
 **whole GitHub forge on GraphQL**; **thread resolve/unresolve on both forges**
-(GitHub `resolveReviewThread`, GitLab discussion PUT); **native GitLab
-`request-changes`/`comment`** (`bulk_publish reviewer_state`; `approve` stays a
-separate real-approval call, A3); GitLab's **single `bulk_publish`** carrying
-comments + replies + summary (`note`) + reviewer state; and
-**locally-computed, uniform, side-aware outdating** (§6).
+(GitHub `resolveReviewThread`, GitLab discussion PUT); GitLab's **single
+`bulk_publish`** carrying comments + replies + **summary** (as a position-less
+draft note — the released `bulk_publish` has no body), with the **verdict mapped
+onto the released API** (`approve`→`/approve`, `request-changes`→`/unapprove`,
+`comment`→no-op; A3), since the `bulk_publish` `reviewer_state`/`note` extension
+is unmerged and ships in no release; and **locally-computed, uniform, side-aware
+outdating** (§6).
 
 Deliberately deferred, and honest about it:
 

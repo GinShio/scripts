@@ -8,7 +8,6 @@
 //! buries yours). `--next`/`--prev` walk the stack from the last checkout.
 
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
@@ -108,11 +107,9 @@ pub fn run_prune(repo: &Repository, args: &PruneArgs) -> Result<()> {
     for info in ctx.store.list_infos() {
         let id = &info.mr.id;
         let terminal = matches!(info.mr.state, MrState::Merged | MrState::Closed);
-        let stale = cutoff.is_some_and(|before| {
-            info.current()
-                .and_then(|s| s.fetched_at.parse::<i64>().ok())
-                .is_some_and(|at| at < before)
-        });
+        // Dormant iff we have a real last-sync time (a full fetch, `fetched_at`
+        // > 0) that predates the cutoff. A feed-only entry (`0`) is never dormant.
+        let stale = cutoff.is_some_and(|before| info.fetched_at > 0 && info.fetched_at < before);
         if !terminal && !stale {
             continue;
         }
@@ -146,7 +143,7 @@ pub fn run_prune(repo: &Repository, args: &PruneArgs) -> Result<()> {
 /// the Unix instant before which an MR counts as dormant.
 fn parse_cutoff(spec: &str) -> Result<i64> {
     if let Ok(days) = spec.parse::<i64>() {
-        return Ok(now_secs() - days.saturating_mul(86_400));
+        return Ok(super::now_secs() - days.saturating_mul(86_400));
     }
     let epoch_day = iso_date_to_epoch_day(spec).with_context(|| {
         format!("--older-than must be a day count or an ISO date, got '{spec}'")
@@ -188,13 +185,6 @@ fn days_in_month(year: i64, month: i64) -> i64 {
         }
         _ => 0,
     }
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

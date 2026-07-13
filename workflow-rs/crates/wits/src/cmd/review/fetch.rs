@@ -7,16 +7,15 @@
 //! matching MR, leaving the expensive per-MR pull to `fetch <mr>`. With no
 //! argument, every configured feed is refreshed (the RSS "refresh all").
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use anyhow::{Context, Result};
 
+use wits_util::forge::DiffVersion;
 use wits_util::git::Repository;
 
 use super::config::{self, Config};
-use super::model::{Comments, Info, Snapshot, StoredCommit, StoredFile, Thread, SCHEMA};
+use super::model::{Comments, Info, StoredCommit, StoredFile, Thread, SCHEMA};
 use super::store::refs;
-use super::{online, parse_mr_handle, Online};
+use super::{now_secs, online, parse_mr_handle, Online};
 
 pub fn run(repo: &Repository, args: &super::FetchArgs) -> Result<()> {
     let ctx = online(repo)?;
@@ -71,19 +70,21 @@ fn fetch_one(ctx: &Online, remote: &str, id: &str) -> Result<()> {
 
     let (commits, files) = local_range(repo, &v.base_sha, &head_sha);
     // Preserve the snapshot history across fetches; append only when the head
-    // moved. Metadata and current-snapshot diff state are refreshed wholesale.
+    // moved. Metadata and current-snapshot diff state are refreshed wholesale,
+    // and `fetched_at` is stamped every time (even for an unchanged head) so
+    // dormancy tracks real sync time.
     let mut info = Info {
         schema: SCHEMA,
         mr: details.summary,
         snapshots: store.load_info(id).map(|i| i.snapshots).unwrap_or_default(),
+        fetched_at: now_secs(),
         commits,
         files,
     };
-    info.record_snapshot(Snapshot {
+    info.record_snapshot(DiffVersion {
         base_sha: v.base_sha,
         start_sha: v.start_sha,
         head_sha,
-        fetched_at: now_epoch(),
     });
     store.save_info(id, &info)?;
 
@@ -119,7 +120,7 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
     let store = &ctx.local.store;
     for summary in summaries.iter() {
         let mr = summary.clone();
-        let info = match store.load_info(&mr.id) {
+        let mut info = match store.load_info(&mr.id) {
             Some(mut existing) => {
                 existing.mr = mr;
                 existing
@@ -128,10 +129,12 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
                 schema: SCHEMA,
                 mr,
                 snapshots: Vec::new(),
+                fetched_at: 0,
                 commits: Vec::new(),
                 files: Vec::new(),
             },
         };
+        info.fetched_at = now_secs();
         store.save_info(&info.mr.id, &info)?;
     }
     log::info!(
@@ -187,11 +190,4 @@ fn local_range(repo: &Repository, base: &str, head: &str) -> (Vec<StoredCommit>,
         })
         .collect();
     (commits, files)
-}
-
-fn now_epoch() -> String {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default()
 }

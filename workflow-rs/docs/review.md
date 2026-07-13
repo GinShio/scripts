@@ -266,10 +266,12 @@ comment is dropped; repeated resolutions of one thread collapse to the last),
 then handed to the forge as one review. Each platform folds as much as its native
 batch allows into **one notification**:
 
-- **GitLab** — comments (line/file/conversation), replies, the summary, and a
-  `request-changes`/`comment` reviewer state all ride a single `bulk_publish`. An
-  `approve` verdict (a real approval, which `bulk_publish` can't record) and a
-  bare thread resolve are separate (quiet) calls.
+- **GitLab** — comments (line/file/conversation), replies, and the summary (as a
+  position-less draft note) all ride a single bodyless `bulk_publish`. The verdict
+  is a separate released call — `approve`→`POST …/approve`,
+  `request-changes`→`POST …/unapprove` (there is no released API for the formal
+  `requested_changes` state; unapprove is its effect), `comment`→nothing — and a
+  bare thread resolve is a separate (quiet) PUT.
 - **GitHub** — the verdict, summary, line/file comments, **and replies** are one
   review (replies join the pending review by id, exactly as the web UI batches
   them), so they share one notification. Only a conversation (MR-level) comment
@@ -414,12 +416,12 @@ Bounded on purpose, and honest about it:
 |---|---|
 | Forges | GitHub (GraphQL) and GitLab (REST). Gitea/Forgejo/Codeberg have the trait seam but no review backend. |
 | Thread resolve | Supported on **both** — GitHub via `resolveReviewThread`, GitLab via the discussion API. |
-| `request-changes` on GitLab | **Native** (`reviewer_state: requested_changes`), targeting GitLab ≥ 19; `comment` is native too (`reviewed`). An `approve` verdict is a separate real-approval call (`POST …/approve`), because `bulk_publish`'s `approved` records only a review state, not a formal approval. |
+| Verdicts on GitLab | Mapped onto the *released* API: `approve`→`POST …/approve`, `request-changes`→`POST …/unapprove` (no released API sets the formal `requested_changes` reviewer state; unapprove is its concrete effect), `comment`→no-op. The `bulk_publish` `reviewer_state`/`note` body that would fold the verdict + summary into the publish is the unmerged gitlab-org/gitlab!237813 — absent from every release — so the summary rides as a draft note instead. |
 | Editing/deleting a **published** comment | Not supported; you edit only your pending `local.json`. |
 | Cross-snapshot anchoring | Per-comment on GitLab (each comment anchors to its own snapshot version); review-level on GitHub (its API takes one commit per review, so the batch anchors to one snapshot). Comments without a `commit` use the current snapshot. |
 | Outdating | Computed **locally** and identically for both forges — a thread is outdated when its anchored line changed between the commit it was written on and the current head. Falls back to the forge's own flag only when that commit's objects aren't local. |
 | Feeds | Return real MRs (base/head) up to a hard `limit`, most-recently-updated first; an incremental "since last sync" cursor is future work. |
-| Notifications | Minimised, not promised: `submit` reports the true count. GitLab folds a whole review into one `bulk_publish`. GitHub folds the verdict, summary, line/file comments, and replies into one review; only an MR-level conversation comment is a separate notification (resolves are separate but quiet). |
+| Notifications | Minimised, not promised: `submit` reports the true count. GitLab folds comments + replies + summary into one `bulk_publish` (the verdict is a separate quiet `approve`/`unapprove`). GitHub folds the verdict, summary, line/file comments, and replies into one review; only an MR-level conversation comment is a separate notification (resolves are separate but quiet). |
 
 ## Troubleshooting
 

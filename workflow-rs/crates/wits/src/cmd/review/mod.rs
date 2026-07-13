@@ -249,6 +249,16 @@ where
     out
 }
 
+/// The current Unix time in whole seconds — the one clock the review store uses
+/// (snapshot sync time, `prune` dormancy), so timestamps are one type everywhere.
+pub(crate) fn now_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 /// Parse an MR handle: a bare number, or a forge URL whose last numeric path
 /// segment is the number (`…/pull/123`, `…/merge_requests/123`).
 pub(crate) fn parse_mr_handle(handle: &str) -> Result<String> {
@@ -346,6 +356,7 @@ pub(crate) fn stub_info(id: &str, base: &str, source: &str) -> model::Info {
             web_url: String::new(),
         },
         snapshots: Vec::new(),
+        fetched_at: 0,
         commits: Vec::new(),
         files: Vec::new(),
     }

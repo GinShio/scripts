@@ -103,17 +103,40 @@ impl GitLab {
         Ok(())
     }
 
-    /// Record a real MR approval via the dedicated endpoint. `bulk_publish`'s
-    /// `reviewer_state: "approved"` only sets the reviewer's *review state*, not a
-    /// formal approval (it routes through `UpdateReviewerStateService`, never
-    /// `ApprovalService`), so an `approve` verdict must go here — the other two
-    /// verdicts ride `reviewer_state` on the publish. Returns whether it landed.
+    /// Record a real MR approval via the dedicated `POST …/approve` endpoint.
+    ///
+    /// GitLab has **no released public API** to set a reviewer's `reviewed` /
+    /// `requested_changes` state: the only mechanism is the `reviewer_state`
+    /// parameter on `bulk_publish`, which is still an *unmerged* proposal
+    /// (gitlab-org/gitlab!237813) and absent from every shipped release — and
+    /// even it routes through `UpdateReviewerStateService`, which is *not* a
+    /// formal approval. So the verdicts map onto what the released API actually
+    /// exposes: `approve` here, `request-changes` → [`unapprove`](Self::unapprove)
+    /// (its concrete released effect — a reviewer requesting changes has their
+    /// approval removed), and `comment` is a no-op (leaving notes no longer
+    /// changes reviewer state on its own). Returns whether it landed.
     fn approve(&self, id: &str) -> bool {
         let url = format!("{}/{id}/approve", self.mrs_url());
         match request("POST", &url, &self.auth, None) {
             Ok(_) => true,
             Err(e) => {
                 log::warn!("MR {id}: approve failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Remove the authenticated user's approval — the released proxy for a
+    /// `request-changes` verdict (see [`approve`](Self::approve)). Idempotent:
+    /// GitLab answers `404` when there was no approval to remove, which is the
+    /// goal state ("not approved"), so it counts as success.
+    fn unapprove(&self, id: &str) -> bool {
+        let url = format!("{}/{id}/unapprove", self.mrs_url());
+        match request("POST", &url, &self.auth, None) {
+            Ok(_) => true,
+            Err(e) if e.to_string().contains("404") => true,
+            Err(e) => {
+                log::warn!("MR {id}: unapprove (request-changes) failed: {e}");
                 false
             }
         }
@@ -195,8 +218,8 @@ fn diff_position(
     }
     if let Some(s) = start {
         pos["line_range"] = json!({
-            "start": range_endpoint(s),
-            "end": range_endpoint(end),
+            "start": range_endpoint(path, s),
+            "end": range_endpoint(path, end),
         });
     }
     pos
@@ -218,17 +241,36 @@ fn file_position(version: &DiffVersion, path: &str, old_path: Option<&str>) -> V
     })
 }
 
-/// One endpoint of a GitLab `position.line_range`: the side as `type`, plus the
-/// side-appropriate line. GitLab's schema also allows a `line_code` per endpoint;
-/// it is omitted pending a live probe — `type` + the line may suffice, and a
-/// wrongly-computed `line_code` would mis-anchor where omitting fails cleanly.
-fn range_endpoint(r: LineRef) -> Value {
-    let mut o = json!({ "type": match r.side { Side::New => "new", Side::Old => "old" } });
+/// One endpoint of a GitLab `position.line_range`: the side as `type`, the
+/// side-appropriate line, and — crucially — a `line_code`. GitLab **rejects** a
+/// `line_range` endpoint without one (`400 … line_code can't be blank`), so a
+/// multi-line note is impossible without it; we compute it rather than omit it.
+fn range_endpoint(path: &str, r: LineRef) -> Value {
+    let (old, new) = match r.side {
+        Side::New => (0, r.line),
+        Side::Old => (r.line, 0),
+    };
+    let mut o = json!({
+        "type": match r.side { Side::New => "new", Side::Old => "old" },
+        "line_code": line_code(path, old, new),
+    });
     match r.side {
         Side::New => o["new_line"] = json!(r.line),
         Side::Old => o["old_line"] = json!(r.line),
     }
     o
+}
+
+/// GitLab's `line_code` for a diff line: `SHA1(file_path)_<old_line>_<new_line>`,
+/// with `0` for the side the line does not exist on (a pure addition is
+/// `hash_0_N`, a deletion `hash_N_0`). The hash is over the *new* path (the file
+/// identifier GitLab keys line codes by). Required by `line_range`; see
+/// [`range_endpoint`].
+fn line_code(path: &str, old_line: u32, new_line: u32) -> String {
+    use sha1::{Digest, Sha1};
+    let mut hasher = Sha1::new();
+    hasher.update(path.as_bytes());
+    format!("{:x}_{old_line}_{new_line}", hasher.finalize())
 }
 
 /// Read one `line_range` endpoint back into a [`LineRef`]. `type` selects the
@@ -267,6 +309,20 @@ fn current_user_ids(mr: &Value, field: &str) -> Vec<u64> {
         .as_array()
         .map(|arr| arr.iter().filter_map(|u| u["id"].as_u64()).collect())
         .unwrap_or_default()
+}
+
+/// The next-page URL for a GitLab list response, read from the `X-Next-Page`
+/// header (GitLab paginates by page number). An absent or empty header means
+/// this was the last page. The page number is appended to `base`, which already
+/// carries the full query string, so each page re-derives from the same base.
+fn next_page(base: &str, headers: &[(String, String)]) -> Option<String> {
+    headers
+        .iter()
+        .find(|(name, _)| name == "x-next-page")
+        .and_then(|(_, value)| {
+            let v = value.trim();
+            (!v.is_empty()).then(|| format!("{base}&page={v}"))
+        })
 }
 
 /// Resolve a project's numeric id from its URL-encoded path. GitLab accepts the
@@ -510,17 +566,7 @@ impl Forge for GitLab {
             let next = if collected >= limit {
                 None
             } else {
-                headers
-                    .iter()
-                    .find(|(name, _)| name == "x-next-page")
-                    .and_then(|(_, value)| {
-                        let v = value.trim();
-                        if v.is_empty() {
-                            None
-                        } else {
-                            Some(format!("{url}&page={v}"))
-                        }
-                    })
+                next_page(&url, headers)
             };
             (items, next)
         })?;
@@ -551,20 +597,7 @@ impl Forge for GitLab {
         let discussions: Vec<Value> =
             super::request_paginated(&url, &self.auth, 10, |v, headers| {
                 let items: Vec<Value> = v.as_array().map(|arr| arr.to_vec()).unwrap_or_default();
-                // GitLab signals the next page via X-Next-Page; absent or empty
-                // means this is the last page.
-                let next = headers
-                    .iter()
-                    .find(|(name, _)| name == "x-next-page")
-                    .and_then(|(_, value)| {
-                        let v = value.trim();
-                        if v.is_empty() {
-                            None
-                        } else {
-                            Some(format!("{url}&page={v}"))
-                        }
-                    });
-                (items, next)
+                (items, next_page(&url, headers))
             })?;
 
         let mut threads = Vec::new();
@@ -668,15 +701,20 @@ impl Forge for GitLab {
         }
 
         // GitLab's native batch is draft notes + `bulk_publish`: comments
-        // (line / file / MR-level) and replies become draft notes, published as
-        // one review — one notification. That two-phase shape puts atomicity on
-        // us, so it is all-or-nothing *per attempt*: any comment/reply draft
-        // failure aborts the publish and rolls back what posted, for a clean
-        // retry (no orphans, no duplicates). Resolves are not draft notes (a
-        // draft needs a body), so they are separate PUTs (phase 3).
+        // (line / file / MR-level), replies, and the summary all become draft
+        // notes, published together as one review — one notification. That
+        // two-phase shape puts atomicity on us, so it is all-or-nothing *per
+        // attempt*: any draft failure aborts the publish and defers cleanup of
+        // what posted, for a clean retry (no orphans, no duplicates). Resolves
+        // are not draft notes (a draft needs a body), so they are separate PUTs
+        // (phase 3), and the verdict is a separate call (phase 2b) — the released
+        // `bulk_publish` takes no body (see below).
 
-        // --- Phase 1: a draft-note request per comment / reply action. ---
-        let mut reqs: Vec<(ActionKey, Value)> = Vec::new();
+        // --- Phase 1: a draft note per comment / reply action, plus the summary
+        // as a position-less draft note so it publishes with the batch. The
+        // `String` label is for logging only; landing is reconciled by key from
+        // `batch.actions` below (the summary is not an action). ---
+        let mut reqs: Vec<(String, Value)> = Vec::new();
         for a in &batch.actions {
             match a {
                 BatchAction::Comment {
@@ -703,20 +741,26 @@ impl Forge for GitLab {
                         }),
                         None => json!({ "note": body }),
                     };
-                    reqs.push((*key, b));
+                    reqs.push((format!("action {key}"), b));
                 }
                 BatchAction::Reply { key, thread, body } => {
                     reqs.push((
-                        *key,
+                        format!("action {key}"),
                         json!({ "note": body, "in_reply_to_discussion_id": thread }),
                     ));
                 }
                 BatchAction::Resolve { .. } => {}
             }
         }
+        // The summary body: GitLab has no released `bulk_publish` `note` param
+        // (that is the unmerged gitlab-org/gitlab!237813), so it rides as an
+        // ordinary position-less draft note and publishes with the rest.
+        if let Some(summary) = &batch.summary {
+            reqs.push(("summary".to_owned(), json!({ "note": summary })));
+        }
 
-        // POST the draft notes in bounded-parallel batches, each carrying its
-        // ActionKey. A cap keeps a big review from opening a connection per note.
+        // POST the draft notes in bounded-parallel batches. A cap keeps a big
+        // review from opening a connection per note.
         let posted: Mutex<Vec<u64>> = Mutex::new(Vec::new());
         let ok = Mutex::new(true);
         let draft_url_ref = &draft_url;
@@ -725,8 +769,7 @@ impl Forge for GitLab {
         let ok_ref = &ok;
         for chunk in reqs.chunks(MAX_DRAFT_PARALLEL) {
             std::thread::scope(|scope| {
-                for (key, body) in chunk {
-                    let key = *key;
+                for (label, body) in chunk {
                     scope.spawn(
                         move || match request("POST", draft_url_ref, auth, Some(body)) {
                             Ok(v) => {
@@ -735,7 +778,7 @@ impl Forge for GitLab {
                                 }
                             }
                             Err(e) => {
-                                log::warn!("MR {id}: draft note (action {key}) failed: {e}");
+                                log::warn!("MR {id}: draft note ({label}) failed: {e}");
                                 *ok_ref.lock().unwrap() = false;
                             }
                         },
@@ -746,11 +789,11 @@ impl Forge for GitLab {
         let drafts_all_ok = ok.into_inner().unwrap();
         let posted_ids: Vec<u64> = posted.into_inner().unwrap();
 
-        // A comment/reply draft failed → nothing lands. Defer cleanup: keep the
-        // posted-but-unpublished draft ids so the *next* attempt deletes them
-        // first. We do *not* delete now — a this-attempt delete that itself
-        // failed would leave an orphan that a later `bulk_publish` republishes;
-        // deferring makes cleanup idempotent and eventually-consistent.
+        // A draft failed → nothing lands. Defer cleanup: keep the posted-but-
+        // unpublished draft ids so the *next* attempt deletes them first. We do
+        // *not* delete now — a this-attempt delete that itself failed would leave
+        // an orphan that a later `bulk_publish` republishes; deferring makes
+        // cleanup idempotent and eventually-consistent.
         if !drafts_all_ok {
             log::warn!(
                 "MR {id}: a draft note failed; deferring cleanup of {} posted draft(s)",
@@ -759,35 +802,22 @@ impl Forge for GitLab {
             return Ok(BatchOutcome::none_landed(batch, u64_ids(&posted_ids)));
         }
 
-        // --- Phase 2: one `bulk_publish` carries the pending drafts, the summary
-        // (`note`), and the reviewer state. `approve` is deliberately *not* a
-        // reviewer_state here: on `bulk_publish` it records only a review state,
-        // not a formal approval — so it becomes a separate `approve` call
-        // (phase 2b). RequestChanges/Comment ride the publish natively. ---
-        let reviewer_state = match batch.verdict {
-            Some(Verdict::RequestChanges) => Some("requested_changes"),
-            Some(Verdict::Comment) => Some("reviewed"),
-            Some(Verdict::Approve) | None => None,
-        };
-        let has_publishable =
-            !posted_ids.is_empty() || batch.summary.is_some() || reviewer_state.is_some();
+        // --- Phase 2: one `bulk_publish` publishes ALL of the user's pending
+        // drafts on the MR as a single review — one notification. The released
+        // endpoint takes **no body** (the `note`/`reviewer_state` params are the
+        // unmerged !237813, absent from every shipped release), so the summary
+        // rode as a draft note in phase 1 and the verdict is a separate call
+        // (phase 2b). The summary therefore lands exactly when the publish does. ---
+        let has_publishable = !posted_ids.is_empty();
 
         let mut notifications = 0u32;
         let mut summary_ok = batch.summary.is_none();
         if has_publishable {
-            let mut body = serde_json::Map::new();
-            if let Some(s) = &batch.summary {
-                body.insert("note".into(), json!(s));
-            }
-            if let Some(rs) = reviewer_state {
-                body.insert("reviewer_state".into(), json!(rs));
-            }
-            let body = (!body.is_empty()).then_some(Value::Object(body));
             match request(
                 "POST",
                 &format!("{draft_url}/bulk_publish"),
                 &self.auth,
-                body.as_ref(),
+                None,
             ) {
                 Ok(_) => {
                     notifications = 1;
@@ -803,16 +833,29 @@ impl Forge for GitLab {
             }
         }
 
-        // Phase 2b: the verdict. RequestChanges/Comment rode bulk_publish (and we
-        // only get here if it succeeded); approve is the separate formal call.
-        let mut verdict_ok = batch.verdict.map(|_| true);
-        if batch.verdict == Some(Verdict::Approve) {
-            let ok = self.approve(id);
-            verdict_ok = Some(ok);
-            if ok && !has_publishable {
-                notifications = notifications.max(1);
+        // --- Phase 2b: the verdict, mapped onto the *released* API (see
+        // [`GitLab::approve`]): `approve` → POST /approve; `request-changes` →
+        // POST /unapprove (its concrete released effect); `comment` → nothing
+        // (leaving notes no longer changes reviewer state, and there is no
+        // released API to set `reviewed`). ---
+        let verdict_ok = match batch.verdict {
+            Some(Verdict::Approve) => {
+                let ok = self.approve(id);
+                if ok && !has_publishable {
+                    notifications = notifications.max(1);
+                }
+                Some(ok)
             }
-        }
+            Some(Verdict::RequestChanges) => {
+                let ok = self.unapprove(id);
+                if ok && !has_publishable {
+                    notifications = notifications.max(1);
+                }
+                Some(ok)
+            }
+            Some(Verdict::Comment) => Some(true),
+            None => None,
+        };
 
         // Comment/reply actions all landed (we returned early on any failure).
         let mut landed: HashMap<ActionKey, bool> = batch
@@ -938,6 +981,21 @@ mod tests {
         assert_eq!(multi["line_range"]["start"]["old_line"], 3);
         assert_eq!(multi["line_range"]["end"]["type"], "new");
         assert_eq!(multi["line_range"]["end"]["new_line"], 5);
+        // Every endpoint must carry a line_code or GitLab rejects the note.
+        let sha = |p: &str| {
+            use sha1::{Digest, Sha1};
+            let mut h = Sha1::new();
+            h.update(p.as_bytes());
+            format!("{:x}", h.finalize())
+        };
+        assert_eq!(
+            multi["line_range"]["start"]["line_code"],
+            format!("{}_3_0", sha("a.c"))
+        );
+        assert_eq!(
+            multi["line_range"]["end"]["line_code"],
+            format!("{}_0_5", sha("a.c"))
+        );
     }
 
     #[test]
@@ -951,10 +1009,13 @@ mod tests {
 
     #[test]
     fn range_endpoint_round_trips() {
-        let n = range_endpoint(LineRef {
-            line: 9,
-            side: Side::New,
-        });
+        let n = range_endpoint(
+            "a.c",
+            LineRef {
+                line: 9,
+                side: Side::New,
+            },
+        );
         assert_eq!(
             parse_range_endpoint(&n),
             Some(LineRef {
@@ -962,10 +1023,13 @@ mod tests {
                 side: Side::New
             })
         );
-        let o = range_endpoint(LineRef {
-            line: 4,
-            side: Side::Old,
-        });
+        let o = range_endpoint(
+            "a.c",
+            LineRef {
+                line: 4,
+                side: Side::Old,
+            },
+        );
         assert_eq!(
             parse_range_endpoint(&o),
             Some(LineRef {

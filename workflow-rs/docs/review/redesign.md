@@ -8,12 +8,16 @@
 > contracts, the local/network split) is unchanged; `design.md`'s §6/§10/§11/§17
 > have been brought in step with what this revision delivered.
 >
-> Every API claim below was verified against the vendor documentation in 2026-07;
-> the exact fields are quoted in §2. What could **not** be exercised in-tree is a
-> *live* call to either forge (the test suite is offline by design): the mapping
-> code is pinned by fixture unit tests, but the end-to-end network paths — GitHub
-> GraphQL mutations, GitLab `bulk_publish` — still want a one-time live smoke test,
-> as do three specific assumptions flagged in §9.
+> API claims here were re-checked against the vendor documentation *and release
+> status* in 2026-07 (the exact fields are in §2). One earlier claim did not
+> survive that check and has been corrected throughout: the `bulk_publish`
+> `reviewer_state`/`note` body is the **unmerged** gitlab-org/gitlab!237813, in no
+> shipped release — so the summary rides as a draft note and the verdict is a
+> separate `approve`/`unapprove`/no-op call (§2.2, §4). What still cannot be
+> exercised in-tree is a *live* call to either forge (the test suite is offline by
+> design): the mapping code is pinned by fixture unit tests, but the end-to-end
+> network paths — GitHub GraphQL mutations, GitLab draft-note `line_code` and the
+> bodyless `bulk_publish` — still want a one-time live smoke test.
 
 ---
 
@@ -27,11 +31,14 @@ each backend to fit. Confronting it with the real APIs shows the shape matches
 - **GitLab can batch far more than that.** Its draft-notes + `bulk_publish`
   primitive natively carries line comments, file comments, MR-level notes,
   replies, thread resolutions, the summary body, **and** the verdict — the whole
-  review, one atomic publish, one notification. v1 instead posts the summary as a
-  lone draft, publishes with an empty body, then fires *separate* calls for
-  replies, resolves, and approve/unapprove. It also documents
-  `request-changes → unapprove`, which is simply **wrong now**: GitLab has a
-  native `requested_changes` reviewer state.
+  review, one atomic publish, one notification for the comments, replies and
+  summary. The one caveat, discovered when the code was checked against the
+  *released* API (below): the `reviewer_state`/`note` body params on
+  `bulk_publish` are an **unmerged proposal** (gitlab-org/gitlab!237813) and ship
+  in no release, so the verdict cannot ride the publish and the summary rides as
+  a position-less draft note instead. The `requested_changes` reviewer *state*
+  exists, but there is no released API to set it — `request-changes` therefore
+  maps to `unapprove` (its concrete released effect), not to a phantom param.
 
 - **GitHub REST can batch less than that.** The REST review endpoint
   (`POST …/pulls/{n}/reviews`) accepts only line comments in its `comments[]`
@@ -54,8 +61,9 @@ Two platform decisions (agreed with the owner) anchor the revision:
    models reviews: threads (grouping, `isResolved`, `isOutdated`), resolution
    mutations, and a `search` that returns real `PullRequest` objects. REST stays
    only for the object-fetch refspec and (unchanged) the `stack` half.
-2. **GitLab submit becomes one `bulk_publish`**, with a graceful fallback to the
-   v1 multi-call path for instances too old to have `reviewer_state`/`note`.
+2. **GitLab submit becomes one `bulk_publish`** for the comments/replies/summary,
+   with the verdict as a separate released `approve`/`unapprove`/no-op call — the
+   `reviewer_state`/`note` body that would fold it in is unreleased (§2.2).
 
 ---
 
@@ -169,27 +177,30 @@ unavoidable separate notification (`addComment`).
 
 | Need | Endpoint | Key fields |
 |---|---|---|
-| Draft a diff/file/reply/resolve note | `POST …/merge_requests/:iid/draft_notes` | `note!`; `position{base_sha,start_sha,head_sha,new_path,old_path,new_line/old_line,line_range,position_type}` (`file` since 16.4); `in_reply_to_discussion_id`; `resolve_discussion`; `commit_id` |
-| Publish the whole batch | `POST …/draft_notes/bulk_publish` | **`reviewer_state`** (`requested_changes`/`reviewed` — **not** `approved`: the endpoint routes through `UpdateReviewerStateService`, which sets a review state, never a formal approval), **`note`** (summary body), `internal` — all optional; publishes *all* of the user's pending drafts on the MR as one review |
+| Draft a diff/file/reply/resolve/summary note | `POST …/merge_requests/:iid/draft_notes` | `note!`; `position{base_sha,start_sha,head_sha,new_path,old_path,new_line/old_line,line_range,position_type}` (`file` since 16.4; a `line_range` endpoint **requires** `line_code` = `SHA1(path)_old_new`); `in_reply_to_discussion_id`; `resolve_discussion`; `commit_id`. A note with no `position` is an MR-level/summary note. |
+| Publish the whole batch | `POST …/draft_notes/bulk_publish` | **no body** in any shipped release — publishes *all* of the user's pending drafts on the MR as one review. (A `reviewer_state`/`note` body is the *unmerged* proposal !237813, absent from every release and silently ignored by Grape if sent.) |
+| Set the verdict | `POST …/approve` / `POST …/unapprove` | the only released reviewer actions; there is **no** released API to set the `reviewed`/`requested_changes` reviewer *state* |
 | Delete a draft (deferred cleanup) | `DELETE …/draft_notes/:id` (404 ⇒ already gone) | — |
 | Read discussions | `GET …/merge_requests/:iid/discussions` | notes with `position`, `resolvable`, `resolved`, `system` |
 
-Consequence for GitLab submit: **one** `bulk_publish` publishes line comments,
-file comments, replies (`in_reply_to_discussion_id`), the summary (`note`), and
-the reviewer state (`reviewer_state`) together — one notification.
-`RequestChanges → "requested_changes"`, `Comment → "reviewed"`. **`Approve` is
-the exception:** `reviewer_state: "approved"` routes through
-`UpdateReviewerStateService` and records only a *review state*, not a formal
-approval (`ApprovalService`), so an approve verdict is a *separate*
-`POST …/approve` after the publish — never folded in, or the MR would silently
-not be approved. MR-level conversation comments are position-less draft notes, so
-they ride the batch; a bare resolve is a separate PUT (a draft note needs a body).
+Consequence for GitLab submit: **one** `bulk_publish` (no body) publishes line
+comments, file comments, replies (`in_reply_to_discussion_id`) **and the summary**
+(a position-less draft note) together — one notification. The verdict is a
+*separate* released call: `Approve → POST …/approve`;
+`RequestChanges → POST …/unapprove` (the released effect of requesting changes —
+the reviewer's approval is removed — since the formal `requested_changes` state
+has no released API); `Comment → no-op` (leaving notes no longer auto-sets
+`reviewed`, and nothing released sets it). MR-level conversation comments are
+position-less draft notes, so they ride the batch; a bare resolve is a separate
+PUT (a draft note needs a body).
 
-**Version target.** `reviewer_state`/`note` on `bulk_publish` and the boolean
-`draft` list filter all landed by GitLab 19.0, which is our floor. There is no
-version probe and no fallback path — we assume ≥ 19, keeping the backend a single
-clean mapping instead of a forked one. (Personal tooling; bumping the floor is
-free.)
+**Version target.** The boolean `draft` list filter is released (GitLab ≥ 16) and
+the feed relies on it. The `reviewer_state`/`note` `bulk_publish` params are
+**not** released (!237813 is unmerged), so nothing depends on them: the summary
+rides as a draft note and the verdict is a separate `approve`/`unapprove`. If
+!237813 ships, folding the verdict + summary back into the one publish is a
+localized optimization behind a version probe — not a correctness dependency.
+(Personal tooling; revisit when it lands.)
 
 ---
 
@@ -256,16 +267,19 @@ operation, not an API call.
    delete failure aborts here, before any POST — an undeleted orphan would be
    swept into this run's `bulk_publish` and duplicated.
 1. **Draft every action** as a draft note, in bounded-parallel POSTs, recording
-   each draft's id under its `ActionKey`:
-   - line/file comment → `position` (per-comment `version`, cross-snapshot intact);
+   each draft's id:
+   - line/file comment → `position` (per-comment `version`, cross-snapshot intact;
+     a multi-line `line_range` carries the required `line_code`);
    - MR-level comment → position-less note;
-   - reply → `in_reply_to_discussion_id`.
+   - reply → `in_reply_to_discussion_id`;
+   - **summary → position-less draft note** (the released `bulk_publish` has no
+     `note` param), so it publishes with the batch.
    (Resolves are not draft notes — see §8 — so they are separate PUTs.)
-2. **`bulk_publish`** with `note` = summary and `reviewer_state` = the verdict
-   *when it is `request-changes`/`comment`*. One atomic publish, one notification.
-   An `approve` verdict is **not** a `reviewer_state` (that records only a review
-   state, not a real approval) — it is a separate `POST …/approve` after the
-   publish.
+2. **`bulk_publish` (no body)** — one atomic publish of all pending drafts, one
+   notification. The verdict is a *separate* released call afterwards:
+   `approve → POST …/approve`, `request-changes → POST …/unapprove` (its released
+   effect; the formal `requested_changes` state has no API), `comment → no-op`.
+   No `reviewer_state`/`note` body is sent (that is the unmerged !237813).
 3. **Reconcile — deferred cleanup, not this-attempt rollback.** A draft-note POST
    failure, or a `bulk_publish` failure, records the posted-but-unpublished ids in
    `BatchOutcome.inflight` and keeps the whole batch local; it does **not** delete
@@ -273,9 +287,10 @@ operation, not an API call.
    Deferring makes cleanup idempotent (retried until it succeeds) and removes the
    double-failure orphan the old this-attempt `DELETE` could leave behind.
 
-No old-instance fallback: GitLab ≥ 19 is assumed (§2.2), so there is no version
-probe. This deletes the summary-as-lone-draft dance and the RequestChanges-as-
-unapprove hack, leaving `approve` as the one deliberately-separate verdict call.
+The summary-as-draft-note is *not* a fallback dance but the only released path;
+`approve`/`unapprove`/no-op are the released verdict actions. If !237813 ships,
+folding the verdict + summary into the one publish becomes a version-gated
+optimization, never a correctness dependency.
 
 ---
 
@@ -351,8 +366,10 @@ enough to link a stack and to `checkout --next/--prev` without a full `fetch`.
 | Batch: **MR-level** comments | **no** — `addComment` is a separate issue comment | yes, position-less draft note |
 | Batch: replies | **ride the review** (`addPullRequestReviewThreadReply` with the pending review's id) — one notification | ride the draft batch (`in_reply_to`) |
 | Batch: resolves | separate mutations (quiet, no notification) | ride the draft batch (`resolve_discussion`) |
-| `request-changes` / `comment` verdict | native (`REQUEST_CHANGES`/`COMMENT`) | **native** (`reviewer_state:"requested_changes"`/`"reviewed"`) |
-| `approve` verdict | part of the review | **separate `POST …/approve`** (`bulk_publish`'s `"approved"` sets only a review state, not a real approval) |
+| `request-changes` verdict | native (`REQUEST_CHANGES`) | `POST …/unapprove` (no released API for the formal `requested_changes` state; unapprove is its released effect) |
+| `comment` verdict | native (`COMMENT`) | no-op (leaving notes no longer auto-sets `reviewed`; nothing released sets it) |
+| `approve` verdict | part of the review | **separate `POST …/approve`** |
+| summary body | rides the review (`body`) | position-less draft note (released `bulk_publish` has no `note` param) |
 | Thread resolve/unresolve | **supported** (`resolveReviewThread`) | supported (`resolve_discussion` / discussion PUT) |
 | `resolved` read-back | `isResolved` | notes' `resolved`/`resolvable` |
 | `outdated` | **local** (forge `isOutdated` as fallback) | **local** (no forge fallback) |
@@ -395,9 +412,14 @@ are absent (§5).
 
 **Open decisions still to settle:**
 
-- **O3 — GitLab version gate. Resolved: dropped.** We target GitLab ≥ 19 and use
-  the `bulk_publish` `reviewer_state`/`note` params and the boolean `draft` list
-  filter unconditionally — no `GET /version` probe, no fallback path.
+- **O3 — GitLab version gate. Resolved: no gate needed.** The submit path uses
+  only *released* endpoints (bodyless `bulk_publish`, `approve`/`unapprove`,
+  draft notes with `line_code`) and the released boolean `draft` list filter, so
+  there is nothing to probe. The earlier plan to send `reviewer_state`/`note` on
+  `bulk_publish` was dropped once that proved to be the unmerged !237813 (absent
+  from every release, silently ignored if sent — it would have dropped the
+  summary and verdict while reporting success). Revisit as an optimization if it
+  ships.
 - **O4 — MR-level comment on GitHub.** Accept the extra notification (it's a
   genuine API limit), or drop MR-level comments from a GitHub *review* batch and
   document them as always-separate?

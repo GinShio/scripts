@@ -14,7 +14,7 @@ use wits_util::forge::{BatchAction, DiffVersion, Forge, ReviewBatch};
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
 
-use super::model::{bare_thread_id, comment_anchor, Action, Local, Snapshot, StoredFile};
+use super::model::{bare_thread_id, comment_anchor, Action, Local, StoredFile};
 use super::{online, Online, SubmitArgs};
 
 pub fn run(repo: &Repository, args: &SubmitArgs) -> Result<()> {
@@ -119,7 +119,7 @@ fn submit_draft(ctx: &Online, id: &str, mut local: Local, stale: Vec<String>) ->
         .with_context(|| format!("MR {id} isn't fetched — run `wits review fetch {id}` first"))?;
     let version = info
         .current()
-        .map(|s| s.version())
+        .cloned()
         .filter(|v| !v.head_sha.is_empty())
         .with_context(|| {
             format!(
@@ -206,7 +206,7 @@ fn submit_draft(ctx: &Online, id: &str, mut local: Local, stale: Vec<String>) ->
 fn build_batch(
     local: &Local,
     version: &DiffVersion,
-    snapshots: &[Snapshot],
+    snapshots: &[DiffVersion],
     files: &[StoredFile],
     forge: &dyn Forge,
     stale: Vec<String>,
@@ -272,12 +272,12 @@ fn build_batch(
 /// triple. An unset or un-found `commit` falls back to the current version.
 fn comment_version(
     action_commit: Option<&str>,
-    snapshots: &[super::model::Snapshot],
-    version: &wits_util::forge::DiffVersion,
-) -> wits_util::forge::DiffVersion {
+    snapshots: &[DiffVersion],
+    version: &DiffVersion,
+) -> DiffVersion {
     if let Some(sha) = action_commit {
         if let Some(s) = snapshots.iter().rev().find(|s| s.head_sha == sha) {
-            return s.version();
+            return s.clone();
         }
     }
     version.clone()

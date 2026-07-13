@@ -35,8 +35,7 @@ The detail view, with the pending draft folded into the remote discussion.
   "schema": 1,
   "mr": { "...": "MrSummary, see below" },
   "snapshot": { "base_sha": "aaaa…", "head_sha": "9f8e…" },
-  "snapshots": [ { "base_sha": "aaaa…", "start_sha": "aaaa…", "head_sha": "9f8e…",
-                   "fetched_at": "1719830400" } ],
+  "snapshots": [ { "base_sha": "aaaa…", "start_sha": "aaaa…", "head_sha": "9f8e…" } ],
   "neighbors": { "position": 1, "prev_mr": "122", "next_mr": "124",
                  "nodes": ["121","122","123","124"] },
   "commits": [ { "sha": "9f8e…", "subject": "Fix the lock ordering" } ],
@@ -54,7 +53,7 @@ The detail view, with the pending draft folded into the remote discussion.
 | `mr` | object | MR metadata (table below). |
 | `snapshot.base_sha` | string | The base SHA of the current reviewed diff. |
 | `snapshot.head_sha` | string | The current head SHA under review. **Render your diff between these two.** |
-| `snapshots` | array | The full snapshot history, oldest first: `{ base_sha, start_sha, head_sha, fetched_at }`. Each is a fetched, pinned review point; browse an older one with `diff --snapshot <head_sha>`. Distinct from an ad-hoc diff *range*. |
+| `snapshots` | array | The full snapshot history, oldest first: `{ base_sha, start_sha, head_sha }` (a diff version). Each is a fetched, pinned review point; browse an older one with `diff --snapshot <head_sha>`. Distinct from an ad-hoc diff *range*. (When the MR was last synced is tracked once on the MR, not per snapshot.) |
 | `neighbors` | object | This MR's place in its stack (table below). |
 | `commits` | array | Commits in `base..head`, oldest first: `{ sha, subject }`. |
 | `files` | array | Files the MR touched: `{ path, old_path?, status }`. `status` is git's letter (`A`/`M`/`D`/`R`/`C`); `old_path` present on a rename/copy. |
@@ -251,10 +250,11 @@ remove a queued action, edit the file.
   `resolve` of one thread collapses to the last stated value.
 - **Batching:** the whole review is handed to the forge as one batch, folded
   into as few notifications as the platform allows. On GitLab comments (line/
-  file/conversation), replies, the summary (`note`), and a `request-changes`/
-  `comment` reviewer state ride one `bulk_publish`; an `approve` verdict (a real
-  approval, which `bulk_publish` can't record) and a bare resolve are separate
-  calls. On GitHub the verdict + summary + line/file comments **and replies** are
+  file/conversation), replies, and the summary (a position-less draft note) ride
+  one bodyless `bulk_publish`; the verdict is a separate released call
+  (`approve`→`/approve`, `request-changes`→`/unapprove`, `comment`→no-op — no
+  released API sets the `reviewed`/`requested_changes` state), and a bare resolve
+  is a separate PUT. On GitHub the verdict + summary + line/file comments **and replies** are
   one review (replies join the pending review, as in the web UI); only an
   MR-level conversation comment is a separate notification, and resolves are
   separate but quiet. `submit` reports the real notification count.

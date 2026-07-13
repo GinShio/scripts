@@ -8,12 +8,12 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use wits_util::forge::{Anchor, MrSummary, Side};
+use wits_util::forge::{Anchor, DiffVersion, MrSummary, Side};
 use wits_util::git::Repository;
 
 use super::model::{
-    bare_thread_id, short, state_word, Action, Comment, Local, Snapshot, StoredCommit, StoredFile,
-    Thread, SCHEMA,
+    bare_thread_id, short, state_word, Action, Comment, Local, StoredCommit, StoredFile, Thread,
+    SCHEMA,
 };
 use super::{local, ShowArgs};
 
@@ -49,7 +49,7 @@ struct DetailView {
     snapshot: SnapshotView,
     /// The full snapshot history, oldest first, so the editor can offer
     /// switching (`diff --snapshot <sha>`).
-    snapshots: Vec<Snapshot>,
+    snapshots: Vec<DiffVersion>,
     neighbors: Neighbors,
     commits: Vec<StoredCommit>,
     files: Vec<StoredFile>,
@@ -156,17 +156,53 @@ fn merge_threads(mut threads: Vec<Thread>, draft: &Local, head: Option<&str>) ->
                 let target = format!("remote:{}", bare_thread_id(thread));
                 if let Some(t) = threads.iter_mut().find(|t| t.id == target) {
                     t.comments.push(pending_comment(&local_id, body));
+                } else {
+                    // Surface rather than silently drop: the target thread isn't
+                    // in the local cache (never fetched, or already gone), so the
+                    // reply can't attach. Show it so the editor/user notices.
+                    threads.push(orphan_thread(
+                        &local_id,
+                        &format!(
+                            "reply to unknown thread {} — run `wits review fetch` (was: {})",
+                            bare_thread_id(thread),
+                            first_line(body)
+                        ),
+                    ));
                 }
             }
             Action::Resolve { thread, resolved } => {
                 let target = format!("remote:{}", bare_thread_id(thread));
                 if let Some(t) = threads.iter_mut().find(|t| t.id == target) {
                     t.resolved = *resolved;
+                } else {
+                    let verb = if *resolved { "resolve" } else { "unresolve" };
+                    threads.push(orphan_thread(
+                        &local_id,
+                        &format!(
+                            "pending {verb} of unknown thread {} — run `wits review fetch`",
+                            bare_thread_id(thread)
+                        ),
+                    ));
                 }
             }
         }
     }
     threads
+}
+
+/// A synthetic local thread carrying a note about a draft action that couldn't
+/// attach to a remote thread (an orphaned reply/resolve), so it is surfaced in
+/// the view rather than silently dropped.
+fn orphan_thread(id: &str, note: &str) -> Thread {
+    Thread {
+        id: id.to_owned(),
+        origin: "local".into(),
+        resolved: false,
+        outdated: false,
+        anchor: None,
+        commit: None,
+        comments: vec![pending_comment(id, note)],
+    }
 }
 
 fn pending_comment(id: &str, body: &str) -> Comment {
