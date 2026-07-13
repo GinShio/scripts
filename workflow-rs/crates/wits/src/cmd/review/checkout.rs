@@ -161,7 +161,7 @@ fn iso_date_to_epoch_day(date: &str) -> Option<i64> {
     let y: i64 = parts.next()?.trim().parse().ok()?;
     let m: i64 = parts.next()?.parse().ok()?;
     let d: i64 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    if parts.next().is_some() || !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
         return None;
     }
     let y = if m <= 2 { y - 1 } else { y };
@@ -172,9 +172,46 @@ fn iso_date_to_epoch_day(date: &str) -> Option<i64> {
     Some(era * 146_097 + doe - 719_468)
 }
 
+/// Days in a Gregorian month, so an impossible date like `2026-02-31` is
+/// rejected rather than silently over-counting.
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn iso_date_epoch_and_validation() {
+        // The epoch itself, and a known post-epoch day.
+        assert_eq!(iso_date_to_epoch_day("1970-01-01"), Some(0));
+        assert_eq!(iso_date_to_epoch_day("1970-01-02"), Some(1));
+        // Impossible dates are rejected rather than silently over-counted.
+        assert!(iso_date_to_epoch_day("2026-02-31").is_none());
+        assert!(iso_date_to_epoch_day("2026-13-01").is_none());
+        assert!(iso_date_to_epoch_day("2026-00-10").is_none());
+        // Leap-day handling.
+        assert!(iso_date_to_epoch_day("2024-02-29").is_some());
+        assert!(iso_date_to_epoch_day("2026-02-29").is_none());
+    }
 }

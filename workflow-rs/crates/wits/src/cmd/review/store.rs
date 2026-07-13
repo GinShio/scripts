@@ -29,8 +29,12 @@ fn base_dir(repo: &Repository) -> Result<PathBuf> {
     if let Some(state) = std::env::var_os("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state).join("wits").join("review"));
     }
+    // The *common* git dir, so the store is shared across linked worktrees — a
+    // `checkout` worktree and the main clone resolve to the same store. (Older
+    // git without `--path-format` falls back to the plain git dir.)
     let git_dir = repo
-        .git_dir()
+        .git_common_dir()
+        .or_else(|| repo.git_dir())
         .context("not inside a git repository (no .git dir)")?;
     Ok(git_dir.join("wits").join("review"))
 }

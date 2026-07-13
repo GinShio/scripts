@@ -14,12 +14,15 @@
 //! front. When source and target are the same project, none of this applies and
 //! we stay on the cheap single-project path.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use serde_json::{json, Value};
 
 use super::{
-    encode, pick, request, Attributes, Auth, DiffVersion, FeedQuery, Forge, LineRef, MergeRequest,
-    MrDetails, MrState, MrSummary, NewMr, RemoteComment, RemotePlacement, RemoteThread,
-    ReviewOutcome, ReviewSubmission, Side, StateFilter, SubmitPlacement, Verdict, SELF_REF,
+    encode, pick, request, ActionKey, Anchor, Attributes, Auth, BatchAction, BatchOutcome,
+    DiffVersion, FeedQuery, Forge, LineRef, MergeRequest, MrDetails, MrState, MrSummary, NewMr,
+    RemoteComment, RemoteThread, ReviewBatch, Side, StateFilter, Verdict, SELF_REF,
 };
 use crate::remote::RemoteInfo;
 
@@ -36,6 +39,11 @@ pub struct GitLab {
     auth: Auth,
     /// Present only for a fork MR (source project differs from target).
     fork: Option<Fork>,
+    /// Whether this instance's `bulk_publish` accepts `reviewer_state` (native
+    /// approve / requested_changes / reviewed). Probed lazily from `GET /version`
+    /// on the first submit, then cached — so construction stays network-free for
+    /// the common same-project case.
+    reviewer_state_cap: OnceLock<bool>,
 }
 
 /// The extra coordinates a cross-project MR needs, resolved once at construction.
@@ -80,7 +88,65 @@ impl GitLab {
             target_path,
             auth,
             fork,
+            reviewer_state_cap: OnceLock::new(),
         })
+    }
+
+    /// Whether `bulk_publish` accepts `reviewer_state` on this instance. Probed
+    /// once from `GET /version`; on any error we assume *not* supported and fall
+    /// back to the version-independent approve/unapprove path, so a wrong guess
+    /// only costs the native reviewer-state nicety, never correctness.
+    ///
+    /// NOTE: the `>= 18.0` threshold is a conservative estimate of when
+    /// `reviewer_state` landed on the Draft Notes `bulk_publish` API; confirm the
+    /// exact minimum against a live instance and adjust `version_ge_18`.
+    fn reviewer_state_supported(&self) -> bool {
+        *self.reviewer_state_cap.get_or_init(|| {
+            match request(
+                "GET",
+                &format!("{}/version", self.api_base),
+                &self.auth,
+                None,
+            ) {
+                Ok(v) => v["version"].as_str().map(version_ge_18).unwrap_or(false),
+                Err(e) => {
+                    log::info!("could not read GitLab version ({e}); using approve/unapprove");
+                    false
+                }
+            }
+        })
+    }
+
+    /// Resolve or unresolve a discussion (a separate call — a GitLab draft note
+    /// needs a body, so a bare resolve can't ride `bulk_publish`).
+    fn resolve_discussion(&self, id: &str, thread: &str, resolved: bool) -> anyhow::Result<()> {
+        let url = format!("{}/{id}/discussions/{thread}", self.mrs_url());
+        request(
+            "PUT",
+            &url,
+            &self.auth,
+            Some(&json!({ "resolved": resolved })),
+        )?;
+        Ok(())
+    }
+
+    /// Apply a verdict via the dedicated endpoint (the version-independent path):
+    /// Approve → POST approve, RequestChanges → DELETE approve (unapprove),
+    /// Comment → nothing. Returns whether it landed.
+    fn apply_verdict(&self, id: &str, verdict: Verdict) -> bool {
+        let url = format!("{}/{id}/approve", self.mrs_url());
+        let r = match verdict {
+            Verdict::Approve => request("POST", &url, &self.auth, None),
+            Verdict::RequestChanges => request("DELETE", &url, &self.auth, None),
+            Verdict::Comment => return true,
+        };
+        match r {
+            Ok(_) => true,
+            Err(e) => {
+                log::warn!("MR {id}: applying verdict failed: {e}");
+                false
+            }
+        }
     }
 
     /// Where the MR lives — the endpoint for finding and editing it.
@@ -241,6 +307,26 @@ fn rollback_drafts(
             log::warn!("MR {id}: rollback of summary draft {sid} failed: {e}");
         }
     }
+}
+
+/// A [`BatchOutcome`] in which nothing landed — every action stays in the draft
+/// for a clean retry (used on a rollback path).
+fn all_failed(batch: &ReviewBatch) -> BatchOutcome {
+    BatchOutcome {
+        landed: batch.actions.iter().map(|a| (a.key(), false)).collect(),
+        summary_ok: false,
+        verdict_ok: batch.verdict.is_some().then_some(false),
+        notifications: 0,
+    }
+}
+
+/// Whether a GitLab `version` string (e.g. `"18.3.1-ee"`) is at least major 18.
+fn version_ge_18(v: &str) -> bool {
+    v.split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+        .map(|maj| maj >= 18)
+        .unwrap_or(false)
 }
 
 /// Numeric ids of the users currently in `field` (`assignees`/`reviewers`) on an
@@ -482,7 +568,7 @@ impl Forge for GitLab {
         }
         let limit = query.limit;
         let mut collected = 0usize;
-        super::request_paginated(&url, &self.auth, 10, |v, headers| {
+        let mut mrs = super::request_paginated(&url, &self.auth, 10, |v, headers| {
             if collected >= limit {
                 return (Vec::new(), None);
             }
@@ -507,7 +593,10 @@ impl Forge for GitLab {
                     })
             };
             (items, next)
-        })
+        })?;
+        // A hard cap: the final page can overshoot `limit`, so truncate.
+        mrs.truncate(limit);
+        Ok(mrs)
     }
 
     fn mr_details(&self, id: &str) -> anyhow::Result<MrDetails> {
@@ -559,7 +648,7 @@ impl Forge for GitLab {
             let Some(first) = real.first() else {
                 continue;
             };
-            let placement = if first["position"].is_object() {
+            let (anchor, commit) = if first["position"].is_object() {
                 let p = &first["position"];
                 let path = p["new_path"]
                     .as_str()
@@ -573,20 +662,19 @@ impl Forge for GitLab {
                 // `new_line` or `old_line`. (A position with neither line nor
                 // range nor `file` type is a degenerate note we surface as a
                 // line-0 anchor rather than dropping.)
-                if p["position_type"].as_str() == Some("file") {
-                    RemotePlacement::File { path }
+                let anchor = if p["position_type"].as_str() == Some("file") {
+                    Anchor::File { path }
                 } else if let Some(lr) = p["line_range"].as_object() {
                     let end = parse_range_endpoint(&lr["end"]).unwrap_or(LineRef {
                         line: 0,
                         side: Side::New,
                     });
                     let start = parse_range_endpoint(&lr["start"]);
-                    RemotePlacement::Line {
+                    Anchor::Line {
                         path,
                         old_path,
                         end,
                         start,
-                        commit,
                     }
                 } else {
                     let (side, line) = if let Some(l) = p["new_line"].as_u64() {
@@ -596,16 +684,16 @@ impl Forge for GitLab {
                     } else {
                         (Side::New, 0)
                     };
-                    RemotePlacement::Line {
+                    Anchor::Line {
                         path,
                         old_path,
                         end: LineRef { line, side },
                         start: None,
-                        commit,
                     }
-                }
+                };
+                (Some(anchor), commit)
             } else {
-                RemotePlacement::Mr
+                (None, None)
             };
             let resolvable: Vec<&&Value> = real
                 .iter()
@@ -619,208 +707,202 @@ impl Forge for GitLab {
                 id: d["id"].as_str().unwrap_or_default().to_owned(),
                 resolved,
                 // GitLab exposes no cheap per-note outdated flag; left false in
-                // v1 (see the review docs' capability matrix).
+                // v1 (see the review docs' capability matrix). Local outdate
+                // computation (redesign §5) will supersede this.
                 outdated: false,
-                placement,
+                anchor,
+                commit,
                 comments: real.iter().map(|&n| parse_note(n)).collect(),
             });
         }
         Ok(threads)
     }
 
-    fn submit_review(&self, id: &str, review: &ReviewSubmission) -> anyhow::Result<ReviewOutcome> {
-        if review.is_empty() {
-            return Ok(ReviewOutcome::default());
+    fn submit(&self, id: &str, batch: &ReviewBatch) -> anyhow::Result<BatchOutcome> {
+        if batch.is_empty() {
+            return Ok(BatchOutcome::default());
         }
         let draft_url = self.draft_notes_url(id);
 
-        // GitLab has no batched review API: each comment is an individual draft
-        // note POST, then `bulk_publish` makes them visible as one notification.
-        // That two-phase shape puts atomicity on us, so this is all-or-nothing
-        // *per attempt*: any draft failure aborts the publish and rolls back
-        // what did post, so a retry is clean (no orphans, no duplicates). The
-        // verdict rides with the batch — it is attempted only after the batch
-        // landed, so an approve failure can never cause comment duplication.
+        // GitLab's native batch is draft notes + `bulk_publish`: comments
+        // (line / file / MR-level) and replies become draft notes, published as
+        // one review — one notification. That two-phase shape puts atomicity on
+        // us, so it is all-or-nothing *per attempt*: any comment/reply draft
+        // failure aborts the publish and rolls back what posted, for a clean
+        // retry (no orphans, no duplicates). Resolves are not draft notes (a
+        // draft needs a body), so they are separate PUTs (phase 3).
 
-        // --- Step 1: summary as a draft note. A summary failure does not block
-        // the comments (it is tracked as its own outcome, not a draft-comment
-        // failure that aborts the publish). ---
-        let mut summary_ok = review.summary.is_none();
-        let mut summary_draft_id: Option<u64> = None;
-        if let Some(s) = &review.summary {
-            match request("POST", &draft_url, &self.auth, Some(&json!({ "note": s }))) {
-                Ok(v) => {
-                    summary_draft_id = v["id"].as_u64();
-                    summary_ok = true;
-                }
-                Err(e) => log::warn!(
-                    "MR {id}: summary draft failed (comments will still be attempted): {e}"
-                ),
-            }
-        }
-
-        // --- Step 2: comment draft notes, posted in parallel, each with its own
-        // result. `draft_ids` tracks what landed for the rollback path. ---
-        let draft_ids: std::sync::Mutex<Vec<(usize, u64)>> = std::sync::Mutex::new(Vec::new());
-        let results: std::sync::Mutex<Vec<(usize, bool)>> = std::sync::Mutex::new(Vec::new());
-        let draft_url_ref = &draft_url;
-        let auth = &self.auth;
-        let draft_ids_ref = &draft_ids;
-        let results_ref = &results;
-        std::thread::scope(|scope| {
-            for (i, c) in review.comments.iter().enumerate() {
-                scope.spawn(move || {
-                    // Each comment's position anchors to its own snapshot
-                    // version (resolved at build time) — the heart of
-                    // cross-snapshot drafting. GitLab needs all three SHAs per
-                    // diff note, so this can't share the review-level version.
-                    let body = match &c.placement {
-                        SubmitPlacement::Line {
+        // --- Phase 1: a draft-note request per comment / reply action. ---
+        let mut reqs: Vec<(ActionKey, Value)> = Vec::new();
+        for a in &batch.actions {
+            match a {
+                BatchAction::Comment {
+                    key,
+                    anchor,
+                    version,
+                    body,
+                } => {
+                    // Each comment anchors to its own snapshot version (resolved
+                    // at build time) — the heart of cross-snapshot drafting.
+                    let b = match anchor {
+                        Some(Anchor::Line {
                             path,
                             old_path,
                             end,
                             start,
-                            version,
-                        } => json!({
-                            "note": c.body,
-                            "position": diff_position(
-                                version, path, old_path.as_deref(), *end, *start,
-                            ),
+                        }) => json!({
+                            "note": body,
+                            "position": diff_position(version, path, old_path.as_deref(), *end, *start),
                         }),
-                        SubmitPlacement::File { path, version, .. } => json!({
-                            "note": c.body,
+                        Some(Anchor::File { path }) => json!({
+                            "note": body,
                             "position": file_position(version, path, None),
                         }),
+                        None => json!({ "note": body }),
                     };
-                    match request("POST", draft_url_ref, auth, Some(&body)) {
+                    reqs.push((*key, b));
+                }
+                BatchAction::Reply { key, thread, body } => {
+                    reqs.push((
+                        *key,
+                        json!({ "note": body, "in_reply_to_discussion_id": thread }),
+                    ));
+                }
+                BatchAction::Resolve { .. } => {}
+            }
+        }
+
+        // POST the draft notes in parallel, each carrying its ActionKey.
+        let posted: Mutex<Vec<(ActionKey, u64)>> = Mutex::new(Vec::new());
+        let ok: Mutex<Vec<(ActionKey, bool)>> = Mutex::new(Vec::new());
+        let draft_url_ref = &draft_url;
+        let auth = &self.auth;
+        let posted_ref = &posted;
+        let ok_ref = &ok;
+        std::thread::scope(|scope| {
+            for (key, body) in &reqs {
+                let key = *key;
+                let body = body.clone();
+                scope.spawn(
+                    move || match request("POST", draft_url_ref, auth, Some(&body)) {
                         Ok(v) => {
-                            results_ref.lock().unwrap().push((i, true));
+                            ok_ref.lock().unwrap().push((key, true));
                             if let Some(did) = v["id"].as_u64() {
-                                draft_ids_ref.lock().unwrap().push((i, did));
+                                posted_ref.lock().unwrap().push((key, did));
                             }
                         }
                         Err(e) => {
-                            log::warn!("MR {id}: draft note {i} failed: {e}");
-                            results_ref.lock().unwrap().push((i, false));
+                            log::warn!("MR {id}: draft note (action {key}) failed: {e}");
+                            ok_ref.lock().unwrap().push((key, false));
                         }
-                    }
-                });
+                    },
+                );
             }
         });
-
-        let mut results = results.into_inner().unwrap();
-        results.sort_by_key(|(i, _)| *i);
-        let mut comment_results: Vec<bool> = results.into_iter().map(|(_, ok)| ok).collect();
-        let posted_ids: Vec<u64> = draft_ids
+        let drafts_all_ok = ok.into_inner().unwrap().iter().all(|(_, ok)| *ok);
+        let posted_ids: Vec<u64> = posted
             .into_inner()
             .unwrap()
             .into_iter()
             .map(|(_, d)| d)
             .collect();
 
-        let comments_all_posted = comment_results.iter().all(|&ok| ok);
+        // Summary rides as its own position-less draft note (works on every
+        // version). A summary failure does not abort the comment set.
+        let mut summary_ok = batch.summary.is_none();
+        let mut summary_draft_id: Option<u64> = None;
+        if let Some(s) = &batch.summary {
+            match request("POST", &draft_url, &self.auth, Some(&json!({ "note": s }))) {
+                Ok(v) => {
+                    summary_draft_id = v["id"].as_u64();
+                    summary_ok = true;
+                }
+                Err(e) => log::warn!("MR {id}: summary draft failed: {e}"),
+            }
+        }
         let has_drafts = !posted_ids.is_empty() || summary_draft_id.is_some();
 
-        // --- Step 3: bulk_publish — only when every comment draft posted. A
-        // single draft failure aborts the publish and rolls back what did post.
-        // `bulk_publish` takes no body: it publishes all of the user's pending
-        // drafts on the MR as one review (the documented model). ---
-        let batch_ok = if comments_all_posted && has_drafts {
+        // A comment/reply draft failed → roll back, nothing lands.
+        if !drafts_all_ok {
+            log::warn!(
+                "MR {id}: a draft note failed; rolling back {} posted draft(s)",
+                posted_ids.len()
+            );
+            rollback_drafts(id, &draft_url, &posted_ids, summary_draft_id, &self.auth);
+            return Ok(all_failed(batch));
+        }
+
+        // --- Phase 2: publish. When the instance supports it, `reviewer_state`
+        // rides bulk_publish natively (Approve → approved, RequestChanges →
+        // requested_changes, Comment → reviewed); otherwise the verdict is a
+        // separate approve/unapprove after publishing (phase 2b). ---
+        let capable = self.reviewer_state_supported();
+        let reviewer_state = batch.verdict.map(|v| match v {
+            Verdict::Approve => "approved",
+            Verdict::RequestChanges => "requested_changes",
+            Verdict::Comment => "reviewed",
+        });
+        let verdict_rode_publish = has_drafts && capable && reviewer_state.is_some();
+
+        let mut notifications = 0u32;
+        if has_drafts {
+            let body = verdict_rode_publish.then(|| json!({ "reviewer_state": reviewer_state }));
             match request(
                 "POST",
                 &format!("{draft_url}/bulk_publish"),
                 &self.auth,
-                None,
+                body.as_ref(),
             ) {
-                Ok(_) => true,
+                Ok(_) => notifications = 1,
                 Err(e) => {
-                    log::warn!("MR {id}: bulk_publish failed, rolling back draft notes: {e}");
+                    log::warn!("MR {id}: bulk_publish failed, rolling back: {e}");
                     rollback_drafts(id, &draft_url, &posted_ids, summary_draft_id, &self.auth);
-                    comment_results.iter_mut().for_each(|r| *r = false);
-                    summary_ok = false;
-                    false
+                    return Ok(all_failed(batch));
                 }
             }
-        } else if !comments_all_posted {
-            log::warn!(
-                "MR {id}: a draft note failed to post; rolling back {} posted draft(s) and skipping publish",
-                posted_ids.len()
-            );
-            rollback_drafts(id, &draft_url, &posted_ids, summary_draft_id, &self.auth);
-            comment_results.iter_mut().for_each(|r| *r = false);
-            summary_ok = false;
-            false
-        } else {
-            // No drafts to publish (a verdict-only submission, or comments that
-            // all posted but resolved to no draft ids). Nothing to roll back;
-            // the batch is "ok" for the verdict step's purposes.
-            comments_all_posted
-        };
+        }
 
-        // --- Step 4: verdict — only after the batch landed. Approve → POST
-        // approve; RequestChanges → unapprove (GitLab has no native equivalent,
-        // so we withdraw any prior approval of ours); Comment → nothing. A
-        // failure here leaves visible comments and keeps only the verdict for
-        // retry — never a duplicate. ---
-        let verdict_ok = if batch_ok {
-            match review.verdict {
-                Some(Verdict::Approve) => {
-                    let url = format!("{}/{id}/approve", self.mrs_url());
-                    match request("POST", &url, &self.auth, None) {
-                        Ok(_) => Some(true),
-                        Err(e) => {
-                            log::warn!("MR {id}: approve failed: {e}");
-                            Some(false)
-                        }
-                    }
+        // Verdict via the dedicated endpoint when it didn't ride bulk_publish.
+        let mut verdict_ok = batch.verdict.map(|_| verdict_rode_publish);
+        if let Some(v) = batch.verdict {
+            if !verdict_rode_publish {
+                verdict_ok = Some(self.apply_verdict(id, v));
+                if !has_drafts {
+                    notifications = notifications.max(1);
                 }
-                Some(Verdict::RequestChanges) => {
-                    let url = format!("{}/{id}/approve", self.mrs_url());
-                    match request("DELETE", &url, &self.auth, None) {
-                        Ok(_) => Some(true),
-                        Err(e) => {
-                            log::warn!("MR {id}: unapprove failed: {e}");
-                            Some(false)
-                        }
-                    }
-                }
-                Some(Verdict::Comment) | None => None,
             }
-        } else {
-            // The batch didn't land — the verdict rides with it (the same
-            // all-or-nothing logic as bulk_publish): not attempted, stays in
-            // the draft for retry.
-            review.verdict.is_some().then_some(false)
-        };
+        }
 
-        Ok(ReviewOutcome {
-            comment_results,
+        // Comment/reply actions all landed (we returned early on any failure).
+        let mut landed: HashMap<ActionKey, bool> = batch
+            .actions
+            .iter()
+            .filter(|a| !matches!(a, BatchAction::Resolve { .. }))
+            .map(|a| (a.key(), true))
+            .collect();
+
+        // --- Phase 3: resolves (separate PUTs, per action). ---
+        for a in &batch.actions {
+            if let BatchAction::Resolve {
+                key,
+                thread,
+                resolved,
+            } = a
+            {
+                let ok = self.resolve_discussion(id, thread, *resolved).is_ok();
+                if !ok {
+                    log::warn!("MR {id}: resolve of thread {thread} failed");
+                }
+                landed.insert(*key, ok);
+            }
+        }
+
+        Ok(BatchOutcome {
+            landed,
             summary_ok,
             verdict_ok,
+            notifications,
         })
-    }
-
-    fn comment_mr(&self, id: &str, body: &str) -> anyhow::Result<()> {
-        let url = format!("{}/{id}/notes", self.mrs_url());
-        request("POST", &url, &self.auth, Some(&json!({ "body": body })))?;
-        Ok(())
-    }
-
-    fn reply(&self, id: &str, thread: &str, body: &str) -> anyhow::Result<()> {
-        let url = format!("{}/{id}/discussions/{thread}/notes", self.mrs_url());
-        request("POST", &url, &self.auth, Some(&json!({ "body": body })))?;
-        Ok(())
-    }
-
-    fn resolve(&self, id: &str, thread: &str, resolved: bool) -> anyhow::Result<()> {
-        let url = format!("{}/{id}/discussions/{thread}", self.mrs_url());
-        request(
-            "PUT",
-            &url,
-            &self.auth,
-            Some(&json!({ "resolved": resolved })),
-        )?;
-        Ok(())
     }
 
     fn permalink(&self, r#ref: &str, path: &str, lines: Option<(u32, Option<u32>)>) -> String {
@@ -829,7 +911,11 @@ impl Forge for GitLab {
             Some((a, None)) => format!("#L{a}"),
             None => String::new(),
         };
-        format!("{}/-/blob/{ref}/{path}{frag}", self.web_base)
+        format!(
+            "{}/-/blob/{ref}/{}{frag}",
+            self.web_base,
+            super::encode_path(path)
+        )
     }
 }
 
@@ -837,6 +923,7 @@ impl Forge for GitLab {
 mod tests {
     use super::*;
     use crate::remote::Service;
+    use serde_json::json;
 
     fn info(host: &str, owner: &str, repo: &str) -> RemoteInfo {
         RemoteInfo {
@@ -845,6 +932,122 @@ mod tests {
             repo: repo.into(),
             service: Service::GitLab,
         }
+    }
+
+    fn version() -> DiffVersion {
+        DiffVersion {
+            base_sha: "b".into(),
+            start_sha: "s".into(),
+            head_sha: "h".into(),
+        }
+    }
+
+    #[test]
+    fn version_gate() {
+        assert!(version_ge_18("18.0.0"));
+        assert!(version_ge_18("19.2.1-ee"));
+        assert!(!version_ge_18("17.11.3"));
+        assert!(!version_ge_18("garbage"));
+    }
+
+    #[test]
+    fn parses_a_gitlab_summary() {
+        let v = json!({
+            "iid": 7, "state": "opened", "draft": true, "title": "T",
+            "author": { "username": "alice" }, "target_branch": "main",
+            "source_branch": "feat", "sha": "deadbeef", "updated_at": "t",
+            "labels": ["bug", "vk"], "web_url": "u"
+        });
+        let s = parse_summary(&v).unwrap();
+        assert_eq!(s.id, "7");
+        assert_eq!(s.display, "!7");
+        assert_eq!(s.state, MrState::Open);
+        assert!(s.draft);
+        assert_eq!(s.base, "main");
+        assert_eq!(s.source, "feat");
+        assert_eq!(s.labels, ["bug", "vk"]);
+    }
+
+    #[test]
+    fn diff_position_single_and_multi_line() {
+        let ver = version();
+        let single = diff_position(
+            &ver,
+            "a.c",
+            None,
+            LineRef {
+                line: 5,
+                side: Side::New,
+            },
+            None,
+        );
+        assert_eq!(single["position_type"], "text");
+        assert_eq!(single["new_line"], 5);
+        assert_eq!(single["head_sha"], "h");
+        assert_eq!(single["new_path"], "a.c");
+        assert!(single.get("line_range").is_none());
+
+        let multi = diff_position(
+            &ver,
+            "a.c",
+            None,
+            LineRef {
+                line: 5,
+                side: Side::New,
+            },
+            Some(LineRef {
+                line: 3,
+                side: Side::Old,
+            }),
+        );
+        assert_eq!(multi["line_range"]["start"]["type"], "old");
+        assert_eq!(multi["line_range"]["start"]["old_line"], 3);
+        assert_eq!(multi["line_range"]["end"]["type"], "new");
+        assert_eq!(multi["line_range"]["end"]["new_line"], 5);
+    }
+
+    #[test]
+    fn file_position_carries_versions_and_paths() {
+        let p = file_position(&version(), "a.c", None);
+        assert_eq!(p["position_type"], "file");
+        assert_eq!(p["new_path"], "a.c");
+        assert_eq!(p["old_path"], "a.c");
+        assert_eq!(p["base_sha"], "b");
+    }
+
+    #[test]
+    fn range_endpoint_round_trips() {
+        let n = range_endpoint(LineRef {
+            line: 9,
+            side: Side::New,
+        });
+        assert_eq!(
+            parse_range_endpoint(&n),
+            Some(LineRef {
+                line: 9,
+                side: Side::New
+            })
+        );
+        let o = range_endpoint(LineRef {
+            line: 4,
+            side: Side::Old,
+        });
+        assert_eq!(
+            parse_range_endpoint(&o),
+            Some(LineRef {
+                line: 4,
+                side: Side::Old
+            })
+        );
+    }
+
+    #[test]
+    fn permalink_encodes_path() {
+        let gl = GitLab::new(info("gitlab.com", "g", "r"), None, "t".into(), None).unwrap();
+        assert_eq!(
+            gl.permalink("head", "src/a b.c", Some((5, Some(9)))),
+            "https://gitlab.com/g/r/-/blob/head/src/a%20b.c#L5-9"
+        );
     }
 
     #[test]

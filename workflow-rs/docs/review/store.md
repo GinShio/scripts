@@ -12,7 +12,13 @@ The base directory is resolved on a three-rung ladder, first hit wins:
 |---|---|
 | 1 | `$WITS_REVIEW_DIR` — an explicit override. |
 | 2 | `$XDG_STATE_HOME/wits/review` — when `XDG_STATE_HOME` is set. |
-| 3 | `$GIT_DIR/wits/review` — the default, per-clone, beside `.git/machete`. |
+| 3 | `<common-git-dir>/wits/review` — the default, per-clone, beside `.git/machete`. |
+
+Rung 3 uses the **common** git directory (`git rev-parse --git-common-dir`), not
+the per-worktree one, so a `checkout` worktree and the main clone resolve to the
+*same* store — you can review from either. (The snapshot pins in
+`refs/wits/review/*` already live in the shared ref store, so they were always
+worktree-safe.)
 
 State (this store, `$XDG_STATE_HOME`) is kept separate from config (the feed
 `review.toml`, `$XDG_CONFIG_HOME`). Under the base, each repo has its own subtree
@@ -94,11 +100,11 @@ machines — the forge is the collaboration layer, not this store. Because
 
 ```sh
 # on the first machine — copy the drafts you care about
-base=$(git rev-parse --absolute-git-dir)/wits/review/github.com/me/proj
+base=$(git rev-parse --path-format=absolute --git-common-dir)/wits/review/github.com/me/proj
 cp "$base/123/local.json" /media/key/mr123-local.json
 
 # on the second machine
-base=$(git rev-parse --absolute-git-dir)/wits/review/github.com/me/proj
+base=$(git rev-parse --path-format=absolute --git-common-dir)/wits/review/github.com/me/proj
 mkdir -p "$base/123" && cp /media/key/mr123-local.json "$base/123/local.json"
 wits review fetch 123        # rebuild info/comments and pin the objects
 wits review show 123         # your pending review is back, merged in

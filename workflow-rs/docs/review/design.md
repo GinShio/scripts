@@ -3,8 +3,14 @@
 > Status: **implemented.** This records the agreed shape and the *why* behind it;
 > the code lives in `crates/wits/src/cmd/review/` and the review half of
 > `crates/wits-util/src/forge/`. Where a detail evolved during implementation the
-> code is authoritative and this file has been kept in step (see §17 for what v1
+> code is authoritative and this file has been kept in step (see §17 for what was
 > deliberately scoped out).
+>
+> The *forge boundary* (§10/§11) and outdating (§6) were later revised to be
+> **API-native** — grounded in the current GitHub GraphQL and GitLab
+> `bulk_publish` APIs rather than one shape smeared over both. That revision's
+> rationale is in [`review/redesign.md`](redesign.md); the sections below reflect
+> its outcome, not the superseded first cut.
 >
 > This file explains *why the tool is shaped the way it is*. The companion usage
 > document (`docs/review.md`) explains *how to drive it* and carries the full,
@@ -288,13 +294,12 @@ an honest asymmetry of the two APIs, surfaced in the capability matrix (§10):
   head_sha}`, so different comments in one draft can target different snapshots:
 true **cross-snapshot drafting**, each marked outdated honestly when the branch
 has moved on (§6).
-- **GitHub** batched-review API takes *one* top-level `commit_id` for the whole
-  review; the per-comment `commit` cannot drive a per-comment anchor there. So
-  the whole review batch anchors to the review's snapshot head (the current one
+- **GitHub** `addPullRequestReview` takes *one* top-level `commitOID` for the
+  whole review; the per-comment `commit` cannot drive a per-comment anchor there.
+  So the whole review batch anchors to the review's snapshot head (the current one
   unless a single comment dominates), and GitHub marks it outdated when that head
-  is behind the branch tip. GitHub's `comment_id`-bearing comment objects (the
-  standalone `POST .../pulls/{n}/comments` endpoint) *do* carry a per-comment
-  `commit_id`, but that endpoint fires one notification per comment — handing
+  is behind the branch tip. GitHub's standalone per-comment endpoint *does* carry
+  a per-comment commit, but it fires one notification per comment — handing
   the §10 "one notification" guarantee to get per-comment anchoring was not worth
   it. The asymmetry is documented, not papered over.
 
@@ -314,23 +319,25 @@ The governing rule: **submit each comment against the SHA it was written on, and
 let the forge display it as outdated.** We do not auto-re-anchor a comment onto
 the new line — that risks pinning it to the wrong code. GitLab anchors each diff
 note to its own version's SHAs (§5.4), per-comment; GitHub anchors the whole
-review to one `commit_id` (§5.4, the documented API limit). Both accept a comment
+review to one `commitOID` (§5.4, the documented API limit). Both accept a comment
 written on an older snapshot and display it as outdated when the branch has moved
 on. This is exactly the "outdated comments can still be pushed" requirement, and
 it is why §4 pins the snapshot's objects and §5.1 keeps the version SHAs.
 
-**Reading back.** On the read side `list_threads` flags a thread `outdated` when
-its anchor has left the current diff. The signals differ per forge and are read
-honestly, not inferred from a single field:
+**Reading back — computed locally, uniformly.** `outdated` is *not* read off a
+per-forge field (GitLab exposes none; GitHub only via GraphQL). It is a **local
+inference**, the natural payoff of owning coordinates: `show` marks a line thread
+outdated when its anchored line falls inside a region the file changed between the
+commit the comment was written on (the thread's `commit`) and the current snapshot
+head — `git diff <commit>..<head> -- <path>`, intersecting the line on its side,
+computed from the objects `fetch` already pins (`recompute_outdated` in `show.rs`).
 
-- **GitHub** — a comment is outdated when `line` is null but `original_line` is
-  present (the line it was on is no longer in the diff). `position` is the legacy
-  diff-hunk field and is null on every modern review-API comment, current or not,
-  so it is *not* the signal no matter how convenient it looks.
-- **GitLab** — there is no cheap per-note outdated flag, so the read view marks
-  `outdated: false` honestly rather than guessing (a capability-matrix limitation,
-  §10); a comment whose line has drifted is still readable against its pinned
-  snapshot.
+- **Uniform** across GitHub and GitLab, so the behaviour and its tests are one.
+- **Offline** — a pure function over two commits, an anchor, and a diff; no
+  network, easy to test.
+- **Fallback only** — the forge's own signal (`isOutdated` on GitHub via GraphQL;
+  nothing on GitLab) is used *only* when the anchor commit's objects aren't local
+  (a thread on a commit we never fetched). `File`/`Mr` threads are never outdated.
 
 The GC edge — reviewing `A`, sitting on the draft for a very long time, the author
 force-pushing `A` away, and the forge eventually GC-ing it — is real but bounded:
@@ -370,15 +377,17 @@ threads. This is the `prr` model — author a batch, submit, done — and it is 
 there is **no identity-stitching** between a pending comment and the remote thread
 it became: after submit there is no pending comment to stitch.
 
-The store root follows the env → XDG_STATE → GIT_DIR ladder, with **state** kept
-distinct from **config** (§8):
+The store root follows the env → XDG_STATE → common-git-dir ladder, with **state**
+kept distinct from **config** (§8):
 
 ```
-WITS_REVIEW_DIR  >  $XDG_STATE_HOME/wits/review  >  $GIT_DIR/wits/review
+WITS_REVIEW_DIR  >  $XDG_STATE_HOME/wits/review  >  <common-git-dir>/wits/review
 ```
 
-The default is `$GIT_DIR/wits/review`, per-clone like `.git/machete`; env/XDG lift
-it out when you want it centralized or shared across clones.
+The default is `<common-git-dir>/wits/review`, per-clone like `.git/machete`;
+env/XDG lift it out when you want it centralized or shared across clones. It is
+the **common** git dir (not the per-worktree one), so a `checkout` worktree and
+the main clone share one store — you can review from either.
 
 ## 8. Configuration — git config for secrets, TOML for feeds
 
@@ -446,43 +455,54 @@ analogues are the forge `list` CLIs and an RSS reader's filter rules.
 ## 10. Forge extension and the honest capability matrix
 
 The review half is **added to the existing `Forge` trait**, not split into a
-parallel one, so adding a platform stays a single self-contained mapping. The new
-primitives, sketched:
+parallel one, so adding a platform stays a single self-contained mapping. The
+write side is **one** primitive — the forge owns the mapping of a whole review
+onto its native batch, rather than the orchestration layer assuming a fixed
+shape:
 
 ```rust
-// Added to Forge, alongside the existing find/create/set_base/set_body/apply_attributes:
-fn list_threads(&self, mr: &str) -> Result<Vec<RemoteThread>>;   // + resolved/outdated flags
-fn submit_review(&self, mr: &str, review: &ReviewSubmission) -> Result<ReviewOutcome>;
-fn reply(&self, thread: &RemoteThreadId, body: &str) -> Result<()>;
-fn resolve(&self, thread: &RemoteThreadId, resolved: bool) -> Result<()>;   // GitLab only in v1
+// Added to Forge, alongside find/create/set_base/set_body/apply_attributes:
+fn list_mrs(&self, q: &FeedQuery) -> Result<Vec<MrSummary>>;   // feed
+fn mr_details(&self, mr: &str) -> Result<MrDetails>;
+fn list_threads(&self, mr: &str) -> Result<Vec<RemoteThread>>;   // + resolved/outdated
+fn submit(&self, mr: &str, batch: &ReviewBatch) -> Result<BatchOutcome>;   // the whole review
 ```
 
-`submit_review` returns a **granular** `ReviewOutcome` — one boolean per comment,
-plus `summary_ok` and an optional `verdict_ok` — never an `Err` for a partial
-success. An `Err` means *nothing* landed (an atomic backend's hard failure, or a
-total transport failure); any partial success is `Ok` with the per-step outcomes
-filled in, so the orchestration layer reconciles each action independently (§11).
+`ReviewBatch` carries the verdict, summary, and every action (comment
+line/file/MR-level, reply, resolve), each tagged with a stable `ActionKey`.
+`submit` folds as many actions as the platform's native batch allows into one
+notification, does the rest as separate calls, and returns a **granular**
+`BatchOutcome` — `landed[key]` per action, plus `summary_ok`, `verdict_ok`, and an
+honest `notifications` count. An `Err` means *nothing* landed (an atomic backend's
+hard failure, or an all-or-nothing batch rolled back); any partial success is
+`Ok` with the per-action map filled in, so the orchestration layer reconciles each
+action independently *by key* (§11). This replaced the earlier split of
+`submit_review` + separate `comment_mr`/`reply`/`resolve` verbs, which forced a
+lowest-common-denominator "batch = line/file comments only" shape that fit neither
+platform.
 
 As with the MR half, no platform JSON shape escapes a host module. But review
 touches corners of the platforms that do **not** normalize cleanly, and pretending
 otherwise would be the mistake. These are documented as a matrix rather than
 hidden, because a reviewer needs to know them:
 
-| Concern | GitHub | GitLab |
+| Concern | GitHub (GraphQL) | GitLab (REST) |
 |---|---|---|
-| Batched review (comments + verdict) | one atomic review call → one notification; `Err` = nothing landed | draft notes → one `bulk_publish` (publishes all of the user's pending drafts) |
-| Partial failure handling | the atomic API needs none — failure leaves nothing | **all-or-nothing per attempt**: any draft failure aborts the publish and roll back (DELETE) what posted, so retry is clean (§11) |
-| `approve` verdict | part of the review call | a **separate** approve endpoint, called only after the batch landed |
-| `request-changes` verdict | native | **no native equivalent** → post review + **unapprove** (`DELETE …/approve`), withdrawing prior approval (A3) |
-| Diff-line comment anchor | one review-level `commit_id` + file line; the batch anchors to one snapshot | **per-comment** `position{base/start/head_sha, old/new_line}`; each comment anchors to its own version (A1) |
-| Cross-snapshot drafting | not possible in one review (one `commit_id`); the batch anchors to the review head | **delivered** — each comment carries its own version |
-| Multi-line span | `start_line` + `start_side` + `line` + `side` (two-sided) | `position.line_range{start, end}` each `{type, old_line, new_line}` (two-sided) |
-| Comment on unchanged line of a changed file | supported | supported |
-| File-level comment | `subject_type: file` | `position_type: file` diff note with version SHAs + path, no line |
-| MR-level (conversation) comment | issue-comment API (separate object/notification) | position-less note |
-| Reply to an existing thread | often a separate call, not part of the batch | note added to the discussion |
-| Resolve / unresolve a thread | **GraphQL-only** → deferred to future in v1 | REST, supported in v1 |
-| `outdated` read-back | `line` null & `original_line` present | no cheap per-note flag; left `false` (honest) |
+| Batch mechanism | `addPullRequestReview` (one review → one notification) | draft notes → one `bulk_publish` (publishes all of the user's pending drafts) |
+| Verdict + summary + line comments | one review call | one `bulk_publish` |
+| **File-level** comment in the batch | yes — pending review + `addPullRequestReviewThread(subjectType: FILE)` + submit (still one review) | yes — `position_type: file` draft note |
+| **MR-level** (conversation) comment | **separate** `addComment` (its own notification) | position-less draft note (rides the batch) |
+| Reply to an existing thread | separate `addPullRequestReviewThreadReply` (bundle-able in one GraphQL doc) | draft note with `in_reply_to_discussion_id` (rides the batch) |
+| Resolve / unresolve | **supported** — `resolveReviewThread`/`unresolveReviewThread` | separate `PUT …/discussions/:id` (a draft note needs a body, so a bare resolve can't ride the batch) |
+| `request-changes` verdict | native (`REQUEST_CHANGES`) | **native** — `bulk_publish` `reviewer_state: requested_changes`, with a version fallback to unapprove (A3) |
+| `approve` verdict | part of the review | `reviewer_state: approved` (fallback: POST approve) |
+| Partial failure handling | the review call is atomic — failure leaves nothing | **all-or-nothing per attempt**: a draft failure aborts the publish and rolls back (DELETE) what posted (§11) |
+| Diff-line comment anchor | one review-level `commitOID`; the batch anchors to one snapshot | **per-comment** `position{base/start/head_sha}`; each anchors to its own version (A1) |
+| Cross-snapshot drafting | not in one review (one `commitOID`) | **delivered** — each comment carries its own version |
+| Multi-line span | `line`/`side` + `startLine`/`startSide` (two-sided) | `position.line_range{start, end}` (two-sided) |
+| Feed returns a real MR (base/head) | yes — GraphQL `search(type: ISSUE, "is:pr")` returns `PullRequest` nodes | yes — the MR list |
+| `resolved` read-back | `isResolved` | notes' `resolved`/`resolvable` |
+| `outdated` | **computed locally** (§6); forge `isOutdated` only as fallback | **computed locally** (§6); no forge fallback |
 
 The named caveats behind the matrix:
 
@@ -491,18 +511,23 @@ The named caveats behind the matrix:
   pushed MR commits) always satisfies this; commenting on an un-pushed local
   intermediate commit does not, and degrades to an `mr` comment. GitHub is more
   lenient. Captured by keeping the version SHAs on the snapshot (§5.1).
-- **A3 — `request-changes` on GitLab** is not a first-class action. It maps to
-  "submit the review as a comment, then **unapprove**" (`DELETE …/approve`),
-  withdrawing any prior approval of ours so the MR's approval state reflects
-  "changes needed". The verdict is fundamentally a GitHub/Gitea concept; the doc
-  says so plainly rather than faking parity.
-- **A5 — batching is best-effort per platform.** New inline comments batch into
-  one review; replies to existing threads and (GitLab) resolves may be separate
-  calls with their own notifications. The tool minimizes notifications where the
-  platform allows and does not promise more than it can deliver.
+- **A3 — `request-changes` on GitLab is now native.** GitLab's `bulk_publish`
+  accepts `reviewer_state` (`approved` / `requested_changes` / `reviewed`), so the
+  verdict rides the same one publish. Older instances that predate that parameter
+  fall back to the version-independent path (post the review, then POST/DELETE the
+  approve endpoint). Capability is probed once via `GET /version` and cached; a
+  wrong guess only costs the native reviewer-state nicety, never correctness.
+- **A5 — batching is best-effort per platform, and `notifications` is honest.**
+  On GitLab nearly everything folds into one `bulk_publish`; a bare resolve is a
+  separate quiet PUT. On GitHub the review (verdict + summary + line/file
+  comments) is one notification, but an MR-level conversation comment is a
+  separate `addComment` (a real API limit), and replies/resolves are separate
+  mutations. `BatchOutcome.notifications` reports the true count rather than
+  promising "one".
 
-Transport stays **REST over `ureq`** — the v1 choice to defer GitHub thread
-resolution (which would need GraphQL) exists precisely to keep it that way.
+Transport is **GraphQL over `ureq` on GitHub** (the whole forge — threads,
+resolution, PR search, and the stack half all live there; REST is used only for
+the object-fetch refspec, a git operation) and **REST over `ureq` on GitLab**.
 
 ## 11. Submit — batched, concurrent, reconciled per action
 
@@ -514,25 +539,30 @@ right:
   submissions to different MRs are wholly independent, so they fan out over
   scoped threads (up to 8 at a time, matching `stack`'s `map_parallel`) with no
   ordering constraint.
-- **Atomicity is per-action, not per-MR.** A single MR's draft can expand to
-  several forge calls — the batched review, a separate `mr` conversation comment,
-  a GitLab approve, a resolve — so a partial failure within one MR is possible.
-  `submit_review` reports a granular `ReviewOutcome` (one result per comment, plus
-  `summary_ok` and `verdict_ok`), and `submit` clears the actions that landed,
-  leaving the failed ones in the draft to retry. An `Err` means nothing landed;
-  any partial success is `Ok` with per-step outcomes filled in.
+- **Reconciliation is per action, by key.** `build_batch` turns the normalized
+  draft into a `ReviewBatch`, tagging each action with an `ActionKey` (its index
+  in the draft). `forge.submit` returns `BatchOutcome.landed[key]`; `submit` then
+  keeps exactly the actions whose key did *not* land, and clears `summary`/
+  `verdict` per their own flags. This replaced the earlier positional walk (line/
+  file comments matched to a `Vec<bool>` by order, everything else by side calls),
+  which was correct-but-fragile. An `Err` from `submit` means nothing landed — the
+  whole (normalized) draft stays.
 - **GitLab is all-or-nothing per attempt, with rollback.** Its draft-notes →
-  `bulk_publish` two-phase shape has a real partial state between the two, so the
-  backend owns the atomicity itself: any draft-note failure aborts the publish and
-  `DELETE`s the drafts that did post, and a `bulk_publish` failure does the same;
-  the per-comment results revert to false and the whole draft stays local for a
-  clean retry — no orphaned drafts, no duplicates on retry. The verdict rides with
-  the batch: it is attempted only after the batch landed, on its own endpoint
-  (`Approve` → POST, `RequestChanges` → unapprove), so a verdict failure can never
-  duplicate already-visible comments. (The double-failure edge — rollback's own
-  `DELETE` failing — is bounded: a leftover orphan surfaces only if a *later*
-  `bulk_publish` runs, the rare documented case.) GitHub's review API is atomic
-  and needs none of this.
+  `bulk_publish` shape has a real partial state, so the backend owns atomicity:
+  any comment/reply draft-note failure aborts the publish and `DELETE`s what
+  posted; a `bulk_publish` failure does the same. Everything reverts to
+  not-landed and the whole draft stays local for a clean retry — no orphans, no
+  duplicates. The verdict rides the publish natively (`reviewer_state`) where
+  supported, else a separate approve/unapprove *after* the batch landed, so a
+  verdict failure never duplicates visible comments. (The double-failure edge —
+  rollback's own `DELETE` failing — is bounded: a leftover orphan surfaces only if
+  a *later* `bulk_publish` runs.) Resolves are separate PUTs, reconciled by their
+  own key.
+- **GitHub's review is atomic; the rest is independent.** The review
+  (`addPullRequestReview`, or the pending-review flow when file comments are
+  present) lands as one unit — its keys all succeed or all fail together. MR-level
+  comments, replies, and resolves are independent GraphQL calls, each reconciled
+  by its own key, so a failure in one never poisons the review.
 - **The local write happens per-MR inside the fan-out.** Each MR writes to a
   distinct store path (`<id>/local.json`), so the per-MR tasks are independent and
   there is never a race or a half-cleared draft; the safety comes from path
@@ -672,34 +702,36 @@ dormant ones) and lets git GC the objects.
 - **Folding `review` into `wits stack`.** Rejected: it is its own subcommand with
   its own verbs; it only *reuses* `stack`'s resolution.
 
-## 17. What v1 scoped out, and future work
+## 17. What is delivered, and future work
 
-Delivered in v1: forge-first acquisition with object pinning and **snapshot
-history**, the snapshot/anchor/thread model with a hand-edited `local.json` draft
-(plus a `draft <mr> -` ingest verb so the tool owns the write), per-comment
-snapshot anchoring with **cross-snapshot drafting on GitLab** (each comment
-resolves its own `DiffVersion` and anchors to it; GitHub's API takes one review
-`commit_id`, so it anchors the batch to one snapshot — §5.4/§6), the three-file
-store on the env→XDG_STATE→GIT_DIR ladder, config-driven feeds with server-side
-open/draft filtering on both forges, the `--json` read contract and the
-`local.json` write contract (`schema` 1), `[[path:line]]` reference expansion,
-two-sided multi-line spans (nested `LineRef`, each endpoint carrying `side`),
-worktree/in-place materialization with stack navigation, `prune` (day count or
-ISO date), parallel submit over scoped threads with per-action `ReviewOutcome`
-reconciliation (including GitLab's all-or-nothing rollback), and the GitHub +
-GitLab review backends.
+Delivered: forge-first acquisition with object pinning and **snapshot history**,
+the snapshot/anchor/thread model with a hand-edited `local.json` draft (plus a
+`draft <mr> -` ingest verb so the tool owns the write), per-comment snapshot
+anchoring with **cross-snapshot drafting on GitLab**, the three-file store on the
+env→XDG_STATE→**git-common-dir** ladder (worktree-safe), config-driven feeds with
+server-side filtering that return **real MR objects on both forges** (GitHub via a
+GraphQL `search`, so feed-fetched PRs carry base/head), the `--json` read contract
+and the `local.json` write contract (`schema` 1), `[[path:line]]` reference
+expansion, two-sided multi-line spans, worktree/in-place materialization with
+stack navigation, `prune` (day count or ISO date), and parallel submit with
+**per-action, key-based `BatchOutcome` reconciliation**.
+
+Delivered by the API-native revision (§10/§11, [`redesign.md`](redesign.md)): the
+**whole GitHub forge on GraphQL**; **thread resolve/unresolve on both forges**
+(GitHub `resolveReviewThread`, GitLab discussion PUT); **native GitLab
+`request-changes`** (`reviewer_state`, with a version fallback); GitLab's
+**single `bulk_publish`** carrying comments + replies + summary + verdict; and
+**locally-computed, uniform outdating** (§6).
 
 Deliberately deferred, and honest about it:
 
-- **future** GitHub thread resolve/unresolve, once a minimal GraphQL path is
-  worth adding (v1 is REST-only, so resolve works on GitLab only — §10).
 - **future** editing or deleting an *already-published* comment; the draft is
   only your *unsubmitted* intent (§5.4).
 - **future** GitHub per-comment cross-snapshot anchoring. Per-comment
   **anchoring** is delivered on GitLab (each comment carries its `commit` and
   resolves it to a `DiffVersion` that anchors the diff note — §5.4); GitHub's
-  batched-review API accepts one top-level `commit_id` per review, so the batch
-  anchors to the review's snapshot there. The GitHub standalone-comment endpoint
+  batched-review API accepts one top-level `commitOID` per review, so the batch
+  anchors to the review's snapshot there. GitHub's standalone-comment endpoint
   does take a per-comment `commit_id` but fires a notification per comment — not
   worth the §10 "one notification" guarantee.
 - **future** per-comment snapshot *pinning* for commits outside the fetched

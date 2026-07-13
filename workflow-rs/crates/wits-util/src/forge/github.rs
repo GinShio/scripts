@@ -10,21 +10,25 @@ use std::collections::HashMap;
 use serde_json::{json, Value};
 
 use super::{
-    current_user, encode, pick, request, resolve_self, Attributes, Auth, DiffVersion, FeedQuery,
-    Forge, LineRef, MergeRequest, MrDetails, MrState, MrSummary, NewMr, RemoteComment,
-    RemotePlacement, RemoteThread, ReviewOutcome, ReviewSubmission, Side, StateFilter,
-    SubmitPlacement, Verdict, SELF_REF,
+    pick, request, ActionKey, Anchor, Attributes, Auth, BatchAction, BatchOutcome, DiffVersion,
+    FeedQuery, Forge, LineRef, MergeRequest, MrDetails, MrState, MrSummary, NewMr, RemoteComment,
+    RemoteThread, ReviewBatch, Side, StateFilter, Verdict, SELF_REF,
 };
 use crate::remote::RemoteInfo;
 
 pub struct GitHub {
-    api_base: String,
+    /// The GraphQL endpoint (`…/graphql`) — the whole GitHub forge speaks
+    /// GraphQL (threads, resolution, PR search, and the stack half all live
+    /// there); REST is used only for the object-fetch refspec, a git operation.
+    graphql_url: String,
     /// The web root of the target repo (`https://host/owner/repo`), for blob
     /// permalinks — distinct from `api_base`.
     web_base: String,
     project: String,
     /// The repo we target — also the head owner for a same-repo MR.
     owner: String,
+    /// The repo name alone (the GraphQL `name:` argument).
+    repo: String,
     /// Set only when the head lives in a different fork.
     head_owner: Option<String>,
     auth: Auth,
@@ -37,20 +41,60 @@ impl GitHub {
         token: String,
         api_url_override: Option<String>,
     ) -> Self {
-        let api_base = if matches!(target.host.as_str(), "github.com" | "www.github.com") {
-            "https://api.github.com".to_owned()
+        let is_dotcom = matches!(target.host.as_str(), "github.com" | "www.github.com");
+        // GitHub Enterprise serves GraphQL at `https://<host>/api/graphql`; the
+        // public host at `https://api.github.com/graphql`. A custom REST
+        // `api-url` override (e.g. `https://host/api/v3`) is mapped to its
+        // GraphQL sibling.
+        let graphql_url = if is_dotcom {
+            "https://api.github.com/graphql".to_owned()
         } else {
-            api_url_override.unwrap_or_else(|| format!("https://{}/api/v3", target.host))
+            match api_url_override {
+                Some(base) => {
+                    format!(
+                        "{}/graphql",
+                        base.trim_end_matches("/v3").trim_end_matches('/')
+                    )
+                }
+                None => format!("https://{}/api/graphql", target.host),
+            }
         };
         let web_base = format!("https://{}/{}", target.host, target.project_path());
         Self {
-            api_base,
+            graphql_url,
             web_base,
             owner: target.owner.clone(),
+            repo: target.repo.clone(),
             project: target.project_path(),
             head_owner,
             auth: Auth::Bearer(token),
         }
+    }
+
+    /// POST a GraphQL query/mutation and return its `data`, surfacing any
+    /// `errors[]` (GraphQL replies `200 OK` with a partial `data` + `errors`, so
+    /// the HTTP status alone is not enough). Bodies and ids ride as `variables`,
+    /// never string-interpolated, so arbitrary comment text is safe.
+    fn graphql(&self, query: &str, variables: Value) -> anyhow::Result<Value> {
+        let body = json!({ "query": query, "variables": variables });
+        let v = request("POST", &self.graphql_url, &self.auth, Some(&body))?;
+        if let Some(errs) = v["errors"].as_array() {
+            if !errs.is_empty() {
+                let msg = errs
+                    .iter()
+                    .filter_map(|e| e["message"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                anyhow::bail!("GraphQL error: {msg}");
+            }
+        }
+        Ok(v["data"].clone())
+    }
+
+    /// Parse an MR number from its string id, for the GraphQL `number:` argument.
+    fn number(&self, id: &str) -> anyhow::Result<u64> {
+        id.parse::<u64>()
+            .map_err(|_| anyhow::anyhow!("MR id '{id}' is not a number"))
     }
 
     /// The head reference for *creating*: `owner:branch` across a fork, plain
@@ -62,27 +106,84 @@ impl GitHub {
         }
     }
 
-    /// The head used to *filter* a search. GitHub's `head=` query only matches in
-    /// the `owner:branch` form, so it must always be qualified — with the fork
-    /// owner when forked, otherwise the repo's own owner.
-    fn head_query(&self, branch: &str) -> String {
-        let owner = self.head_owner.as_deref().unwrap_or(&self.owner);
-        format!("{owner}:{branch}")
+    /// The target repository's node id (needed by `createPullRequest`).
+    fn repo_node_id(&self) -> anyhow::Result<String> {
+        let data = self.graphql(
+            "query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){id}}",
+            json!({ "owner": self.owner, "repo": self.repo }),
+        )?;
+        data["repository"]["id"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("could not resolve repository node id"))
     }
 
-    fn pulls_url(&self) -> String {
-        format!("{}/repos/{}/pulls", self.api_base, self.project)
+    /// A pull request's node id (needed by update / label / assignee / reviewer
+    /// mutations, which address the PR by node id rather than number).
+    fn pr_node_id(&self, id: &str) -> anyhow::Result<String> {
+        let number = self.number(id)?;
+        let data = self.graphql(
+            gql::ID_QUERY,
+            json!({ "owner": self.owner, "repo": self.repo, "number": number }),
+        )?;
+        data["repository"]["pullRequest"]["id"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("could not resolve PR node id for {id}"))
     }
 
-    /// Expand `@me` to the authenticated login, only paying for the lookup when
-    /// the marker is actually present.
-    fn resolve_users(&self, items: &[String]) -> anyhow::Result<Vec<String>> {
-        if items.iter().any(|i| i == SELF_REF) {
-            let me = current_user(&self.api_base, &self.auth, "login")?;
-            Ok(resolve_self(items, &me))
-        } else {
-            Ok(items.to_vec())
+    /// Resolve a user login (or `@me`) to a GraphQL user node id.
+    fn user_node_id(&self, login: &str) -> anyhow::Result<Option<String>> {
+        if login == SELF_REF {
+            let data = self.graphql("query{viewer{id}}", json!({}))?;
+            return Ok(data["viewer"]["id"].as_str().map(str::to_owned));
         }
+        let data = self.graphql(
+            "query($login:String!){user(login:$login){id}}",
+            json!({ "login": login }),
+        )?;
+        Ok(data["user"]["id"].as_str().map(str::to_owned))
+    }
+
+    /// Resolve a list of user logins (with `@me`) to node ids, warning and
+    /// skipping any that don't resolve — mirrors the additive, best-effort
+    /// behaviour of the old REST path.
+    fn resolve_user_ids(&self, logins: &[String]) -> Vec<String> {
+        let mut ids = Vec::new();
+        for login in logins {
+            match self.user_node_id(login) {
+                Ok(Some(id)) => ids.push(id),
+                Ok(None) => log::warn!("user '{login}' not found"),
+                Err(e) => log::warn!("resolving user '{login}': {e}"),
+            }
+        }
+        ids
+    }
+
+    /// Resolve label names to their node ids on the target repo (one query;
+    /// unknown labels warn and are skipped).
+    fn label_node_ids(&self, names: &[String]) -> anyhow::Result<Vec<String>> {
+        let data = self.graphql(
+            "query($owner:String!,$repo:String!){repository(owner:$owner,name:$repo){labels(first:100){nodes{id name}}}}",
+            json!({ "owner": self.owner, "repo": self.repo }),
+        )?;
+        let by_name: HashMap<&str, &str> = data["repository"]["labels"]["nodes"]
+            .as_array()
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|n| Some((n["name"].as_str()?, n["id"].as_str()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut ids = Vec::new();
+        for name in names {
+            match by_name.get(name.as_str()) {
+                Some(id) => ids.push((*id).to_owned()),
+                None => log::warn!("label '{name}' not found on the repo"),
+            }
+        }
+        Ok(ids)
     }
 
     /// Build a GitHub search query string from a feed's filter. `@me` in a user
@@ -126,17 +227,18 @@ impl GitHub {
     }
 }
 
-/// A summary from either a full pull object or a search `items[]` entry — they
-/// share the fields the inbox needs; only a full pull carries `base`/`head`.
-fn parse_summary(v: &Value) -> Option<MrSummary> {
+/// Parse a GraphQL `PullRequest` node into an [`MrSummary`]. Shared by the feed
+/// `search` and the per-MR detail query — both select the same fields, so a
+/// feed-fetched PR carries `base`/`head`/`headRefOid` (unlike the old REST
+/// `search/issues`, which returned issue shells).
+fn parse_pr_node(v: &Value) -> Option<MrSummary> {
     let number = v["number"].as_u64()?;
-    let merged = v.get("merged_at").is_some_and(|m| !m.is_null());
-    let state = match v["state"].as_str().unwrap_or("open") {
-        _ if merged => MrState::Merged,
-        "closed" => MrState::Closed,
+    let state = match v["state"].as_str().unwrap_or("OPEN") {
+        "MERGED" => MrState::Merged,
+        "CLOSED" => MrState::Closed,
         _ => MrState::Open,
     };
-    let labels = v["labels"]
+    let labels = v["labels"]["nodes"]
         .as_array()
         .map(|a| {
             a.iter()
@@ -148,16 +250,136 @@ fn parse_summary(v: &Value) -> Option<MrSummary> {
         id: number.to_string(),
         display: format!("#{number}"),
         state,
-        draft: v["draft"].as_bool().unwrap_or(false),
+        draft: v["isDraft"].as_bool().unwrap_or(false),
         title: v["title"].as_str().unwrap_or_default().to_owned(),
-        author: v["user"]["login"].as_str().unwrap_or_default().to_owned(),
-        base: v["base"]["ref"].as_str().unwrap_or_default().to_owned(),
-        source: v["head"]["ref"].as_str().unwrap_or_default().to_owned(),
-        head_sha: v["head"]["sha"].as_str().map(str::to_owned),
-        updated_at: v["updated_at"].as_str().unwrap_or_default().to_owned(),
+        author: v["author"]["login"].as_str().unwrap_or_default().to_owned(),
+        base: v["baseRefName"].as_str().unwrap_or_default().to_owned(),
+        source: v["headRefName"].as_str().unwrap_or_default().to_owned(),
+        head_sha: v["headRefOid"].as_str().map(str::to_owned),
+        updated_at: v["updatedAt"].as_str().unwrap_or_default().to_owned(),
         labels,
-        web_url: v["html_url"].as_str().unwrap_or_default().to_owned(),
+        web_url: v["url"].as_str().unwrap_or_default().to_owned(),
     })
+}
+
+/// Parse a GraphQL review/issue comment node.
+fn parse_gql_comment(c: &Value) -> RemoteComment {
+    RemoteComment {
+        id: c["databaseId"].as_u64().unwrap_or(0).to_string(),
+        author: c["author"]["login"].as_str().unwrap_or_default().to_owned(),
+        body: c["body"].as_str().unwrap_or_default().to_owned(),
+        created_at: c["createdAt"].as_str().unwrap_or_default().to_owned(),
+    }
+}
+
+/// Parse a GraphQL `PullRequestReviewThread` node into a [`RemoteThread`].
+/// `isResolved`/`isOutdated` come straight from the forge; the thread `id` is the
+/// `PRRT_…` node id used to reply/resolve.
+fn parse_review_thread(n: &Value) -> RemoteThread {
+    let path = n["path"].as_str().unwrap_or_default().to_owned();
+    let side = |v: &Value| match v.as_str() {
+        Some("LEFT") => Side::Old,
+        _ => Side::New,
+    };
+    let anchor = if n["subjectType"].as_str() == Some("FILE") {
+        Some(Anchor::File { path })
+    } else {
+        let end = LineRef {
+            line: n["line"].as_u64().unwrap_or(0) as u32,
+            side: side(&n["diffSide"]),
+        };
+        let start = n["startLine"].as_u64().map(|sl| LineRef {
+            line: sl as u32,
+            side: side(&n["startDiffSide"]),
+        });
+        Some(Anchor::Line {
+            path,
+            old_path: None,
+            end,
+            start,
+        })
+    };
+    let commit = n["comments"]["nodes"]
+        .get(0)
+        .and_then(|c| c["originalCommit"]["oid"].as_str())
+        .map(str::to_owned);
+    let comments = n["comments"]["nodes"]
+        .as_array()
+        .map(|a| a.iter().map(parse_gql_comment).collect())
+        .unwrap_or_default();
+    RemoteThread {
+        id: n["id"].as_str().unwrap_or_default().to_owned(),
+        resolved: n["isResolved"].as_bool().unwrap_or(false),
+        outdated: n["isOutdated"].as_bool().unwrap_or(false),
+        anchor,
+        commit,
+        comments,
+    }
+}
+
+/// The GraphQL documents the review half uses. Bodies/ids ride as variables.
+mod gql {
+    pub const PR_FIELDS: &str = "number title url state isDraft updatedAt \
+        author{login} baseRefName headRefName headRefOid \
+        labels(first:50){nodes{name}}";
+
+    pub fn details_query() -> String {
+        format!(
+            "query($owner:String!,$repo:String!,$number:Int!){{\
+               repository(owner:$owner,name:$repo){{\
+                 pullRequest(number:$number){{ {PR_FIELDS} baseRefOid }}}}}}"
+        )
+    }
+
+    pub fn search_query() -> String {
+        format!(
+            "query($q:String!,$first:Int!,$after:String){{\
+               search(query:$q,type:ISSUE,first:$first,after:$after){{\
+                 pageInfo{{hasNextPage endCursor}}\
+                 nodes{{... on PullRequest{{ {PR_FIELDS} }}}}}}}}"
+        )
+    }
+
+    pub const ID_QUERY: &str = "query($owner:String!,$repo:String!,$number:Int!){\
+        repository(owner:$owner,name:$repo){pullRequest(number:$number){id}}}";
+
+    pub const THREADS_QUERY: &str = "query($owner:String!,$repo:String!,$number:Int!,$after:String){\
+        repository(owner:$owner,name:$repo){pullRequest(number:$number){\
+          reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor}\
+            nodes{id isResolved isOutdated path line startLine diffSide startDiffSide subjectType \
+              comments(first:100){nodes{databaseId author{login} body createdAt originalCommit{oid}}}}}\
+          comments(first:100){nodes{databaseId author{login} body createdAt}}}}}";
+
+    pub const ADD_REVIEW: &str = "mutation($input:AddPullRequestReviewInput!){\
+        addPullRequestReview(input:$input){pullRequestReview{id}}}";
+    pub const ADD_THREAD: &str = "mutation($input:AddPullRequestReviewThreadInput!){\
+        addPullRequestReviewThread(input:$input){thread{id}}}";
+    pub const SUBMIT_REVIEW: &str = "mutation($input:SubmitPullRequestReviewInput!){\
+        submitPullRequestReview(input:$input){pullRequestReview{id state}}}";
+    pub const ADD_COMMENT: &str = "mutation($input:AddCommentInput!){\
+        addComment(input:$input){clientMutationId}}";
+    pub const ADD_REPLY: &str = "mutation($input:AddPullRequestReviewThreadReplyInput!){\
+        addPullRequestReviewThreadReply(input:$input){comment{id}}}";
+    pub const RESOLVE: &str =
+        "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}";
+    pub const UNRESOLVE: &str =
+        "mutation($id:ID!){unresolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}";
+
+    // --- Stack half (find / create / retarget / decorate). ---
+    pub const FIND_QUERY: &str = "query($owner:String!,$repo:String!,$branch:String!){\
+        repository(owner:$owner,name:$repo){pullRequests(headRefName:$branch,\
+          states:[OPEN,MERGED,CLOSED],first:50,orderBy:{field:UPDATED_AT,direction:DESC}){\
+          nodes{number state url baseRefName body headRefOid headRepositoryOwner{login}}}}}";
+    pub const CREATE_PR: &str = "mutation($input:CreatePullRequestInput!){\
+        createPullRequest(input:$input){pullRequest{number state url baseRefName body headRefOid}}}";
+    pub const UPDATE_PR: &str = "mutation($input:UpdatePullRequestInput!){\
+        updatePullRequest(input:$input){pullRequest{number}}}";
+    pub const ADD_LABELS: &str = "mutation($input:AddLabelsToLabelableInput!){\
+        addLabelsToLabelable(input:$input){clientMutationId}}";
+    pub const ADD_ASSIGNEES: &str = "mutation($input:AddAssigneesToAssignableInput!){\
+        addAssigneesToAssignable(input:$input){clientMutationId}}";
+    pub const REQUEST_REVIEWS: &str = "mutation($input:RequestReviewsInput!){\
+        requestReviews(input:$input){clientMutationId}}";
 }
 
 /// The `event` string GitHub's review API expects for each verdict.
@@ -187,34 +409,24 @@ fn search_quote(term: &str) -> String {
     }
 }
 
-/// One inline review comment parsed into a fresh thread root.
-fn parse_review_comment(c: &Value) -> RemoteComment {
-    RemoteComment {
-        id: c["id"].as_u64().unwrap_or(0).to_string(),
-        author: c["user"]["login"].as_str().unwrap_or_default().to_owned(),
-        body: c["body"].as_str().unwrap_or_default().to_owned(),
-        created_at: c["created_at"].as_str().unwrap_or_default().to_owned(),
-    }
-}
-
-fn parse_pull(v: &Value) -> Option<MergeRequest> {
+/// Parse a GraphQL `PullRequest` node into the terse [`MergeRequest`] the stack
+/// verbs use. GraphQL reports the state directly as `OPEN`/`MERGED`/`CLOSED`, so
+/// (unlike REST) merged and closed need no `merged_at` cross-read.
+fn parse_pr_mr(v: &Value) -> Option<MergeRequest> {
     let number = v["number"].as_u64()?;
-    // GitHub reports a merged PR as `state: "closed"` with a non-null
-    // `merged_at`, so the two have to be read together to tell them apart.
-    let merged = v.get("merged_at").is_some_and(|m| !m.is_null());
-    let state = match v["state"].as_str().unwrap_or("open") {
-        _ if merged => MrState::Merged,
-        "closed" => MrState::Closed,
+    let state = match v["state"].as_str().unwrap_or("OPEN") {
+        "MERGED" => MrState::Merged,
+        "CLOSED" => MrState::Closed,
         _ => MrState::Open,
     };
     Some(MergeRequest {
         id: number.to_string(),
         display: format!("#{number}"),
         state,
-        base: v["base"]["ref"].as_str().unwrap_or_default().to_owned(),
-        head_sha: v["head"]["sha"].as_str().map(str::to_owned),
+        base: v["baseRefName"].as_str().unwrap_or_default().to_owned(),
+        head_sha: v["headRefOid"].as_str().map(str::to_owned),
         body: v["body"].as_str().unwrap_or_default().to_owned(),
-        web_url: v["html_url"].as_str().unwrap_or_default().to_owned(),
+        web_url: v["url"].as_str().unwrap_or_default().to_owned(),
     })
 }
 
@@ -224,112 +436,145 @@ impl Forge for GitHub {
     }
 
     fn find(&self, branch: &str, state: StateFilter) -> anyhow::Result<Option<MergeRequest>> {
-        let url = format!(
-            "{}?head={}&state=all&per_page=50",
-            self.pulls_url(),
-            encode(&self.head_query(branch)),
-        );
-        let v = request("GET", &url, &self.auth, None)?;
-        let candidates: Vec<MergeRequest> = v
+        // GraphQL has no `head=owner:branch` filter, so we match on the head
+        // branch name and disambiguate a fork client-side by
+        // `headRepositoryOwner.login` (mirroring the old REST `owner:branch`).
+        let data = self.graphql(
+            gql::FIND_QUERY,
+            json!({ "owner": self.owner, "repo": self.repo, "branch": branch }),
+        )?;
+        let want = self.head_owner.as_deref().unwrap_or(&self.owner);
+        let candidates: Vec<MergeRequest> = data["repository"]["pullRequests"]["nodes"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(parse_pull).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|n| n["headRepositoryOwner"]["login"].as_str() == Some(want))
+                    .filter_map(parse_pr_mr)
+                    .collect()
+            })
             .unwrap_or_default();
         Ok(pick(&candidates, state))
     }
 
     fn create(&self, req: &NewMr) -> anyhow::Result<MergeRequest> {
-        let body = json!({
+        let input = json!({
+            "repositoryId": self.repo_node_id()?,
+            "baseRefName": req.base,
+            "headRefName": self.head_ref(&req.branch),
             "title": req.title,
-            "head": self.head_ref(&req.branch),
-            "base": req.base,
             "body": req.body,
             "draft": req.draft,
         });
-        let v = request("POST", &self.pulls_url(), &self.auth, Some(&body))?;
-        parse_pull(&v).ok_or_else(|| anyhow::anyhow!("unexpected create response: {v}"))
+        let data = self.graphql(gql::CREATE_PR, json!({ "input": input }))?;
+        let pr = &data["createPullRequest"]["pullRequest"];
+        parse_pr_mr(pr).ok_or_else(|| anyhow::anyhow!("unexpected create response: {pr}"))
     }
 
     fn set_base(&self, id: &str, base: &str) -> anyhow::Result<()> {
-        let url = format!("{}/{}", self.pulls_url(), id);
-        request("PATCH", &url, &self.auth, Some(&json!({ "base": base })))?;
+        let pr_id = self.pr_node_id(id)?;
+        self.graphql(
+            gql::UPDATE_PR,
+            json!({ "input": { "pullRequestId": pr_id, "baseRefName": base } }),
+        )?;
         Ok(())
     }
 
     fn set_body(&self, id: &str, body: &str) -> anyhow::Result<()> {
-        let url = format!("{}/{}", self.pulls_url(), id);
-        request("PATCH", &url, &self.auth, Some(&json!({ "body": body })))?;
+        let pr_id = self.pr_node_id(id)?;
+        self.graphql(
+            gql::UPDATE_PR,
+            json!({ "input": { "pullRequestId": pr_id, "body": body } }),
+        )?;
         Ok(())
     }
 
     fn apply_attributes(&self, id: &str, attrs: &Attributes) -> anyhow::Result<()> {
-        // A PR is an issue, and all three of GitHub's endpoints here *add* rather
-        // than replace, so each call is naturally additive — no read-merge needed.
-        let issue = format!("{}/repos/{}/issues/{}", self.api_base, self.project, id);
-        let pull = format!("{}/repos/{}/pulls/{}", self.api_base, self.project, id);
+        // GraphQL addresses labels/users by node id (not name), so each kind is
+        // resolved first. All three mutations *add* (reviewers with `union:true`),
+        // so the update stays additive — a project's own automation is never
+        // fought — and best-effort: a sub-item that fails is logged, not fatal.
+        let pr_id = self.pr_node_id(id)?;
 
         if !attrs.labels.is_empty() {
-            let body = json!({ "labels": attrs.labels });
-            if let Err(e) = request("POST", &format!("{issue}/labels"), &self.auth, Some(&body)) {
-                log::warn!("labels: {e}");
+            match self.label_node_ids(&attrs.labels) {
+                Ok(ids) if !ids.is_empty() => {
+                    if let Err(e) = self.graphql(
+                        gql::ADD_LABELS,
+                        json!({ "input": { "labelableId": pr_id, "labelIds": ids } }),
+                    ) {
+                        log::warn!("labels: {e}");
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("labels: {e}"),
             }
         }
         if !attrs.assignees.is_empty() {
-            let body = json!({ "assignees": self.resolve_users(&attrs.assignees)? });
-            if let Err(e) = request(
-                "POST",
-                &format!("{issue}/assignees"),
-                &self.auth,
-                Some(&body),
-            ) {
-                log::warn!("assignees: {e}");
+            let ids = self.resolve_user_ids(&attrs.assignees);
+            if !ids.is_empty() {
+                if let Err(e) = self.graphql(
+                    gql::ADD_ASSIGNEES,
+                    json!({ "input": { "assignableId": pr_id, "assigneeIds": ids } }),
+                ) {
+                    log::warn!("assignees: {e}");
+                }
             }
         }
         if !attrs.reviewers.is_empty() {
-            let body = json!({ "reviewers": self.resolve_users(&attrs.reviewers)? });
-            let url = format!("{pull}/requested_reviewers");
-            if let Err(e) = request("POST", &url, &self.auth, Some(&body)) {
-                log::warn!("reviewers: {e}");
+            let ids = self.resolve_user_ids(&attrs.reviewers);
+            if !ids.is_empty() {
+                if let Err(e) = self.graphql(
+                    gql::REQUEST_REVIEWS,
+                    json!({ "input": { "pullRequestId": pr_id, "userIds": ids, "union": true } }),
+                ) {
+                    log::warn!("reviewers: {e}");
+                }
             }
         }
         Ok(())
     }
 
     fn list_mrs(&self, query: &FeedQuery) -> anyhow::Result<Vec<MrSummary>> {
-        let per_page = query.limit.clamp(1, 100);
-        let url = format!(
-            "{}/search/issues?q={}&per_page={per_page}&sort=updated&order=desc",
-            self.api_base,
-            encode(&self.search_query(query)),
-        );
-        let limit = query.limit;
-        let mut collected = 0usize;
-        super::request_paginated(&url, &self.auth, 10, |v, headers| {
-            if collected >= limit {
-                return (Vec::new(), None);
+        // GraphQL `search` returns real `PullRequest` nodes (base/head included),
+        // paginated by cursor. The query string reuses the same faceted builder.
+        let q = self.search_query(query);
+        let limit = query.limit.max(1);
+        let doc = gql::search_query();
+        let mut out: Vec<MrSummary> = Vec::new();
+        let mut after: Option<String> = None;
+        for _ in 0..10 {
+            if out.len() >= limit {
+                break;
             }
-            let items: Vec<MrSummary> = v["items"]
-                .as_array()
-                .map(|arr| arr.iter().filter_map(parse_summary).collect())
-                .unwrap_or_default();
-            collected += items.len();
-            let next = if collected >= limit {
-                None
-            } else {
-                super::parse_link_next(headers)
-            };
-            (items, next)
-        })
+            let first = (limit - out.len()).clamp(1, 100) as u64;
+            let data = self.graphql(&doc, json!({ "q": q, "first": first, "after": after }))?;
+            let search = &data["search"];
+            if let Some(nodes) = search["nodes"].as_array() {
+                out.extend(nodes.iter().filter_map(parse_pr_node));
+            }
+            let has_next = search["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false);
+            after = search["pageInfo"]["endCursor"].as_str().map(str::to_owned);
+            if !has_next || after.is_none() {
+                break;
+            }
+        }
+        out.truncate(limit);
+        Ok(out)
     }
 
     fn mr_details(&self, id: &str) -> anyhow::Result<MrDetails> {
-        let url = format!("{}/{id}", self.pulls_url());
-        let v = request("GET", &url, &self.auth, None)?;
+        let number = self.number(id)?;
+        let data = self.graphql(
+            &gql::details_query(),
+            json!({ "owner": self.owner, "repo": self.repo, "number": number }),
+        )?;
+        let pr = &data["repository"]["pullRequest"];
         let summary =
-            parse_summary(&v).ok_or_else(|| anyhow::anyhow!("unexpected PR response: {v}"))?;
-        // GitHub anchors a review at a single commit_id (the head being
-        // reviewed); it has no per-comment start SHA, so start mirrors base.
-        let base_sha = v["base"]["sha"].as_str().unwrap_or_default().to_owned();
-        let head_sha = v["head"]["sha"].as_str().unwrap_or_default().to_owned();
+            parse_pr_node(pr).ok_or_else(|| anyhow::anyhow!("unexpected PR response: {pr}"))?;
+        // GitHub anchors a review at a single commitOID (the reviewed head); it
+        // has no per-comment start SHA, so start mirrors base.
+        let base_sha = pr["baseRefOid"].as_str().unwrap_or_default().to_owned();
+        let head_sha = pr["headRefOid"].as_str().unwrap_or_default().to_owned();
         let version = DiffVersion {
             base_sha: base_sha.clone(),
             start_sha: base_sha,
@@ -343,177 +588,249 @@ impl Forge for GitHub {
     }
 
     fn list_threads(&self, id: &str) -> anyhow::Result<Vec<RemoteThread>> {
-        // Inline review comments arrive flat; a reply carries `in_reply_to_id`
-        // pointing at its thread's root, so we group on that. GitHub reports a
-        // comment whose anchored line has fallen out of the diff with a null
-        // `position` — that is our outdated signal. Thread *resolution* is
-        // GraphQL-only and unreadable here, so `resolved` stays false (a
-        // documented v1 limitation).
+        // GraphQL groups review threads natively and exposes `isResolved` /
+        // `isOutdated` — no `in_reply_to_id` walk, no `line == null` heuristic.
+        // Conversation (issue) comments come back on the same query as MR-level
+        // threads (anchor `None`).
+        let number = self.number(id)?;
         let mut threads: Vec<RemoteThread> = Vec::new();
-        let mut root_index: HashMap<u64, usize> = HashMap::new();
-
-        let review_url = format!("{}/{id}/comments?per_page=100", self.pulls_url());
-        let review_comments: Vec<Value> =
-            super::request_paginated(&review_url, &self.auth, 10, |v, headers| {
-                let items: Vec<Value> = v.as_array().map(|arr| arr.to_vec()).unwrap_or_default();
-                let next = super::parse_link_next(headers);
-                (items, next)
-            })?;
-
-        for c in &review_comments {
-            let comment = parse_review_comment(c);
-            if let Some(root) = c["in_reply_to_id"].as_u64() {
-                if let Some(&i) = root_index.get(&root) {
-                    threads[i].comments.push(comment);
-                    continue;
-                }
+        let mut after: Option<String> = None;
+        let mut first_page = true;
+        for _ in 0..10 {
+            let data = self.graphql(
+                gql::THREADS_QUERY,
+                json!({ "owner": self.owner, "repo": self.repo, "number": number, "after": after }),
+            )?;
+            let pr = &data["repository"]["pullRequest"];
+            let rt = &pr["reviewThreads"];
+            if let Some(nodes) = rt["nodes"].as_array() {
+                threads.extend(nodes.iter().map(parse_review_thread));
             }
-            let cid = c["id"].as_u64().unwrap_or(0);
-            let (placement, outdated) = if c["subject_type"].as_str() == Some("file") {
-                (
-                    RemotePlacement::File {
-                        path: c["path"].as_str().unwrap_or_default().to_owned(),
-                    },
-                    false,
-                )
-            } else {
-                let side = match c["side"].as_str() {
-                    Some("LEFT") => Side::Old,
-                    _ => Side::New,
-                };
-                // A comment becomes outdated when the line it anchored has left
-                // the current diff: GitHub nulls `line` but keeps the original.
-                // (`position` is the legacy diff-hunk field and is null on every
-                // modern review-API comment, current or not — not a signal.)
-                let outdated = c["line"].is_null() && c["original_line"].as_u64().is_some();
-                let line = c["line"]
-                    .as_u64()
-                    .or_else(|| c["original_line"].as_u64())
-                    .unwrap_or(0) as u32;
-                let end = LineRef { line, side };
-                let start = c["start_line"]
-                    .as_u64()
-                    .or_else(|| c["original_start_line"].as_u64())
-                    .map(|sl| LineRef {
-                        line: sl as u32,
-                        side,
-                    });
-                let placement = RemotePlacement::Line {
-                    path: c["path"].as_str().unwrap_or_default().to_owned(),
-                    old_path: None,
-                    end,
-                    start,
-                    commit: c["original_commit_id"]
-                        .as_str()
-                        .or_else(|| c["commit_id"].as_str())
-                        .map(str::to_owned),
-                };
-                (placement, outdated)
-            };
-            root_index.insert(cid, threads.len());
-            threads.push(RemoteThread {
-                id: cid.to_string(),
-                resolved: false,
-                outdated,
-                placement,
-                comments: vec![comment],
-            });
-        }
-
-        // Conversation (issue) comments — each an MR-level thread.
-        let iurl = format!(
-            "{}/repos/{}/issues/{id}/comments?per_page=100",
-            self.api_base, self.project
-        );
-        let issue_comments: Vec<Value> =
-            super::request_paginated(&iurl, &self.auth, 10, |v, headers| {
-                let items: Vec<Value> = v.as_array().map(|arr| arr.to_vec()).unwrap_or_default();
-                let next = super::parse_link_next(headers);
-                (items, next)
-            })?;
-
-        for c in &issue_comments {
-            threads.push(RemoteThread {
-                id: c["id"].as_u64().unwrap_or(0).to_string(),
-                resolved: false,
-                outdated: false,
-                placement: RemotePlacement::Mr,
-                comments: vec![parse_review_comment(c)],
-            });
+            // Conversation comments are not paginated by the thread cursor; take
+            // them once, on the first page.
+            if first_page {
+                if let Some(nodes) = pr["comments"]["nodes"].as_array() {
+                    for c in nodes {
+                        threads.push(RemoteThread {
+                            id: c["databaseId"].as_u64().unwrap_or(0).to_string(),
+                            resolved: false,
+                            outdated: false,
+                            anchor: None,
+                            commit: None,
+                            comments: vec![parse_gql_comment(c)],
+                        });
+                    }
+                }
+                first_page = false;
+            }
+            let has_next = rt["pageInfo"]["hasNextPage"].as_bool().unwrap_or(false);
+            after = rt["pageInfo"]["endCursor"].as_str().map(str::to_owned);
+            if !has_next || after.is_none() {
+                break;
+            }
         }
         Ok(threads)
     }
 
-    fn submit_review(&self, id: &str, review: &ReviewSubmission) -> anyhow::Result<ReviewOutcome> {
-        if review.is_empty() {
-            return Ok(ReviewOutcome::default());
+    fn submit(&self, id: &str, batch: &ReviewBatch) -> anyhow::Result<BatchOutcome> {
+        if batch.is_empty() {
+            return Ok(BatchOutcome::default());
         }
-        let comments: Vec<Value> = review
-            .comments
-            .iter()
-            .map(|c| match &c.placement {
-                SubmitPlacement::Line {
-                    path, end, start, ..
-                } => {
-                    let mut o = json!({
-                        "path": path,
-                        "line": end.line,
-                        "side": gh_side(end.side),
-                        "body": c.body,
-                    });
-                    if let Some(s) = start {
-                        o["start_line"] = json!(s.line);
-                        o["start_side"] = json!(gh_side(s.side));
+        let number = self.number(id)?;
+        // Resolve the PR node id first — `Err` here means we couldn't even start,
+        // so nothing landed and the caller keeps the whole draft.
+        let data = self.graphql(
+            gql::ID_QUERY,
+            json!({ "owner": self.owner, "repo": self.repo, "number": number }),
+        )?;
+        let pr_id = data["repository"]["pullRequest"]["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("could not resolve PR node id for {id}"))?
+            .to_owned();
+
+        // Partition the batch by how GitHub GraphQL lands each kind.
+        let mut line_threads: Vec<(ActionKey, Value)> = Vec::new();
+        let mut file_comments: Vec<(ActionKey, String, String)> = Vec::new();
+        let mut mr_comments: Vec<(ActionKey, String)> = Vec::new();
+        let mut replies: Vec<(ActionKey, String, String)> = Vec::new();
+        let mut resolves: Vec<(ActionKey, String, bool)> = Vec::new();
+        for a in &batch.actions {
+            match a {
+                BatchAction::Comment {
+                    key, anchor, body, ..
+                } => match anchor {
+                    Some(Anchor::Line {
+                        path, end, start, ..
+                    }) => {
+                        let mut t = json!({
+                            "path": path, "line": end.line,
+                            "side": gh_side(end.side), "body": body,
+                        });
+                        if let Some(s) = start {
+                            t["startLine"] = json!(s.line);
+                            t["startSide"] = json!(gh_side(s.side));
+                        }
+                        line_threads.push((*key, t));
                     }
-                    o
+                    Some(Anchor::File { path }) => {
+                        file_comments.push((*key, path.clone(), body.clone()))
+                    }
+                    None => mr_comments.push((*key, body.clone())),
+                },
+                BatchAction::Reply { key, thread, body } => {
+                    replies.push((*key, thread.clone(), body.clone()))
                 }
-                SubmitPlacement::File { path, .. } => json!({
-                    "path": path,
-                    "subject_type": "file",
-                    "body": c.body,
-                }),
-            })
-            .collect();
-
-        // All comments ride one commit_id — the reviewed snapshot's head. When
-        // that is behind the MR's current head, GitHub marks them outdated, which
-        // is exactly the intent (we anchor to what was reviewed). `event` must
-        // always be set: without it GitHub files the review as *pending* rather
-        // than posting it, so a verdict-less review defaults to COMMENT.
-        let event = review.verdict.map(verdict_event).unwrap_or("COMMENT");
-        let mut body = json!({
-            "commit_id": review.version.head_sha,
-            "comments": comments,
-            "event": event,
-        });
-        if let Some(s) = &review.summary {
-            body["body"] = json!(s);
+                BatchAction::Resolve {
+                    key,
+                    thread,
+                    resolved,
+                } => resolves.push((*key, thread.clone(), *resolved)),
+            }
         }
-        let url = format!("{}/{id}/reviews", self.pulls_url());
-        let n = review.comments.len();
-        let has_verdict = review.verdict.is_some();
-        match request("POST", &url, &self.auth, Some(&body)) {
-            Ok(_) => Ok(ReviewOutcome::all_ok(n, has_verdict)),
-            // The batched review API is atomic: a failed POST leaves nothing on
-            // the forge, so the caller keeps the whole draft and retries
-            // cleanly — no partial state, no duplicates.
-            Err(e) => Err(e),
+
+        let mut landed: HashMap<ActionKey, bool> = HashMap::new();
+        let mut notifications = 0u32;
+        let mut summary_ok = batch.summary.is_none();
+        let mut verdict_ok = batch.verdict.map(|_| false);
+
+        // --- The review: line threads + file threads + summary + verdict, as one
+        // review (one notification). File-level threads can only be attached to a
+        // *pending* review, so their presence switches to the create → attach →
+        // submit flow; otherwise it is a single atomic `addPullRequestReview`. ---
+        let event = batch.verdict.map(verdict_event).unwrap_or("COMMENT");
+        let has_review = !line_threads.is_empty()
+            || !file_comments.is_empty()
+            || batch.summary.is_some()
+            || batch.verdict.is_some();
+        if has_review {
+            let threads_json: Vec<Value> = line_threads.iter().map(|(_, t)| t.clone()).collect();
+            let mut input = json!({
+                "pullRequestId": pr_id,
+                "commitOID": batch.version.head_sha,
+                "threads": threads_json,
+            });
+            if let Some(s) = &batch.summary {
+                input["body"] = json!(s);
+            }
+            let line_keys = || line_threads.iter().map(|(k, _)| *k);
+            let file_keys = || file_comments.iter().map(|(k, _, _)| *k);
+
+            if file_comments.is_empty() {
+                // One atomic review.
+                input["event"] = json!(event);
+                match self.graphql(gql::ADD_REVIEW, json!({ "input": input })) {
+                    Ok(_) => {
+                        for k in line_keys() {
+                            landed.insert(k, true);
+                        }
+                        summary_ok = true;
+                        verdict_ok = batch.verdict.map(|_| true);
+                        notifications += 1;
+                    }
+                    Err(e) => {
+                        log::warn!("MR {id}: review failed: {e}");
+                        for k in line_keys() {
+                            landed.insert(k, false);
+                        }
+                    }
+                }
+            } else {
+                // Pending review → attach file threads → submit.
+                match self.graphql(gql::ADD_REVIEW, json!({ "input": input })) {
+                    Ok(d) => {
+                        let review_id = d["addPullRequestReview"]["pullRequestReview"]["id"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned();
+                        for k in line_keys() {
+                            landed.insert(k, true);
+                        }
+                        for (k, path, body) in &file_comments {
+                            let fin = json!({
+                                "pullRequestReviewId": review_id,
+                                "path": path, "subjectType": "FILE", "body": body,
+                            });
+                            let ok = self
+                                .graphql(gql::ADD_THREAD, json!({ "input": fin }))
+                                .is_ok();
+                            landed.insert(*k, ok);
+                        }
+                        match self.graphql(
+                            gql::SUBMIT_REVIEW,
+                            json!({ "input": { "pullRequestReviewId": review_id, "event": event } }),
+                        ) {
+                            Ok(_) => {
+                                summary_ok = true;
+                                verdict_ok = batch.verdict.map(|_| true);
+                                notifications += 1;
+                            }
+                            Err(e) => {
+                                log::warn!("MR {id}: submitting the pending review failed: {e}");
+                                for k in line_keys().chain(file_keys()) {
+                                    landed.insert(k, false);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("MR {id}: creating the review failed: {e}");
+                        for k in line_keys().chain(file_keys()) {
+                            landed.insert(k, false);
+                        }
+                    }
+                }
+            }
         }
-    }
 
-    fn comment_mr(&self, id: &str, body: &str) -> anyhow::Result<()> {
-        let url = format!(
-            "{}/repos/{}/issues/{id}/comments",
-            self.api_base, self.project
-        );
-        request("POST", &url, &self.auth, Some(&json!({ "body": body })))?;
-        Ok(())
-    }
+        // --- MR-level conversation comments: each a separate issue comment (its
+        // own notification — a genuine API limit, counted honestly). ---
+        for (k, body) in &mr_comments {
+            let ok = self
+                .graphql(
+                    gql::ADD_COMMENT,
+                    json!({ "input": { "subjectId": pr_id, "body": body } }),
+                )
+                .is_ok();
+            if ok {
+                notifications += 1;
+            } else {
+                log::warn!("MR {id}: conversation comment failed");
+            }
+            landed.insert(*k, ok);
+        }
+        // --- Replies to existing threads. ---
+        for (k, thread, body) in &replies {
+            let ok = self
+                .graphql(
+                    gql::ADD_REPLY,
+                    json!({ "input": { "pullRequestReviewThreadId": thread, "body": body } }),
+                )
+                .is_ok();
+            if !ok {
+                log::warn!("MR {id}: reply to {thread} failed");
+            }
+            landed.insert(*k, ok);
+        }
+        // --- Resolves / unresolves. ---
+        for (k, thread, resolved) in &resolves {
+            let doc = if *resolved {
+                gql::RESOLVE
+            } else {
+                gql::UNRESOLVE
+            };
+            let ok = self.graphql(doc, json!({ "id": thread })).is_ok();
+            if !ok {
+                log::warn!("MR {id}: resolve of {thread} failed");
+            }
+            landed.insert(*k, ok);
+        }
 
-    fn reply(&self, id: &str, thread: &str, body: &str) -> anyhow::Result<()> {
-        let url = format!("{}/{id}/comments/{thread}/replies", self.pulls_url());
-        request("POST", &url, &self.auth, Some(&json!({ "body": body })))?;
-        Ok(())
+        Ok(BatchOutcome {
+            landed,
+            summary_ok,
+            verdict_ok,
+            notifications,
+        })
     }
 
     fn permalink(&self, r#ref: &str, path: &str, lines: Option<(u32, Option<u32>)>) -> String {
@@ -522,6 +839,131 @@ impl Forge for GitHub {
             Some((a, None)) => format!("#L{a}"),
             None => String::new(),
         };
-        format!("{}/blob/{ref}/{path}{frag}", self.web_base)
+        format!(
+            "{}/blob/{ref}/{}{frag}",
+            self.web_base,
+            super::encode_path(path)
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::Service;
+    use serde_json::json;
+
+    fn gh() -> GitHub {
+        GitHub::new(
+            RemoteInfo {
+                host: "github.com".into(),
+                owner: "o".into(),
+                repo: "r".into(),
+                service: Service::GitHub,
+            },
+            None,
+            "t".into(),
+            None,
+        )
+    }
+
+    #[test]
+    fn parses_a_graphql_pr_node() {
+        let v = json!({
+            "number": 123, "state": "OPEN", "isDraft": true, "title": "T", "url": "U",
+            "author": { "login": "alice" }, "baseRefName": "main", "headRefName": "feat",
+            "headRefOid": "deadbeef", "updatedAt": "2026-07-01T00:00:00Z",
+            "labels": { "nodes": [ { "name": "bug" } ] }
+        });
+        let s = parse_pr_node(&v).unwrap();
+        assert_eq!(s.id, "123");
+        assert_eq!(s.state, MrState::Open);
+        assert!(s.draft);
+        assert_eq!(s.base, "main");
+        assert_eq!(s.source, "feat");
+        assert_eq!(s.head_sha.as_deref(), Some("deadbeef"));
+        assert_eq!(s.labels, ["bug"]);
+    }
+
+    #[test]
+    fn graphql_state_maps_merged_closed_open() {
+        let mk = |st: &str| {
+            parse_pr_mr(
+                &json!({ "number": 1, "state": st, "baseRefName": "m", "url": "u", "body": "" }),
+            )
+            .unwrap()
+            .state
+        };
+        assert_eq!(mk("MERGED"), MrState::Merged);
+        assert_eq!(mk("CLOSED"), MrState::Closed);
+        assert_eq!(mk("OPEN"), MrState::Open);
+    }
+
+    #[test]
+    fn parses_a_multi_line_review_thread() {
+        let v = json!({
+            "id": "PRRT_1", "isResolved": true, "isOutdated": false, "path": "src/x.c",
+            "line": 42, "startLine": 40, "diffSide": "RIGHT", "startDiffSide": "RIGHT",
+            "subjectType": "LINE",
+            "comments": { "nodes": [ {
+                "databaseId": 5, "author": { "login": "bob" }, "body": "nit",
+                "createdAt": "t", "originalCommit": { "oid": "abc" }
+            } ] }
+        });
+        let t = parse_review_thread(&v);
+        assert_eq!(t.id, "PRRT_1");
+        assert!(t.resolved && !t.outdated);
+        assert_eq!(t.commit.as_deref(), Some("abc"));
+        match t.anchor {
+            Some(Anchor::Line {
+                path, end, start, ..
+            }) => {
+                assert_eq!(path, "src/x.c");
+                assert_eq!((end.line, end.side), (42, Side::New));
+                assert_eq!(start.unwrap().line, 40);
+            }
+            other => panic!("expected a line anchor, got {other:?}"),
+        }
+        assert_eq!(t.comments[0].id, "5");
+        assert_eq!(t.comments[0].author, "bob");
+    }
+
+    #[test]
+    fn parses_a_file_review_thread() {
+        let v = json!({
+            "id": "PRRT_2", "isResolved": false, "isOutdated": true, "path": "a.c",
+            "subjectType": "FILE", "comments": { "nodes": [] }
+        });
+        let t = parse_review_thread(&v);
+        assert!(matches!(t.anchor, Some(Anchor::File { .. })));
+        assert!(t.outdated);
+    }
+
+    #[test]
+    fn search_query_builds_faceted_terms() {
+        let q = FeedQuery {
+            labels: vec!["bug".into()],
+            author: Some("alice".into()),
+            ..Default::default()
+        };
+        let s = gh().search_query(&q);
+        for term in ["repo:o/r", "is:pr", "is:open", "label:bug", "author:alice"] {
+            assert!(s.contains(term), "missing {term} in {s}");
+        }
+    }
+
+    #[test]
+    fn sides_and_verdict_events() {
+        assert_eq!(gh_side(Side::Old), "LEFT");
+        assert_eq!(gh_side(Side::New), "RIGHT");
+        assert_eq!(verdict_event(Verdict::Approve), "APPROVE");
+        assert_eq!(verdict_event(Verdict::RequestChanges), "REQUEST_CHANGES");
+        assert_eq!(verdict_event(Verdict::Comment), "COMMENT");
+    }
+
+    #[test]
+    fn permalink_encodes_path_but_keeps_slashes() {
+        let url = gh().permalink("deadbeef", "src/a b.c", Some((5, None)));
+        assert_eq!(url, "https://github.com/o/r/blob/deadbeef/src/a%20b.c#L5");
     }
 }

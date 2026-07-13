@@ -1,22 +1,20 @@
 //! `wits review submit` — flush the local draft to the forge.
 //!
 //! The one network write. It reads `local.json`, merges and de-duplicates the
-//! recorded actions, and posts them. The verdict, summary, and line/file
-//! comments go up as one batched review (one notification where the platform
-//! allows); MR-level conversation comments, replies, and resolves are separate
-//! calls. Reconciliation is **per action**: whatever lands is cleared, whatever
-//! fails stays in the draft to retry. Only a fully-flushed draft triggers a
-//! re-fetch, so a partial failure never loses unposted work.
+//! recorded actions, and hands the whole review to the forge as one
+//! [`ReviewBatch`]. The forge folds as many actions as its native primitive
+//! allows into one notification and reports a granular [`BatchOutcome`] keyed by
+//! action, so reconciliation is **per action**: whatever landed is cleared,
+//! whatever failed stays in the draft to retry. Only a fully-flushed draft
+//! triggers a re-fetch, so a partial failure never loses unposted work.
 
 use anyhow::{Context, Result};
 
-use wits_util::forge::{
-    Forge, LineRef, ReviewOutcome, ReviewSubmission, Side, SubmitComment, SubmitPlacement,
-};
+use wits_util::forge::{BatchAction, DiffVersion, Forge, ReviewBatch};
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
 
-use super::model::{bare_thread_id, Action, Local};
+use super::model::{bare_thread_id, comment_anchor, Action, Local, Snapshot, StoredFile};
 use super::{online, Online, SubmitArgs};
 
 pub fn run(repo: &Repository, args: &SubmitArgs) -> Result<()> {
@@ -99,69 +97,36 @@ fn submit_one(ctx: &Online, id: &str) -> Result<()> {
         return Ok(());
     }
 
-    // The batched review: verdict + summary + line/file comments. Line-references
-    // in bodies are expanded to forge permalinks against the reviewed head. The
-    // forge reports a granular outcome per comment/summary/verdict so we
-    // reconcile each action independently — a hard `Err` means nothing landed
-    // (atomic backends, or a total failure) and the whole draft stays.
-    let submission = build_submission(&local, &version, &info.snapshots, &info.files, forge);
-    let outcome = if submission.is_empty() {
-        ReviewOutcome::default()
-    } else {
-        match forge.submit_review(id, &submission) {
-            Ok(o) => {
-                if o.fully_ok() {
-                    log::info!(
-                        "MR {id}: posted review ({} comment(s))",
-                        submission.comments.len()
-                    );
-                } else {
-                    let failed = o.comment_results.iter().filter(|&&ok| !ok).count();
-                    if failed > 0 {
-                        log::warn!(
-                            "MR {id}: {failed} of {} comment(s) failed",
-                            o.comment_results.len()
-                        );
-                    }
-                    if !o.summary_ok && local.summary.is_some() {
-                        log::warn!("MR {id}: summary failed");
-                    }
-                    if o.verdict_ok == Some(false) {
-                        log::warn!("MR {id}: verdict failed");
-                    }
-                }
-                o
-            }
-            Err(e) => {
-                log::warn!("MR {id}: review batch failed: {e}");
-                // Nothing landed — synthesize an all-failed outcome so the
-                // uniform per-action walk keeps every action in the draft.
-                ReviewOutcome {
-                    comment_results: vec![false; submission.comments.len()],
-                    summary_ok: false,
-                    verdict_ok: local.verdict.is_some().then_some(false),
-                }
-            }
+    // Hand the whole review to the forge as one batch; it folds what it can into
+    // one notification and reports each action's landing by key. A hard `Err`
+    // means *nothing* landed — the whole (normalized) draft stays for retry.
+    let batch = build_batch(&local, &version, &info.snapshots, &info.files, forge);
+    let outcome = match forge.submit(id, &batch) {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!("MR {id}: submit failed (nothing landed): {e}");
+            store.save_local(id, &local)?;
+            anyhow::bail!("submit failed; the draft is unchanged");
         }
     };
 
-    // The independent actions; keep any that fail. Line/file comments are
-    // matched to `outcome.comment_results` in order.
-    let mut survivors: Vec<Action> = Vec::new();
-    let mut comment_idx = 0usize;
-    for action in local.actions.drain(..) {
-        if keep_after_apply(
-            forge,
-            id,
-            &action,
-            &outcome,
-            &mut comment_idx,
-            &version.head_sha,
-        ) {
-            survivors.push(action);
-        }
-    }
-
+    // Reconcile per action by key — the key is the action's index in the
+    // normalized draft, which `build_batch` and this walk share. Landed actions
+    // are dropped; failed ones stay.
+    let posted = local.actions.len()
+        - local
+            .actions
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !outcome.landed(*i))
+            .count();
+    let survivors: Vec<Action> = local
+        .actions
+        .drain(..)
+        .enumerate()
+        .filter_map(|(i, a)| (!outcome.landed(i)).then_some(a))
+        .collect();
+    let kept = survivors.len();
     local.actions = survivors;
     if outcome.summary_ok {
         local.summary = None;
@@ -171,100 +136,88 @@ fn submit_one(ctx: &Online, id: &str) -> Result<()> {
     }
     store.save_local(id, &local)?;
 
+    if kept > 0 {
+        log::warn!("MR {id}: {kept} action(s) did not submit; they remain in the draft");
+    }
+
     if local.is_empty() {
         if let Err(e) = super::fetch::refresh(ctx, id) {
             log::warn!("MR {id}: submitted, but refreshing the cache failed: {e}");
         }
-        log::info!("MR {id}: submitted");
+        log::info!(
+            "MR {id}: submitted ({posted} action(s), {} notification(s))",
+            outcome.notifications
+        );
         Ok(())
     } else {
         anyhow::bail!("some actions did not submit; they remain in the draft")
     }
 }
 
-/// Apply one action, returning whether it must stay in the draft (it failed, or
-/// it rode the review batch and that batch reports it failed).
-///
-/// `comment_idx` tracks the position in `outcome.comment_results` across calls,
-/// so each line/file comment is matched to its per-comment result in order.
-fn keep_after_apply(
-    forge: &dyn Forge,
-    id: &str,
-    action: &Action,
-    outcome: &ReviewOutcome,
-    comment_idx: &mut usize,
-    default_ref: &str,
-) -> bool {
-    match action {
-        // A line/file comment rode the batch — its result is at the next index.
-        Action::Comment { file: Some(_), .. } => {
-            let ok = outcome
-                .comment_results
-                .get(*comment_idx)
-                .copied()
-                .unwrap_or(false);
-            *comment_idx += 1;
-            !ok
-        }
-        // An MR-level comment is its own call. Its `[[…]]` references resolve against
-        // the action's own commit (the snapshot the comment was written on) when
-        // set, else the current snapshot head — consistent with line/file
-        // comments, which anchor to the action's version.
-        Action::Comment { body, commit, .. } => {
-            let default_ref = commit.as_deref().unwrap_or(default_ref);
-            let body = expand_refs(body, forge, default_ref);
-            report_keep(id, "conversation comment", forge.comment_mr(id, &body))
-        }
-        Action::Reply { thread, body } => {
-            let body = expand_refs(body, forge, default_ref);
-            report_keep(id, "reply", forge.reply(id, bare_thread_id(thread), &body))
-        }
-        Action::Resolve { thread, resolved } => report_keep(
-            id,
-            "resolve",
-            forge.resolve(id, bare_thread_id(thread), *resolved),
-        ),
-    }
-}
-
-fn report_keep(id: &str, what: &str, result: Result<()>) -> bool {
-    match result {
-        Ok(()) => {
-            log::info!("MR {id}: {what} posted");
-            false
-        }
-        Err(e) => {
-            log::warn!("MR {id}: {what} failed: {e}");
-            true
-        }
-    }
-}
-
-/// Build the batched review from the verdict, summary, and line/file comments.
-/// MR-level comments, replies, and resolves are excluded (separate calls).
-/// Bodies have their `[[…]]` references expanded to forge permalinks. Each
-/// comment is anchored to the [`DiffVersion`] of the snapshot it was written on
-/// — resolved from `snapshots` by the comment's own `commit` (the snapshot head
-/// recorded at ingest), falling back to the current version.
-fn build_submission(
+/// Build the forge-neutral [`ReviewBatch`] from the normalized draft. Every
+/// action becomes a [`BatchAction`] carrying its `ActionKey` (its index in the
+/// draft), so the forge can report each one's landing independently. A comment's
+/// body has its `[[…]]` references expanded to forge permalinks, and it is
+/// anchored to the [`DiffVersion`] of the snapshot it was written against —
+/// resolved from `snapshots` by the comment's own `commit` (the snapshot head
+/// stamped at ingest), falling back to the current version.
+fn build_batch(
     local: &Local,
-    version: &wits_util::forge::DiffVersion,
-    snapshots: &[super::model::Snapshot],
-    files: &[super::model::StoredFile],
+    version: &DiffVersion,
+    snapshots: &[Snapshot],
+    files: &[StoredFile],
     forge: &dyn Forge,
-) -> ReviewSubmission {
-    let comments = local
+) -> ReviewBatch {
+    let actions = local
         .actions
         .iter()
-        .filter_map(|a| to_submit_comment(a, version, snapshots, files, forge))
+        .enumerate()
+        .map(|(i, a)| match a {
+            Action::Comment {
+                file,
+                line,
+                side,
+                start_line,
+                start_side,
+                body,
+                commit,
+            } => {
+                let cv = comment_version(commit.as_deref(), snapshots, version);
+                let old_path = file.as_deref().and_then(|p| old_path_for(p, files));
+                let anchor = comment_anchor(
+                    file.as_deref(),
+                    *line,
+                    *side,
+                    *start_line,
+                    *start_side,
+                    old_path,
+                );
+                BatchAction::Comment {
+                    key: i,
+                    anchor,
+                    body: expand_refs(body, forge, &cv.head_sha),
+                    version: cv,
+                }
+            }
+            Action::Reply { thread, body } => BatchAction::Reply {
+                key: i,
+                thread: bare_thread_id(thread).to_owned(),
+                body: expand_refs(body, forge, &version.head_sha),
+            },
+            Action::Resolve { thread, resolved } => BatchAction::Resolve {
+                key: i,
+                thread: bare_thread_id(thread).to_owned(),
+                resolved: *resolved,
+            },
+        })
         .collect();
-    ReviewSubmission {
+    ReviewBatch {
         verdict: local.verdict,
         summary: local
             .summary
             .as_ref()
             .map(|s| expand_refs(s, forge, &version.head_sha)),
-        comments,
+        actions,
         version: version.clone(),
     }
 }
@@ -295,60 +248,6 @@ fn old_path_for(path: &str, files: &[super::model::StoredFile]) -> Option<String
         .iter()
         .find(|f| f.path == path)
         .and_then(|f| f.old_path.clone())
-}
-
-/// A line/file comment action → a submittable comment, anchored at the version
-/// of the snapshot it was written against. MR-level comments and non-comment
-/// actions yield `None`.
-fn to_submit_comment(
-    action: &Action,
-    version: &wits_util::forge::DiffVersion,
-    snapshots: &[super::model::Snapshot],
-    files: &[super::model::StoredFile],
-    forge: &dyn Forge,
-) -> Option<SubmitComment> {
-    let Action::Comment {
-        file: Some(path),
-        line,
-        side,
-        start_line,
-        start_side,
-        body,
-        commit: action_commit,
-    } = action
-    else {
-        return None;
-    };
-    let cv = comment_version(action_commit.as_deref(), snapshots, version);
-    let old_path = old_path_for(path, files);
-    let placement = match line {
-        Some(line) => {
-            let s = side.unwrap_or(Side::New);
-            let end = LineRef {
-                line: *line,
-                side: s,
-            };
-            let start = start_line.map(|sl| LineRef {
-                line: sl,
-                side: start_side.unwrap_or(s),
-            });
-            SubmitPlacement::Line {
-                path: path.clone(),
-                old_path,
-                end,
-                start,
-                version: cv.clone(),
-            }
-        }
-        None => SubmitPlacement::File {
-            path: path.clone(),
-            version: cv.clone(),
-        },
-    };
-    Some(SubmitComment {
-        placement,
-        body: expand_refs(body, forge, &cv.head_sha),
-    })
 }
 
 /// Expand every `[[path:line]]` reference in `body` to a forge permalink. The

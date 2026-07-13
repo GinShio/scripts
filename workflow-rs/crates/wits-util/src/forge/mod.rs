@@ -23,9 +23,8 @@ pub mod review;
 use serde_json::Value;
 
 pub use review::{
-    DiffVersion, FeedQuery, FeedStates, LineRef, MrDetails, MrSummary, RemoteComment,
-    RemotePlacement, RemoteThread, ReviewOutcome, ReviewSubmission, Side, SubmitComment,
-    SubmitPlacement, Verdict,
+    ActionKey, Anchor, BatchAction, BatchOutcome, DiffVersion, FeedQuery, FeedStates, LineRef,
+    MrDetails, MrSummary, RemoteComment, RemoteThread, ReviewBatch, Side, Verdict,
 };
 
 use crate::git::Repository;
@@ -168,38 +167,19 @@ pub trait Forge: Send + Sync {
         anyhow::bail!("`wits review` has no backend for this forge yet")
     }
 
-    /// Flush a batched review — verdict, summary, and new inline/file comments —
-    /// as one review where the platform allows it. The result is a granular
-    /// [`ReviewOutcome`]: each comment, the summary, and the verdict report their
-    /// own success so the orchestration layer reconciles per action — a landed
-    /// comment is cleared, a failed one stays, and a verdict failure never
+    /// Flush a whole review — verdict, summary, comments (line / file / MR-level),
+    /// replies, and resolves — folding as many actions as the platform's native
+    /// batch primitive allows into one notification, and doing the rest as
+    /// separate calls. The result is a granular [`BatchOutcome`] keyed by action,
+    /// so the orchestration layer reconciles per action: a landed action is
+    /// cleared from the draft, a failed one stays, and a verdict failure never
     /// poisons comments already posted.
     ///
-    /// `Err` means *nothing* landed (a total failure, or a partial state that
-    /// the backend rolled back to nothing); the caller keeps the whole draft.
-    /// A partial success is always `Ok` with the per-step outcomes filled in.
-    fn submit_review(
-        &self,
-        _id: &str,
-        _review: &ReviewSubmission,
-    ) -> anyhow::Result<ReviewOutcome> {
+    /// `Err` means *nothing* landed (a total failure, or an atomic batch the
+    /// backend rolled back to nothing); the caller keeps the whole draft. A
+    /// partial success is always `Ok` with the per-action outcomes filled in.
+    fn submit(&self, _id: &str, _batch: &ReviewBatch) -> anyhow::Result<BatchOutcome> {
         anyhow::bail!("`wits review` has no backend for this forge yet")
-    }
-
-    /// Post an MR-level conversation comment (no code anchor).
-    fn comment_mr(&self, _id: &str, _body: &str) -> anyhow::Result<()> {
-        anyhow::bail!("`wits review` has no backend for this forge yet")
-    }
-
-    /// Reply to an existing thread.
-    fn reply(&self, _id: &str, _thread: &str, _body: &str) -> anyhow::Result<()> {
-        anyhow::bail!("`wits review` has no backend for this forge yet")
-    }
-
-    /// Resolve or unresolve a thread. Deferred to future on GitHub (GraphQL-only,
-    /// see the design doc); v1 supports it on GitLab.
-    fn resolve(&self, _id: &str, _thread: &str, _resolved: bool) -> anyhow::Result<()> {
-        anyhow::bail!("resolving threads is not supported for this forge yet")
     }
 
     /// A web permalink to a file (optionally a line or line range) at a ref, for
@@ -349,26 +329,6 @@ pub(crate) fn request_paginated<T>(
     Ok(all)
 }
 
-/// Parse a GitHub-style `Link` header for the `rel="next"` URL.
-pub(crate) fn parse_link_next(headers: &[(String, String)]) -> Option<String> {
-    headers
-        .iter()
-        .find(|(name, _)| name == "link")
-        .and_then(|(_, value)| {
-            value.split(',').find_map(|part| {
-                let part = part.trim();
-                if part.contains("rel=\"next\"") {
-                    part.split('<')
-                        .nth(1)
-                        .and_then(|rest| rest.split('>').next())
-                        .map(str::to_owned)
-                } else {
-                    None
-                }
-            })
-        })
-}
-
 /// The literal a caller passes for "the authenticated user".
 pub(crate) const SELF_REF: &str = "@me";
 
@@ -395,6 +355,13 @@ pub(crate) fn current_user(api_base: &str, auth: &Auth, field: &str) -> anyhow::
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| anyhow::anyhow!("could not read the authenticated user"))
+}
+
+/// Percent-encode a repo-relative path for a blob URL, preserving the `/`
+/// separators (each segment is encoded on its own). A path like `dir/a file.c`
+/// must survive, but its slashes must stay real path separators.
+pub(crate) fn encode_path(path: &str) -> String {
+    path.split('/').map(encode).collect::<Vec<_>>().join("/")
 }
 
 /// Percent-encode one URL component. Branch names carry `/`, cross-fork heads
@@ -572,5 +539,12 @@ mod tests {
     fn resolve_self_replaces_only_the_marker() {
         let out = resolve_self(&["@me".into(), "alice".into()], "russell");
         assert_eq!(out, ["russell", "alice"]);
+    }
+
+    #[test]
+    fn encode_path_preserves_slashes() {
+        assert_eq!(encode_path("src/a b.c"), "src/a%20b.c");
+        assert_eq!(encode_path("plain.rs"), "plain.rs");
+        assert_eq!(encode_path("d/e/f.txt"), "d/e/f.txt");
     }
 }

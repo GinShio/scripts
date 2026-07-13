@@ -99,6 +99,7 @@ fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
     };
 
     let mut threads = merge_threads(comments.threads, &draft, info.head());
+    recompute_outdated(&ctx.repo, &mut threads, info.head());
     apply_filters(&mut threads, args);
 
     let view = DetailView {
@@ -175,6 +176,67 @@ fn pending_comment(id: &str, body: &str) -> Comment {
         created_at: String::new(),
         state: "pending".into(),
     }
+}
+
+/// Recompute each line thread's `outdated` locally (redesign §5): a thread is
+/// outdated when its anchored line falls inside a region the file changed
+/// between the commit the comment was written on and the current head. This is
+/// uniform across forges and works offline, from the objects `fetch` already
+/// pins. The forge's own flag is kept only as a **fallback**, when the anchor
+/// commit's objects aren't present locally (a thread on a commit we never
+/// fetched). File/MR-level threads are never outdated.
+fn recompute_outdated(repo: &Repository, threads: &mut [Thread], head: &str) {
+    use std::collections::HashMap;
+    if head.is_empty() {
+        return;
+    }
+    let mut cache: HashMap<(String, String), Vec<(u32, u32)>> = HashMap::new();
+    for t in threads.iter_mut() {
+        let Placement::Line {
+            path, end, commit, ..
+        } = &t.placement
+        else {
+            continue;
+        };
+        // No recorded anchor commit → keep whatever the forge reported.
+        let Some(commit) = commit.clone() else {
+            continue;
+        };
+        if commit == head {
+            t.outdated = false;
+            continue;
+        }
+        // Objects for the anchor commit aren't local → fall back to the forge flag.
+        if repo.rev_parse(&commit).is_none() {
+            continue;
+        }
+        let ranges = cache
+            .entry((commit.clone(), path.clone()))
+            .or_insert_with(|| changed_old_ranges(repo, &commit, head, path));
+        let line = end.line;
+        t.outdated = ranges
+            .iter()
+            .any(|(start, count)| line >= *start && line < start + count);
+    }
+}
+
+/// The old-side line ranges a file changed across `from..to`, from the unified
+/// diff hunk headers (`@@ -start,count +… @@`).
+fn changed_old_ranges(repo: &Repository, from: &str, to: &str, path: &str) -> Vec<(u32, u32)> {
+    let range = format!("{from}..{to}");
+    repo.diff_patch(&range, Some(path))
+        .map(|patch| patch.lines().filter_map(parse_hunk_old_range).collect())
+        .unwrap_or_default()
+}
+
+/// Parse a unified-diff hunk header `@@ -a,b +c,d @@` into its old-side range
+/// `(a, b)`; `b` defaults to 1 when omitted (a single-line hunk).
+fn parse_hunk_old_range(line: &str) -> Option<(u32, u32)> {
+    let old = line.strip_prefix("@@ -")?.split(' ').next()?;
+    let mut parts = old.split(',');
+    let start: u32 = parts.next()?.parse().ok()?;
+    let count: u32 = parts.next().and_then(|c| c.parse().ok()).unwrap_or(1);
+    Some((start, count))
 }
 
 fn apply_filters(threads: &mut Vec<Thread>, args: &ShowArgs) {
@@ -439,4 +501,20 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_hunk_old_ranges() {
+        assert_eq!(
+            parse_hunk_old_range("@@ -10,5 +12,6 @@ fn foo()"),
+            Some((10, 5))
+        );
+        assert_eq!(parse_hunk_old_range("@@ -7 +7 @@"), Some((7, 1)));
+        assert_eq!(parse_hunk_old_range("not a hunk"), None);
+        assert_eq!(parse_hunk_old_range("+ added line"), None);
+    }
 }

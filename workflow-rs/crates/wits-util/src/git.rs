@@ -117,6 +117,15 @@ impl Repository {
             .map(PathBuf::from)
     }
 
+    /// The absolute path of the *common* git directory — the main `.git` shared
+    /// by every linked worktree. Unlike [`git_dir`](Self::git_dir), this is stable
+    /// across worktrees, so per-clone state (the review store) lands in the same
+    /// place whether you run from the main checkout or a `checkout` worktree.
+    pub fn git_common_dir(&self) -> Option<PathBuf> {
+        self.query(&["rev-parse", "--path-format=absolute", "--git-common-dir"])
+            .map(PathBuf::from)
+    }
+
     /// The working tree's top-level directory, or `None` outside a work tree
     /// (e.g. a bare repo). The natural anchor for deriving a sibling worktree.
     pub fn toplevel(&self) -> Option<PathBuf> {

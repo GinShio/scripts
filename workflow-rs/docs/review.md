@@ -223,7 +223,7 @@ Rules, all inferred so the file is pleasant to hand-write:
   and ends on the other (e.g. a deleted line through to an added one).
 - **`reply`** targets a thread id (the bare forge id, or the `remote:` form
   `show` prints).
-- **`resolve`** sets a thread's resolved state (GitLab in v1).
+- **`resolve`** sets a thread's resolved state (supported on both forges).
 
 Preview what's recorded any time, without touching the forge:
 
@@ -263,14 +263,20 @@ wits review submit --all        # every MR that has a pending draft
 
 On submit, the draft is **merged and de-duplicated** (an accidentally repeated
 comment is dropped; repeated resolutions of one thread collapse to the last),
-then posted. The verdict, summary, and line/file comments go up as **one** call
-where the platform allows it (GitHub's review API; GitLab's draft notes bulk
-published, plus a separate `approve` for an approving verdict) — a single
-notification. MR-level comments, replies, and resolves are separate calls.
+then handed to the forge as one review. Each platform folds as much as its native
+batch allows into **one notification**:
 
-Reconciliation is **per action**: whatever lands is cleared from `local.json`,
-whatever fails stays for a retry, and only a fully-flushed draft triggers a
-re-fetch. Preview exactly what would be posted with `-n`:
+- **GitLab** — comments (line/file/conversation), replies, the summary, and the
+  verdict all ride a single `bulk_publish`. A bare thread resolve is a separate
+  (quiet) call.
+- **GitHub** — the verdict, summary, and line/file comments are one review; a
+  conversation (MR-level) comment, replies, and resolves are separate calls, each
+  with its own notification (a GitHub API limit, not a choice).
+
+`submit` reports how many notifications it actually produced, so there are no
+surprises. Reconciliation is **per action**: whatever lands is cleared from
+`local.json`, whatever fails stays for a retry, and only a fully-flushed draft
+triggers a re-fetch. Preview exactly what would be posted with `-n`:
 
 ```sh
 wits review submit 123 -n
@@ -311,11 +317,14 @@ a no-op when nothing is stale.
 ## Outdating
 
 A review is pinned to the snapshot you fetched. Comments submit against it, so
-when the branch has moved on the forge shows them as *outdated* rather than
-re-basing them onto code they were never about. `show --outdated` surfaces
-threads whose anchored line has left the current diff. The reviewed objects are
-held alive by `refs/wits/review/*` even after the author force-pushes, so an
-outdated comment can still be submitted.
+when the branch has moved they are shown as *outdated* rather than re-based onto
+code they were never about. **`wits review` computes outdating itself**, locally
+and identically for every forge: a thread is outdated when its anchored line
+falls inside a region the file changed between the commit the comment was written
+on and the current head — read from the objects `fetch` pinned, no network, no
+reliance on a forge flag. `show --outdated` surfaces exactly those threads. The
+reviewed objects are held alive by `refs/wits/review/*` even after the author
+force-pushes, so an outdated comment can still be submitted.
 
 ## Configuration reference
 
@@ -398,15 +407,16 @@ not config — they describe one invocation.
 
 Bounded on purpose, and honest about it:
 
-| Area | v1 behaviour |
+| Area | behaviour |
 |---|---|
-| Forges | GitHub and GitLab. Gitea/Forgejo/Codeberg have the trait seam but no backend. |
-| Thread resolve | GitLab only; GitHub's is GraphQL-only and deferred (the tool speaks REST). A `resolve` action submitted to a GitHub MR reports the gap. |
-| `request-changes` on GitLab | No native equivalent; maps to "post the review and **unapprove**" — withdrawing any prior approval of yours. |
+| Forges | GitHub (GraphQL) and GitLab (REST). Gitea/Forgejo/Codeberg have the trait seam but no review backend. |
+| Thread resolve | Supported on **both** — GitHub via `resolveReviewThread`, GitLab via the discussion API. |
+| `request-changes` on GitLab | **Native** (`reviewer_state: requested_changes`). Instances too old for that parameter fall back to "post the review and unapprove"; detected once from `GET /version`. |
 | Editing/deleting a **published** comment | Not supported; you edit only your pending `local.json`. |
 | Cross-snapshot anchoring | Per-comment on GitLab (each comment anchors to its own snapshot version); review-level on GitHub (its API takes one commit per review, so the batch anchors to one snapshot). Comments without a `commit` use the current snapshot. |
-| Outdated draft | Comments submit against the snapshot they were written on. If you re-`fetch` after drafting and the head moved, GitLab keeps each comment anchored to its own snapshot; GitHub moves the whole batch to the new review head. (Holding objects alive for commits outside the snapshot history — per-comment *pinning* — is future work.) |
-| Feeds | Pull the most recently updated MRs up to `limit`; an incremental "since last sync" cursor is future work. |
+| Outdating | Computed **locally** and identically for both forges — a thread is outdated when its anchored line changed between the commit it was written on and the current head. Falls back to the forge's own flag only when that commit's objects aren't local. |
+| Feeds | Return real MRs (base/head) up to a hard `limit`, most-recently-updated first; an incremental "since last sync" cursor is future work. |
+| Notifications | Minimised, not promised: `submit` reports the true count. GitLab folds a whole review into one `bulk_publish`; GitHub keeps conversation comments, replies, and resolves as separate calls. |
 
 ## Troubleshooting
 

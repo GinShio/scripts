@@ -231,10 +231,10 @@ remove a queued action, edit the file.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
-| `thread` | string | yes | The thread id (bare forge id, or `remote:` form). |
+| `thread` | string | yes | The thread id (bare forge id, or the `remote:` form `show` prints). On GitLab this is the discussion id; on GitHub the GraphQL review-thread node id (`PRRT_…`). |
 | `body` | string | yes | The reply text. |
 
-**`resolve`** — set a thread's resolved state (GitLab in v1).
+**`resolve`** — set a thread's resolved state (supported on both forges).
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
@@ -245,15 +245,20 @@ remove a queued action, edit the file.
 
 - **Merge + de-duplicate:** exact-duplicate actions are dropped; repeated
   `resolve` of one thread collapses to the last stated value.
-- **Batching:** `verdict` + `summary` + all line/file `comment`s post as one
-  review; MR-level comments, replies, and resolves are separate calls.
+- **Batching:** the whole review is handed to the forge as one batch, folded
+  into as few notifications as the platform allows. On GitLab comments (line/
+  file/conversation), replies, the summary, and the verdict ride one
+  `bulk_publish`; a bare resolve is a separate call. On GitHub the verdict +
+  summary + line/file comments are one review, while conversation comments,
+  replies, and resolves are separate calls. `submit` reports the real
+  notification count.
 - **Anchoring:** each comment carries its own `commit` — the snapshot head its
   line anchors were written against. `submit` resolves it against the snapshot
   history to the full `{base, start, head}` version and anchors the comment to it.
   On GitLab this is **per-comment** (each diff note targets its own version), so
   different actions in one draft can target different snapshots — true
   cross-snapshot drafting. On GitHub the whole review anchors to one review-level
-  `commit_id` (the API takes one per review), so the batch anchors to the review's
+  `commitOID` (the API takes one per review), so the batch anchors to the review's
   snapshot. Comments without a `commit` are stamped with the current snapshot at
   normalize time and anchor to the current head on both backends.
 - **References:** a `[[path:line]]` token in any `body` is expanded to a forge

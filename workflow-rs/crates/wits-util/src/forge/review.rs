@@ -145,22 +145,37 @@ pub struct MrDetails {
     pub version: DiffVersion,
 }
 
-/// Where a remote thread is anchored, normalized across platforms.
-#[derive(Debug, Clone)]
-pub enum RemotePlacement {
-    /// On a code line of a changed file. `end` is the anchor line; `start`, when
+/// A code anchor — a single line, a multi-line span, or a whole changed file —
+/// normalized across platforms and shared by the read model, the submit
+/// boundary, and (via `model`) the local model. Its *absence* — an
+/// `Option<Anchor>` of `None` — is the MR-level conversation, which has no code
+/// anchor at all.
+///
+/// Each [`LineRef`] endpoint carries its own side so a span can cross the
+/// delete/add boundary (an old-side start through to a new-side end). Every
+/// forge translates this one shape to its native anchor form (GitHub
+/// `line`/`side`/`startLine`/`startSide`; GitLab `position.line_range`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Anchor {
+    /// A code line of a changed file. `end` is the anchor line; `start`, when
     /// present, makes it a multi-line span (and may sit on the other side).
     Line {
         path: String,
         old_path: Option<String>,
         end: LineRef,
         start: Option<LineRef>,
-        commit: Option<String>,
     },
-    /// On a changed file, no specific line.
+    /// A changed file, no specific line.
     File { path: String },
-    /// On the MR conversation, with no code anchor.
-    Mr,
+}
+
+impl Anchor {
+    /// The new-side path the anchor sits on.
+    pub fn path(&self) -> &str {
+        match self {
+            Anchor::Line { path, .. } | Anchor::File { path } => path,
+        }
+    }
 }
 
 /// One comment inside a remote thread.
@@ -178,106 +193,124 @@ pub struct RemoteThread {
     pub id: String,
     pub resolved: bool,
     pub outdated: bool,
-    pub placement: RemotePlacement,
+    /// The code anchor, or `None` for an MR-level conversation thread.
+    pub anchor: Option<Anchor>,
+    /// The commit SHA the thread's anchor was written against, when the forge
+    /// reports one (GitLab `position.head_sha`, GitHub `original_commit_id`).
+    /// Feeds the read view and local outdate computation.
+    pub commit: Option<String>,
     pub comments: Vec<RemoteComment>,
 }
 
-/// Where a new comment being submitted should land. Carries the reviewed
-/// [`DiffVersion`] so an outdated anchor is honoured rather than silently
-/// re-based — and so GitLab, whose diff-note `position` needs all three SHAs, can
-/// anchor a comment to the snapshot it was written on. The line anchor is the
-/// nested [`LineRef`] shape each forge translates to its own anchor form.
+/// A stable per-submission identifier for one action, so the orchestration layer
+/// reconciles by *identity*, not by position — regardless of how a backend
+/// reorders, splits, or batches the work. It is the action's index in the
+/// normalized draft.
+pub type ActionKey = usize;
+
+/// One thing to do inside a review submission, forge-neutral. Every kind of
+/// action can travel in the same batch; each [`Forge`] folds as many as its
+/// native primitive allows into one notification and reports the rest honestly.
+///
+/// [`Forge`]: super::Forge
 #[derive(Debug, Clone)]
-pub enum SubmitPlacement {
-    Line {
-        path: String,
-        old_path: Option<String>,
-        /// The anchor (end) line; a single-line comment when `start` is `None`.
-        end: LineRef,
-        /// The start line of a multi-line span, when set. May carry a different
-        /// side from `end` (a cross-side span).
-        start: Option<LineRef>,
-        /// The snapshot version the comment's lines were written against
-        /// (resolved from the snapshot history at build time).
+pub enum BatchAction {
+    /// A new comment. `anchor` is the code anchor, or `None` for an MR-level
+    /// conversation comment. `version` is the snapshot the comment's lines were
+    /// written against (resolved from the snapshot history at build time), so an
+    /// outdated anchor is honoured rather than silently re-based.
+    Comment {
+        key: ActionKey,
+        anchor: Option<Anchor>,
         version: DiffVersion,
+        body: String,
     },
-    File {
-        path: String,
-        version: DiffVersion,
+    /// A reply into an existing remote thread (the bare forge thread id).
+    Reply {
+        key: ActionKey,
+        thread: String,
+        body: String,
+    },
+    /// Resolve / unresolve an existing remote thread.
+    Resolve {
+        key: ActionKey,
+        thread: String,
+        resolved: bool,
     },
 }
 
-/// A single new comment in a review submission.
-#[derive(Debug, Clone)]
-pub struct SubmitComment {
-    pub placement: SubmitPlacement,
-    pub body: String,
+impl BatchAction {
+    pub fn key(&self) -> ActionKey {
+        match self {
+            BatchAction::Comment { key, .. }
+            | BatchAction::Reply { key, .. }
+            | BatchAction::Resolve { key, .. } => *key,
+        }
+    }
 }
 
-/// The batched review a `submit` flushes: a verdict, an optional summary body,
-/// and the new inline/file comments — all landing as one review where the
-/// platform allows (one notification). MR-level conversation comments, replies,
-/// and resolves are *not* here; they are separate primitives the orchestration
-/// layer calls, because no platform folds them into the review batch.
+/// The whole review to flush for one MR, forge-neutral: a verdict, an optional
+/// summary body, and the ordered actions. `version` is the current snapshot —
+/// the fallback anchor for a comment, and GitHub's single review `commitOID`.
 #[derive(Debug, Clone)]
-pub struct ReviewSubmission {
+pub struct ReviewBatch {
     pub verdict: Option<Verdict>,
     pub summary: Option<String>,
-    pub comments: Vec<SubmitComment>,
+    pub actions: Vec<BatchAction>,
     pub version: DiffVersion,
 }
 
-impl ReviewSubmission {
-    /// A submission that would post nothing — no verdict, no body, no comments.
-    /// The orchestration layer skips the review call entirely in this case.
+impl ReviewBatch {
+    /// A batch that would post nothing.
     pub fn is_empty(&self) -> bool {
-        self.verdict.is_none() && self.summary.is_none() && self.comments.is_empty()
+        self.verdict.is_none() && self.summary.is_none() && self.actions.is_empty()
     }
 }
 
-/// The granular result of a `submit_review` — never an `Err` for a *partial*
-/// success, only for a total one (the MR was unreachable, or the whole batch
-/// was rolled back to nothing). Every step that can partially succeed reports
-/// its own outcome here, so the orchestration layer reconciles each action
-/// independently: a landed comment is cleared, a failed one stays for retry, and
-/// a verdict failure never poisons the comments already posted.
+/// The granular result of a [`Forge::submit`] — never an `Err` for a *partial*
+/// success, only for a total one (the MR was unreachable, or an atomic batch was
+/// rolled back to nothing). Each action reports its own landing *by key*, so the
+/// orchestration layer reconciles independently: a landed action is cleared from
+/// the draft, a failed one stays for retry, and a verdict failure never poisons
+/// comments already posted.
 ///
-/// `Err` from `submit_review` means *nothing* landed (atomic backends on a hard
-/// failure, or a total transport failure); the caller keeps the whole draft.
+/// `Err` from `submit` means *nothing* landed; the caller keeps the whole draft.
+///
+/// [`Forge::submit`]: super::Forge::submit
 #[derive(Debug, Clone, Default)]
-pub struct ReviewOutcome {
-    /// One result per `review.comments[i]`, in order. `true` = the comment is
-    /// visible on the forge; `false` = it failed (or was rolled back) and stays
-    /// in the draft. An atomic backend (GitHub) still emits one entry per
-    /// comment — all `true` on success — so the caller's index walk is uniform.
-    pub comment_results: Vec<bool>,
+pub struct BatchOutcome {
+    /// One entry per action key attempted: `true` = live on the forge, `false` =
+    /// failed or rolled back. A key absent from the map counts as not landed.
+    pub landed: std::collections::HashMap<ActionKey, bool>,
     /// Whether the summary body (if any) landed.
     pub summary_ok: bool,
-    /// `None` when no verdict was in the submission; `Some(true)` when it
-    /// landed; `Some(false)` when it was present but failed (stays for retry).
+    /// `None` when no verdict was in the batch; `Some(true)`/`Some(false)` when
+    /// it landed / failed (and stays for retry).
     pub verdict_ok: Option<bool>,
+    /// How many forge notifications this submission actually produced — an
+    /// honest, testable number, not a promise (a reviewer minimises it, but the
+    /// platform ultimately decides).
+    pub notifications: u32,
 }
 
-impl ReviewOutcome {
-    /// A fully-successful outcome for `n` comments — every comment, the
-    /// summary, and the verdict (if present) landed.
-    pub fn all_ok(n: usize, has_verdict: bool) -> Self {
-        ReviewOutcome {
-            comment_results: vec![true; n],
+impl BatchOutcome {
+    /// Whether the action `key` landed on the forge.
+    pub fn landed(&self, key: ActionKey) -> bool {
+        self.landed.get(&key).copied().unwrap_or(false)
+    }
+
+    /// A fully-successful outcome: every listed action key, the summary, and the
+    /// verdict (if present) landed, in `notifications` notification(s).
+    pub fn all_ok(
+        keys: impl IntoIterator<Item = ActionKey>,
+        has_verdict: bool,
+        notifications: u32,
+    ) -> Self {
+        BatchOutcome {
+            landed: keys.into_iter().map(|k| (k, true)).collect(),
             summary_ok: true,
             verdict_ok: has_verdict.then_some(true),
+            notifications,
         }
-    }
-
-    /// Whether every comment in the batch landed (vacuously true when there are
-    /// none). Used to decide whether the review batch as a whole flushed.
-    pub fn comments_ok(&self) -> bool {
-        self.comment_results.iter().all(|&ok| ok)
-    }
-
-    /// Whether the whole submission flushed — comments, summary, and verdict
-    /// (when present). Only a fully-flushed draft triggers a re-fetch.
-    pub fn fully_ok(&self) -> bool {
-        self.comments_ok() && self.summary_ok && self.verdict_ok.unwrap_or(true)
     }
 }

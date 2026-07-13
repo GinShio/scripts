@@ -15,8 +15,7 @@
 use serde::{Deserialize, Serialize};
 
 use wits_util::forge::{
-    DiffVersion, LineRef, MrState, MrSummary, RemoteComment, RemotePlacement, RemoteThread, Side,
-    Verdict,
+    Anchor, DiffVersion, LineRef, MrState, MrSummary, RemoteComment, RemoteThread, Side, Verdict,
 };
 
 /// The store/JSON schema version. Bumped on an incompatible shape change.
@@ -170,26 +169,64 @@ pub enum Placement {
     Mr,
 }
 
-impl From<RemotePlacement> for Placement {
-    fn from(p: RemotePlacement) -> Self {
-        match p {
-            RemotePlacement::Line {
-                path,
-                old_path,
-                end,
-                start,
-                commit,
-            } => Placement::Line {
-                path,
-                old_path,
-                end,
-                start,
-                commit,
-            },
-            RemotePlacement::File { path } => Placement::File { path, commit: None },
-            RemotePlacement::Mr => Placement::Mr,
-        }
+/// Project a forge [`Anchor`] (plus the commit the thread was written against)
+/// into the JSON read-view [`Placement`]. `None` is the MR-level conversation.
+/// This is the one place the forge anchor becomes an output placement.
+fn placement_of(anchor: Option<&Anchor>, commit: Option<String>) -> Placement {
+    match anchor {
+        Some(Anchor::Line {
+            path,
+            old_path,
+            end,
+            start,
+        }) => Placement::Line {
+            path: path.clone(),
+            old_path: old_path.clone(),
+            end: *end,
+            start: *start,
+            commit,
+        },
+        Some(Anchor::File { path }) => Placement::File {
+            path: path.clone(),
+            commit,
+        },
+        None => Placement::Mr,
     }
+}
+
+/// The single source of the placement-inference rule, shared by the read view
+/// ([`Action::placement`]) and submit (`to_submit_comment`): `file`+`line` ⇒ a
+/// line anchor, `file` alone ⇒ a file anchor, neither ⇒ `None` (an MR-level
+/// conversation comment, which carries no code anchor). `side` defaults to
+/// `New`; a multi-line `start`'s side defaults to `end`'s unless overridden.
+/// `old_path` is looked up by the caller (submit knows the changed-file set;
+/// the read view of a pending local comment does not, and passes `None`).
+pub fn comment_anchor(
+    file: Option<&str>,
+    line: Option<u32>,
+    side: Option<Side>,
+    start_line: Option<u32>,
+    start_side: Option<Side>,
+    old_path: Option<String>,
+) -> Option<Anchor> {
+    let path = file?.to_owned();
+    Some(match line {
+        Some(line) => {
+            let s = side.unwrap_or(Side::New);
+            let end = LineRef { line, side: s };
+            let start = start_line.map(|sl| LineRef {
+                line: sl,
+                side: start_side.unwrap_or(s),
+            });
+            Anchor::Line {
+                path,
+                old_path,
+                end,
+                start,
+            }
+        }
+        None => Anchor::File { path },
+    })
 }
 
 /// One comment in a thread, in the read/output view.
@@ -235,7 +272,7 @@ impl From<RemoteThread> for Thread {
             origin: "remote".into(),
             resolved: t.resolved,
             outdated: t.outdated,
-            placement: t.placement.into(),
+            placement: placement_of(t.anchor.as_ref(), t.commit),
             comments: t.comments.into_iter().map(Comment::from_remote).collect(),
         }
     }
@@ -302,54 +339,34 @@ pub enum Action {
 }
 
 impl Action {
-    /// The output placement for a comment action. The commit comes from the
-    /// action itself (per-comment snapshot); `head` is the fallback for actions
-    /// that predate per-comment stamping. Non-comment actions have no placement.
+    /// The output placement for a comment action, via the shared
+    /// [`comment_anchor`] inference. The commit comes from the action itself
+    /// (per-comment snapshot); `head` is the fallback for actions that predate
+    /// per-comment stamping. Non-comment actions have no placement.
     pub fn placement(&self, head: &str) -> Option<Placement> {
         match self {
             Action::Comment {
-                file: Some(path),
-                line: Some(line),
+                file,
+                line,
                 side,
                 start_line,
                 start_side,
                 commit,
                 ..
             } => {
-                let c = commit
+                let commit = commit
                     .clone()
                     .or_else(|| (!head.is_empty()).then(|| head.to_owned()));
-                let s = side.unwrap_or(Side::New);
-                let end = LineRef {
-                    line: *line,
-                    side: s,
-                };
-                let start = start_line.map(|sl| LineRef {
-                    line: sl,
-                    side: start_side.unwrap_or(s),
-                });
-                Some(Placement::Line {
-                    path: path.clone(),
-                    old_path: None,
-                    end,
-                    start,
-                    commit: c,
-                })
+                let anchor = comment_anchor(
+                    file.as_deref(),
+                    *line,
+                    *side,
+                    *start_line,
+                    *start_side,
+                    None,
+                );
+                Some(placement_of(anchor.as_ref(), commit))
             }
-            Action::Comment {
-                file: Some(path),
-                commit,
-                ..
-            } => {
-                let c = commit
-                    .clone()
-                    .or_else(|| (!head.is_empty()).then(|| head.to_owned()));
-                Some(Placement::File {
-                    path: path.clone(),
-                    commit: c,
-                })
-            }
-            Action::Comment { .. } => Some(Placement::Mr),
             _ => None,
         }
     }
