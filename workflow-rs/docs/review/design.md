@@ -500,7 +500,7 @@ hidden, because a reviewer needs to know them:
 | Verdict + summary + line comments | one review call | one `bulk_publish` |
 | **File-level** comment in the batch | yes — pending review + `addPullRequestReviewThread(subjectType: FILE)` + submit (still one review) | yes — `position_type: file` draft note |
 | **MR-level** (conversation) comment | **separate** `addComment` (its own notification) | position-less draft note (rides the batch) |
-| Reply to an existing thread | separate `addPullRequestReviewThreadReply` (bundle-able in one GraphQL doc) | draft note with `in_reply_to_discussion_id` (rides the batch) |
+| Reply to an existing thread | **rides the review** — `addPullRequestReviewThreadReply` with the *pending* review's id, published on submit (one notification, exactly as the web UI does) | draft note with `in_reply_to_discussion_id` (rides the batch) |
 | Resolve / unresolve | **supported** — `resolveReviewThread`/`unresolveReviewThread` | separate `PUT …/discussions/:id` (a draft note needs a body, so a bare resolve can't ride the batch) |
 | `request-changes` verdict | native (`REQUEST_CHANGES`) | **native** — `bulk_publish` `reviewer_state: requested_changes` (A3) |
 | `approve` verdict | part of the review | **separate `POST …/approve`** — `bulk_publish`'s `reviewer_state: approved` records only a review state, not a formal approval, so approve never rides the publish (A3) |
@@ -531,10 +531,12 @@ The named caveats behind the matrix:
 - **A5 — batching is best-effort per platform, and `notifications` is honest.**
   On GitLab nearly everything folds into one `bulk_publish`; a bare resolve is a
   separate quiet PUT. On GitHub the review (verdict + summary + line/file
-  comments) is one notification, but an MR-level conversation comment is a
-  separate `addComment` (a real API limit), and replies/resolves are separate
-  mutations. `BatchOutcome.notifications` reports the true count rather than
-  promising "one".
+  comments **and replies**) is one notification — replies join the *pending*
+  review by id and publish with it, the same fold the web UI performs. The one
+  unfoldable case is an MR-level conversation comment: it is a separate
+  `addComment` (a real API limit) with its own notification. Resolves are
+  separate mutations but do not notify. `BatchOutcome.notifications` reports the
+  true count rather than promising "one".
 
 Transport is **GraphQL over `ureq` on GitHub** (the whole forge — threads,
 resolution, PR search, and the stack half all live there; REST is used only for
@@ -570,10 +572,11 @@ right:
   a *later* `bulk_publish` runs.) Resolves are separate PUTs, reconciled by their
   own key.
 - **GitHub's review is atomic; the rest is independent.** The review
-  (`addPullRequestReview`, or the pending-review flow when file comments are
-  present) lands as one unit — its keys all succeed or all fail together. MR-level
-  comments, replies, and resolves are independent GraphQL calls, each reconciled
-  by its own key, so a failure in one never poisons the review.
+  (`addPullRequestReview`, or the pending-review flow when file comments or
+  replies are present) lands as one unit — line/file/reply keys all succeed or
+  all fail together, since replies now join the pending review. MR-level
+  conversation comments and resolves are independent GraphQL calls, each
+  reconciled by its own key, so a failure in one never poisons the review.
 - **The local write happens per-MR inside the fan-out.** Each MR writes to a
   distinct store path (`<id>/local.json`), so the per-MR tasks are independent and
   there is never a race or a half-cleared draft; the safety comes from path

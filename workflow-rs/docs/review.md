@@ -270,9 +270,11 @@ batch allows into **one notification**:
   `request-changes`/`comment` reviewer state all ride a single `bulk_publish`. An
   `approve` verdict (a real approval, which `bulk_publish` can't record) and a
   bare thread resolve are separate (quiet) calls.
-- **GitHub** — the verdict, summary, and line/file comments are one review; a
-  conversation (MR-level) comment, replies, and resolves are separate calls, each
-  with its own notification (a GitHub API limit, not a choice).
+- **GitHub** — the verdict, summary, line/file comments, **and replies** are one
+  review (replies join the pending review by id, exactly as the web UI batches
+  them), so they share one notification. Only a conversation (MR-level) comment
+  is a separate notification — that one *is* a GitHub API limit. Resolves are
+  separate calls but don't notify.
 
 `submit` reports how many notifications it actually produced, so there are no
 surprises. Reconciliation is **per action**: whatever lands is cleared from
@@ -417,7 +419,7 @@ Bounded on purpose, and honest about it:
 | Cross-snapshot anchoring | Per-comment on GitLab (each comment anchors to its own snapshot version); review-level on GitHub (its API takes one commit per review, so the batch anchors to one snapshot). Comments without a `commit` use the current snapshot. |
 | Outdating | Computed **locally** and identically for both forges — a thread is outdated when its anchored line changed between the commit it was written on and the current head. Falls back to the forge's own flag only when that commit's objects aren't local. |
 | Feeds | Return real MRs (base/head) up to a hard `limit`, most-recently-updated first; an incremental "since last sync" cursor is future work. |
-| Notifications | Minimised, not promised: `submit` reports the true count. GitLab folds a whole review into one `bulk_publish`; GitHub keeps conversation comments, replies, and resolves as separate calls. |
+| Notifications | Minimised, not promised: `submit` reports the true count. GitLab folds a whole review into one `bulk_publish`. GitHub folds the verdict, summary, line/file comments, and replies into one review; only an MR-level conversation comment is a separate notification (resolves are separate but quiet). |
 
 ## Troubleshooting
 

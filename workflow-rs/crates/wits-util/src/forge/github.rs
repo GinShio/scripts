@@ -723,15 +723,25 @@ impl Forge for GitHub {
         let mut summary_ok = batch.summary.is_none();
         let mut verdict_ok = batch.verdict.map(|_| false);
 
-        // --- The review: line threads + file threads + summary + verdict, as one
-        // review (one notification). File-level threads can only be attached to a
-        // *pending* review, so their presence switches to the create → attach →
-        // submit flow; otherwise it is a single atomic `addPullRequestReview`. ---
+        // --- The review: line threads + file threads + replies + summary +
+        // verdict, folded into ONE review (one notification), exactly as the web
+        // UI does. File-level threads and replies can only join a *pending*
+        // review (a reply carries the pending review's id — the same mechanism
+        // the UI uses), so their presence switches to the create → attach →
+        // submit flow; a review of only line comments/summary/verdict is a single
+        // atomic `addPullRequestReview`. ---
         let event = batch.verdict.map(verdict_event).unwrap_or("COMMENT");
+        let needs_pending = !file_comments.is_empty() || !replies.is_empty();
         let has_review = !line_threads.is_empty()
-            || !file_comments.is_empty()
+            || needs_pending
             || batch.summary.is_some()
             || batch.verdict.is_some();
+        let line_keys = || line_threads.iter().map(|(k, _)| *k);
+        let review_keys = || {
+            line_keys()
+                .chain(file_comments.iter().map(|(k, ..)| *k))
+                .chain(replies.iter().map(|(k, ..)| *k))
+        };
         if has_review {
             let threads_json: Vec<Value> = line_threads.iter().map(|(_, t)| t.clone()).collect();
             let mut input = json!({
@@ -742,11 +752,9 @@ impl Forge for GitHub {
             if let Some(s) = &batch.summary {
                 input["body"] = json!(s);
             }
-            let line_keys = || line_threads.iter().map(|(k, _)| *k);
-            let file_keys = || file_comments.iter().map(|(k, _, _)| *k);
 
-            if file_comments.is_empty() {
-                // One atomic review.
+            if !needs_pending {
+                // One atomic review: line threads + summary + verdict.
                 input["event"] = json!(event);
                 match self.graphql(gql::ADD_REVIEW, json!({ "input": input })) {
                     Ok(_) => {
@@ -765,7 +773,8 @@ impl Forge for GitHub {
                     }
                 }
             } else {
-                // Pending review → attach file threads → submit.
+                // Pending review → attach file threads and replies → submit, so
+                // all of them publish inside the one review notification.
                 match self.graphql(gql::ADD_REVIEW, json!({ "input": input })) {
                     Ok(d) => {
                         let review_id = d["addPullRequestReview"]["pullRequestReview"]["id"]
@@ -785,6 +794,17 @@ impl Forge for GitHub {
                                 .is_ok();
                             landed.insert(*k, ok);
                         }
+                        for (k, thread, body) in &replies {
+                            let rin = json!({
+                                "pullRequestReviewId": review_id,
+                                "pullRequestReviewThreadId": thread,
+                                "body": body,
+                            });
+                            let ok = self
+                                .graphql(gql::ADD_REPLY, json!({ "input": rin }))
+                                .is_ok();
+                            landed.insert(*k, ok);
+                        }
                         match self.graphql(
                             gql::SUBMIT_REVIEW,
                             json!({ "input": { "pullRequestReviewId": review_id, "event": event } }),
@@ -796,7 +816,7 @@ impl Forge for GitHub {
                             }
                             Err(e) => {
                                 log::warn!("MR {id}: submitting the pending review failed: {e}");
-                                for k in line_keys().chain(file_keys()) {
+                                for k in review_keys() {
                                     landed.insert(k, false);
                                 }
                             }
@@ -804,7 +824,7 @@ impl Forge for GitHub {
                     }
                     Err(e) => {
                         log::warn!("MR {id}: creating the review failed: {e}");
-                        for k in line_keys().chain(file_keys()) {
+                        for k in review_keys() {
                             landed.insert(k, false);
                         }
                     }
@@ -813,7 +833,8 @@ impl Forge for GitHub {
         }
 
         // --- MR-level conversation comments: each a separate issue comment (its
-        // own notification — a genuine API limit, counted honestly). ---
+        // own notification — a genuine API limit that a review batch can't fold
+        // in, counted honestly). ---
         for (k, body) in &mr_comments {
             let ok = self
                 .graphql(
@@ -825,23 +846,6 @@ impl Forge for GitHub {
                 notifications += 1;
             } else {
                 log::warn!("MR {id}: conversation comment failed");
-            }
-            landed.insert(*k, ok);
-        }
-        // --- Replies to existing threads. Each reply notifies the thread's
-        // participants on GitHub (one per reply — a real API limit, not a
-        // choice), so each successful one is counted honestly. ---
-        for (k, thread, body) in &replies {
-            let ok = self
-                .graphql(
-                    gql::ADD_REPLY,
-                    json!({ "input": { "pullRequestReviewThreadId": thread, "body": body } }),
-                )
-                .is_ok();
-            if ok {
-                notifications += 1;
-            } else {
-                log::warn!("MR {id}: reply to {thread} failed");
             }
             landed.insert(*k, ok);
         }

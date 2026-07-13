@@ -153,14 +153,17 @@ official GitHub GraphQL / REST and GitLab REST references, 2026-07).
 | Read threads | `pullRequest.reviewThreads.nodes` | `id`, `isResolved`, `isOutdated`, `path`, `line`, `startLine`, `startDiffSide`, `comments{ nodes { databaseId, body, author, createdAt } }` |
 | Feed / details | `search(type: ISSUE, query: "repo:o/r is:pr …")` → `... on PullRequest` | `number`, `title`, `author{login}`, `baseRefName`, `headRefName`, `headRefOid`, `state`, `isDraft`, `labels`, `updatedAt`, `url` |
 
-Consequence for GitHub submit: a review **with no file comments** is one
-`addPullRequestReview`. A review **with file comments** is `addPullRequestReview`
-(pending, carrying the line threads + body + commitOID) → one
-`addPullRequestReviewThread(subjectType: FILE)` per file comment →
-`submitPullRequestReview(event)` — still **one review, one notification**, and it
-*can* include file-level comments (which REST cannot). Replies and resolves are
-separate mutations, but can be bundled into a single GraphQL document via
-aliases, so they cost one HTTP round trip with per-alias outcomes.
+Consequence for GitHub submit: a review with **only line comments/summary/
+verdict** is one atomic `addPullRequestReview`. A review that also has **file
+comments or replies** uses the pending flow — `addPullRequestReview` (pending,
+carrying line threads + body + commitOID) → one
+`addPullRequestReviewThread(subjectType: FILE)` per file comment → one
+`addPullRequestReviewThreadReply(pullRequestReviewId: <pending>, …)` per reply →
+`submitPullRequestReview(event)`. Still **one review, one notification**, now
+including file-level comments (which REST cannot) **and replies** (which join the
+pending review by id, exactly as the web UI batches them). Resolves are separate
+mutations but do not notify; an MR-level conversation comment is the one
+unavoidable separate notification (`addComment`).
 
 ### 2.2 GitLab REST (the review backend)
 
@@ -341,7 +344,8 @@ enough to link a stack and to `checkout --next/--prev` without a full `fetch`.
 | Batch: verdict + summary + line comments | one `addPullRequestReview` → one notification | one `bulk_publish` → one notification |
 | Batch: **file-level** comments | yes, via pending review + `addPullRequestReviewThread(FILE)` + submit (still one review) | yes, `position_type:file` draft note |
 | Batch: **MR-level** comments | **no** — `addComment` is a separate issue comment | yes, position-less draft note |
-| Batch: replies / resolves | separate mutations, one HTTP doc via aliases | yes, ride the draft batch (`in_reply_to`/`resolve_discussion`) |
+| Batch: replies | **ride the review** (`addPullRequestReviewThreadReply` with the pending review's id) — one notification | ride the draft batch (`in_reply_to`) |
+| Batch: resolves | separate mutations (quiet, no notification) | ride the draft batch (`resolve_discussion`) |
 | `request-changes` / `comment` verdict | native (`REQUEST_CHANGES`/`COMMENT`) | **native** (`reviewer_state:"requested_changes"`/`"reviewed"`) |
 | `approve` verdict | part of the review | **separate `POST …/approve`** (`bulk_publish`'s `"approved"` sets only a review state, not a real approval) |
 | Thread resolve/unresolve | **supported** (`resolveReviewThread`) | supported (`resolve_discussion` / discussion PUT) |

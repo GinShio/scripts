@@ -254,9 +254,10 @@ remove a queued action, edit the file.
   file/conversation), replies, the summary (`note`), and a `request-changes`/
   `comment` reviewer state ride one `bulk_publish`; an `approve` verdict (a real
   approval, which `bulk_publish` can't record) and a bare resolve are separate
-  calls. On GitHub the verdict + summary + line/file comments are one review,
-  while conversation comments, replies, and resolves are separate calls.
-  `submit` reports the real notification count.
+  calls. On GitHub the verdict + summary + line/file comments **and replies** are
+  one review (replies join the pending review, as in the web UI); only an
+  MR-level conversation comment is a separate notification, and resolves are
+  separate but quiet. `submit` reports the real notification count.
 - **Anchoring:** each comment carries its own `commit` — the snapshot head its
   line anchors were written against. `submit` resolves it against the snapshot
   history to the full `{base, start, head}` version and anchors the comment to it.
