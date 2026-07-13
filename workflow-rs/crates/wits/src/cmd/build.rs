@@ -158,9 +158,9 @@ fn execute(
     // both the L0 toolchain injector for planning and the step emitter below.
     // (`build_system` is not profile-overridable, so this matches `plan`.)
     let backend = match project.project.build_system.as_deref() {
-        Some(bs) => Some(
-            for_system(bs).with_context(|| format!("unsupported build system '{bs}'"))?,
-        ),
+        Some(bs) => {
+            Some(for_system(bs).with_context(|| format!("unsupported build system '{bs}'"))?)
+        }
         None => None,
     };
 
@@ -205,7 +205,7 @@ fn execute(
     };
 
     let steps = be.steps(&EmitContext {
-        source_dir: &plan.work_dir,
+        source_dir: &plan.source_dir,
         build_dir: &build_dir,
         install_dir: plan.install_dir.as_deref(),
         build_type: &plan.build_type,

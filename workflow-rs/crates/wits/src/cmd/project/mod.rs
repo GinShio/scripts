@@ -204,8 +204,8 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
     // otherwise show the raw templates, since resolution needs a branch.
     let branch = profile.branch.clone().or_else(|| {
         resolve::identity_repo(project, project.focus_name(profile.focus.as_deref()))
-            .and_then(|n| project.repo_abs_path(&n))
-            .and_then(|p| git::Git::new(p).current_branch())
+            .and_then(|n| project.repo_abs_path(&n).ok())
+            .and_then(|p| git::Git::new(&p).current_branch())
     });
     match branch {
         Some(branch) => {
@@ -231,6 +231,9 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
                 println!("    toolchain:   {}", tc.name);
             }
             println!("    work.dir:    {}", plan.work_dir.display());
+            if plan.source_dir != plan.work_dir {
+                println!("    source_dir:  {}", plan.source_dir.display());
+            }
             if let Some(b) = &plan.build_dir {
                 println!("    build_dir:   {}", b.display());
             }
@@ -239,6 +242,15 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
             }
         }
         _ => {
+            let build_repo =
+                resolve::anchor_of(project, project.focus_name(profile.focus.as_deref()));
+            if let Some(t) = project
+                .repos
+                .get(&build_repo)
+                .and_then(|r| r.source_dir.as_ref())
+            {
+                println!("  source_dir (template):  {t}");
+            }
             if let Some(t) = &project.project.build_dir {
                 println!("  build_dir (template):   {t}");
             }

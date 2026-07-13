@@ -65,6 +65,10 @@ pub struct RawRepo {
     pub anchor: Option<String>,
     pub branch_strategy: Option<String>,
     pub worktree_dir: Option<String>,
+    /// Templated path of the build system's source (where the top-level
+    /// `CMakeLists.txt`/`meson.build`/… lives) when it is not the checkout root.
+    /// Resolved from the build repo; defaults to `work.dir`.
+    pub source_dir: Option<String>,
     #[serde(default)]
     pub remotes: RawRemotes,
     /// Phase name (`pre_update`, `update`, `post_clone`, …) → command string.
@@ -133,6 +137,10 @@ pub struct RawOrg {
     pub name: String,
     #[serde(default)]
     pub presets: BTreeMap<String, RawPreset>,
+    #[serde(default)]
+    pub environment: BTreeMap<String, toml::Value>,
+    #[serde(default)]
+    pub definitions: BTreeMap<String, toml::Value>,
 }
 
 /// A field that may be written as a single string or a list of strings

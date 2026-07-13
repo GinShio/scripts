@@ -43,6 +43,10 @@ pub struct Plan {
     pub build_system: Option<String>,
     pub toolchain: Option<Toolchain>,
     pub work_dir: PathBuf,
+    /// Where the backend configures from: the build repo's `source_dir` template,
+    /// or `work_dir` when unset. Distinct from `work_dir`, which stays the
+    /// checkout root that carries branch identity and anchors path templates.
+    pub source_dir: PathBuf,
     pub build_dir: Option<PathBuf>,
     pub install_dir: Option<PathBuf>,
     pub logical: LogicalConfig,
@@ -144,6 +148,21 @@ pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Res
     }
     ctx.root.insert_path("env", Value::Map(env_map));
 
+    // Org palette: expose raw entries under org.environment.* / org.definitions.*
+    // for explicit template reference only. NOT folded into logical config — a
+    // template must reference {{org.environment.X}} or {{org.definitions.X}}
+    // explicitly; nothing flows automatically into the build's env/definitions.
+    if let Some(org) = &project.org {
+        if let Some(org_data) = ws.org_base(org) {
+            for (k, v) in &org_data.environment {
+                ctx.set(&format!("org.environment.{k}"), Value::from(v));
+            }
+            for (k, v) in &org_data.definitions {
+                ctx.set(&format!("org.definitions.{k}"), Value::from(v));
+            }
+        }
+    }
+
     // Resolve the toolchain against the base context and expose it as toolchain.*.
     let toolchain = match toolchain {
         Some((name, raw)) => Some(resolve_toolchain(&mut ctx, name, &raw)?),
@@ -153,6 +172,14 @@ pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Res
     // --- Paths -------------------------------------------------------------
     let work_dir = resolve_work_dir(project, &ctx, &build_repo, strategy)?;
     ctx.set("work.dir", Value::str(work_dir.display().to_string()));
+
+    // The configure source: the build repo's `source_dir` template, or the
+    // checkout root when unset. It is not exposed as a context variable — build
+    // outputs template off `work.dir`, not off the source.
+    let source_dir = match &project.repos[&build_repo].source_dir {
+        Some(tpl) => PathBuf::from(ctx.render(tpl)?),
+        None => work_dir.clone(),
+    };
 
     let build_dir = match &project.project.build_dir {
         Some(tpl) => Some(PathBuf::from(ctx.render(tpl)?)),
@@ -242,6 +269,7 @@ pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Res
         build_system,
         toolchain,
         work_dir,
+        source_dir,
         build_dir,
         install_dir,
         logical,
@@ -726,9 +754,10 @@ fn template_string(v: &Value) -> String {
 
 /// A context sufficient to resolve a repo-scoped template (a hook, a
 /// `worktree_dir`): `project.*`, every `repos.<name>.*`, `repo.*` = `repo_name`,
+/// `org.environment.*` / `org.definitions.*` (the org's referenceable palette),
 /// plus `system.*` and `env.*`. No Profile is needed, so this is safe for
 /// `update`/`context` which do not build a full plan.
-pub fn context_for_repo(project: &ProjectData, repo_name: &str) -> Value {
+pub fn context_for_repo(ws: &Workspace, project: &ProjectData, repo_name: &str) -> Value {
     let mut root = Value::Map(BTreeMap::new());
     root.insert_path("project.name", Value::str(&project.name));
     root.insert_path(
@@ -740,6 +769,32 @@ pub fn context_for_repo(project: &ProjectData, repo_name: &str) -> Value {
         root.insert_path(&format!("repos.{name}"), repo_value(project, name));
     }
     root.insert_path("repo", repo_value(project, repo_name));
+    if let Some(org) = &project.org {
+        if let Some(org_data) = ws.org_base(org) {
+            for (k, v) in &org_data.environment {
+                root.insert_path(&format!("org.environment.{k}"), Value::from(v));
+            }
+            for (k, v) in &org_data.definitions {
+                root.insert_path(&format!("org.definitions.{k}"), Value::from(v));
+            }
+        }
+    }
+    root.insert_path("system", system_facts());
+    let mut env_map = BTreeMap::new();
+    for (k, v) in std::env::vars() {
+        env_map.insert(k, Value::Str(v));
+    }
+    root.insert_path("env", Value::Map(env_map));
+    root
+}
+
+/// The minimal Profile-free context for resolving `repo.path` templates:
+/// `project.name`, `project.org`, `system.*`, `env.*`. No `repos.*` to avoid
+/// circularity; no Profile required, so this is answerable without a build plan.
+pub fn path_context(name: &str, org: Option<&str>) -> Value {
+    let mut root = Value::Map(BTreeMap::new());
+    root.insert_path("project.name", Value::str(name));
+    root.insert_path("project.org", Value::str(org.unwrap_or_default()));
     root.insert_path("system", system_facts());
     let mut env_map = BTreeMap::new();
     for (k, v) in std::env::vars() {
@@ -928,6 +983,54 @@ mod tests {
     }
 
     #[test]
+    fn source_dir_defaults_to_work_dir_and_can_be_a_subdir() {
+        let body = r#"
+            [project]
+            build_system = "cmake"
+            build_dir = "{{work.dir}}/_build"
+
+            [repos.main]
+            path = "/src/hello"
+            main_branch = "main"
+            source_dir = "{{work.dir}}/subdir"
+
+            [repos.other]
+            path = "/src/other"
+            main_branch = "main"
+        "#;
+        let (_d, ws) = ws_with(body, "hello");
+        let project = ws.project("hello").unwrap();
+        let base = Profile::default();
+        let input = |profile: &Profile| -> Plan {
+            plan(
+                &ws,
+                project,
+                &PlanInput {
+                    profile,
+                    branch: "main",
+                    inject_toolchain: false,
+                    injector: None,
+                    extra_config_args: &[],
+                    extra_build_args: &[],
+                    extra_install_args: &[],
+                },
+            )
+            .unwrap()
+        };
+        // work.dir stays the checkout root; source_dir is the declared subdir.
+        let plan = input(&base);
+        assert_eq!(plan.work_dir, PathBuf::from("/src/hello"));
+        assert_eq!(plan.source_dir, PathBuf::from("/src/hello/subdir"));
+        // A repo without source_dir falls back to work.dir.
+        let other = Profile {
+            focus: Some("other".into()),
+            ..Default::default()
+        };
+        let plan2 = input(&other);
+        assert_eq!(plan2.source_dir, plan2.work_dir);
+    }
+
+    #[test]
     fn no_injector_skips_l0_but_still_resolves_paths() {
         let body = r#"
             [project]
@@ -959,6 +1062,85 @@ mod tests {
         assert_eq!(plan.toolchain.as_ref().unwrap().name, "clang");
         // …but with no injector, L0 emitted nothing.
         assert!(plan.logical.definitions.is_empty());
+    }
+
+    #[test]
+    fn org_palette_is_referenceable_not_auto_applied() {
+        let body = r#"
+            [org]
+            name = "acme"
+            [org.environment]
+            SHARED_VAR = "from-org"
+            UNUSED_VAR  = "never-used"
+            [org.definitions]
+            ORG_LEVEL = 42
+
+            [project]
+            org = "acme"
+            build_dir = "{{work.dir}}/b"
+            [project.environment]
+            MY_ENV = "{{org.environment.SHARED_VAR}}"
+            [project.definitions]
+            MY_DEF = "{{org.definitions.ORG_LEVEL}}"
+
+            [repos.main]
+            path = "/src/x"
+            main_branch = "main"
+        "#;
+        let (_d, ws) = ws_with(body, "x");
+        let project = ws.project("acme/x").unwrap();
+        let input = PlanInput {
+            profile: &Profile::default(),
+            branch: "main",
+            inject_toolchain: false,
+            injector: None,
+            extra_config_args: &[],
+            extra_build_args: &[],
+            extra_install_args: &[],
+        };
+        let plan = plan(&ws, project, &input).unwrap();
+        assert_eq!(plan.logical.env_entry("MY_ENV"), Some("from-org"));
+        assert!(plan.logical.has_definition("MY_DEF"));
+        // Unreferenced org entries must NOT appear in logical config.
+        assert!(plan.logical.env_entry("UNUSED_VAR").is_none());
+        assert!(plan.logical.env_entry("SHARED_VAR").is_none());
+    }
+
+    #[test]
+    fn org_palette_referenceable_from_preset() {
+        let body = r#"
+            [org]
+            name = "myorg"
+            [org.environment]
+            ORG_SETTING = "hello"
+
+            [project]
+            org = "myorg"
+            default_presets = ["use-org"]
+            build_dir = "{{work.dir}}/b"
+
+            [project.presets.use-org]
+            environment = { FROM_ORG = "{{org.environment.ORG_SETTING}}" }
+
+            [repos.main]
+            path = "/src/y"
+            main_branch = "main"
+        "#;
+        let (_d, ws) = ws_with(body, "y");
+        let project = ws.project("myorg/y").unwrap();
+        let input = PlanInput {
+            profile: &Profile::default(),
+            branch: "main",
+            inject_toolchain: false,
+            injector: None,
+            extra_config_args: &[],
+            extra_build_args: &[],
+            extra_install_args: &[],
+        };
+        let plan = plan(&ws, project, &input).unwrap();
+        assert_eq!(plan.logical.env_entry("FROM_ORG"), Some("hello"));
+        // ORG_SETTING itself was not referenced from project env directly.
+        assert!(plan.logical.env_entry("ORG_SETTING").is_none());
     }
 
     #[test]

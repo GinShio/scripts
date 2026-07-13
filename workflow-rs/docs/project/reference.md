@@ -104,6 +104,36 @@ build).
 - Organisations are always explicit: `[org] name = "…"` declares one,
   `project.org` joins it. Never inferred from the file path.
 
+### 2.1 Org palette (`[org.environment]` and `[org.definitions]`)
+
+An org may declare shared value tables that projects in the org can reference:
+
+```toml
+[org]
+name = "acme"
+
+[org.environment]
+REGISTRY = "registry.acme.example"
+
+[org.definitions]
+ACME_VERSION = 3
+```
+
+These are exposed as `org.environment.*` and `org.definitions.*` in the template
+context (§6.3). They are a **referenceable palette, not an applied layer**: values
+do NOT flow automatically into any build's environment or definitions — a template
+must reference them explicitly:
+
+```toml
+[project.environment]
+PUSH_TO = "{{org.environment.REGISTRY}}"     # pulls from the org palette
+```
+
+An unreferenced org palette entry never appears in logical config. This is
+deliberate: org presets (§4) — which ARE applied when selected or matched — are
+the right mechanism for default build config; the palette is for named shared
+constants a project opts into explicitly.
+
 ---
 
 ## 3. `[project]`
@@ -247,6 +277,8 @@ repo.*                     # the *current* repo (focus repo in project scope;
                            #   the repo itself in a repo-scoped field like a hook)
   { name, path, kind, main_branch, anchor, origin, upstream, mirrors }
 repos.<name>.*             # any repo by explicit name; same fields as repo.*
+org.environment.<K>        # org palette entry (see §2.1); referenceable, not auto-applied
+org.definitions.<K>        # org palette entry (see §2.1); referenceable, not auto-applied
 work.dir                   # effective checkout dir for this build (§9)
 branch.{ raw, slug }       # raw = branch name; slug = filesystem-sanitised
 build_type
@@ -261,6 +293,9 @@ env.*                      # process environment
   to reference any other repo.
 - There is no bare `{{branch}}`; use `{{branch.raw}}` or `{{branch.slug}}`.
 - `repo.upstream` falls back to `repo.origin` when no upstream is declared.
+- `org.environment.*` / `org.definitions.*` are available in project scope and in
+  repo-scoped fields (hooks, `worktree_dir`). Only accessible when `project.org`
+  is set and the org declares the key; references to undeclared keys are hard errors.
 
 ### 6.4 Errors
 
@@ -332,9 +367,10 @@ deliberately knows nothing of which build systems are implemented.
 
 | Key | Type | Required | Meaning |
 |---|---|---|---|
-| `path` | string | yes | On-disk location (root/standalone) or subpath relative to `repos.main` (nested). Nesting + `main_branch` determine the inferred kind (below). |
+| `path` | **template** | yes | On-disk location (root/standalone) or subpath relative to `repos.main` (nested). Resolved against a Profile-free context: `project.name`, `project.org`, `env.*`, `system.*` — no `repos.*` (would be circular). Nesting + `main_branch` determine the inferred kind (below). |
 | `main_branch` | string | own-git repos | The branch `update` fast-forwards. Not allowed for `subtree`. |
 | `anchor` | string | no | Repo whose `path` is this build's source/base; unset → self. |
+| `source_dir` | template | no | Where the backend configures from (the top-level `CMakeLists.txt`/`meson.build`/…) when it is not the checkout root. Read from the build repo; defaults to `work.dir`. E.g. `"{{work.dir}}/src"`. Only the configure source changes — `work.dir` still anchors `build_dir`/`install_dir` and branch identity. |
 | `branch_strategy` | string | no | `in-place` (default) \| `worktree`. |
 | `worktree_dir` | template | worktree strategy | Where a branch's worktree lives. |
 
@@ -348,10 +384,18 @@ additive only: missing remotes/mirror push-URLs are added; existing URLs are
 never modified or removed; unmentioned remotes are untouched.
 
 `[repos.<name>.hooks]` — inline `sh -c` command strings, templated. Phases:
-`pre_clone` / `clone` / `post_clone` and `pre_update` / `update` / `post_update`.
-The bare phase name (`clone`, `update`) overrides that phase's default action;
-`pre_`/`post_` add hooks around it. Hooks run with cwd = the repo's `path`. A
-non-zero exit fails fast (§10).
+`clone` / `post_clone` and `pre_update` / `update` / `post_update`. (The clone
+phase has no `pre` hook — the repo does not exist yet.) The bare phase name
+(`clone`, `update`) overrides that phase's default action; `pre_`/`post_` add
+hooks around it.
+
+**Hook cwd by phase**: a `clone` override runs in the **current working
+directory** (the repo's `path` does not exist yet, and `git clone` creates the
+destination itself); `post_clone` runs in the **repo's `path`** (now exists after
+cloning); `pre_update`, the `update` override, and `post_update` all run in the
+**repo's `path`**.
+
+A non-zero exit fails fast (§10).
 
 `[repos.<name>.presets.<preset>]` — repo-level presets (§4).
 
@@ -379,11 +423,13 @@ every character outside `[A-Za-z0-9._-]` (including `/`) with `_`.
 
 For each repo (parents before nested; subtrees do no git work):
 
-- **Missing path → clone**: `pre_clone` → action (default: `git clone`, set up
-  remotes, checkout `main_branch`, `submodule update --init --recursive`) →
-  `post_clone`.
+- **Missing path → clone**: action (default: `git clone`, set up remotes, checkout
+  `main_branch`, `submodule update --init --recursive`; a `clone` override runs in
+  the current working directory) → `post_clone` (cwd = repo path, now exists).
+  `git clone` creates the destination (and any leading directories) itself, so
+  nothing is pre-created.
 - **Existing → update**: ensure remotes (additive) → `pre_update` → action →
-  `post_update`.
+  `post_update` (all with cwd = repo path).
 
 Default update action:
 

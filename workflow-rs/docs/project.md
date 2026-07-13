@@ -28,9 +28,17 @@ way, see [`project/design.md`](project/design.md).
 - A **preset** is a reusable bundle of build settings you can layer on.
 - A **build context** is where a branch actually builds: either a git *worktree*
   or an in-place build directory, your choice per repo.
+- An **org palette** (`[org.environment]` / `[org.definitions]`) is a set of named
+  shared constants projects in the org can reference explicitly via
+  `{{org.environment.X}}`; they are never auto-applied.
 
 Everything is content-addressed: config files can live anywhere under the config
 root and declare what they are by their sections. There is no required layout.
+
+`repos.main.path` (and any repo's `path`) is a template resolved against
+`project.name`, `project.org`, `env.*`, and `system.*` — so paths like
+`~/src/{{project.org}}/{{project.name}}` work and remain answerable without a
+full build profile.
 
 ---
 
@@ -195,6 +203,10 @@ build_dir = "{{work.dir}}/_build/lvp/{{build_type}}"
   a non-nested path is **standalone**. A submodule is cloned through `repos.main`.
 - `update` refreshes *every* repo; `build` builds the `focus`; you can switch
   focus for one run with `--focus <repo>` — handy in a large monorepo.
+- If a repo's top-level `CMakeLists.txt`/`meson.build` is not at the checkout
+  root, point `source_dir` at it (a template, default `{{work.dir}}`):
+  `source_dir = "{{work.dir}}/src"`. Only the configure source moves; `work.dir`,
+  `build_dir`, and the branch still key off the checkout.
 
 ---
 

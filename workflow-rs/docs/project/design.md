@@ -204,21 +204,29 @@ that can be replaced wholesale**, plus pre/post hooks. Hooks are **inline
 templated command strings**, run with `sh -c`:
 
 ```
-clone:   pre → action (default: git clone + set up remotes + checkout + submodule init) → post
+clone:   action (default: git clone + set up remotes + checkout + submodule init) → post
 update:  ensure-remotes → pre → action (default: §7) → post
 ```
 
 The hook contract (settled, and the reason it is simple):
 
-- **cwd is always the repo's `path`**, in whatever working-tree state `update`
-  left it. The default `update` action does *not* switch branches (§7), so a hook
-  sees the current checkout, not necessarily `main`. A hook that needs to act on
-  the main branch references its ref explicitly (`{{repo.main_branch}}`) rather
-  than assuming a checkout.
+- **The clone phase has no `pre` hook.** Before the repo exists there is nothing
+  useful a pre-hook could act on, so the phase is just `action → post_clone`.
+- **cwd is phase-specific**: a `clone` override runs in the **current working
+  directory** (the repo's `path` does not exist yet, and `git clone` creates the
+  destination — including any leading directories — itself, so nothing is
+  pre-created). `post_clone` and all update-phase hooks (`pre_update`, `update`
+  override, `post_update`) run in the **repo's `path`** itself, which exists by
+  then. The split maps naturally to what each phase needs.
+- **cwd during update is the current checkout**, in whatever working-tree state
+  `update` left it. The default `update` action does *not* switch branches (§7),
+  so a hook sees the current checkout, not necessarily `main`. A hook that needs
+  to act on the main branch references its ref explicitly (`{{repo.main_branch}}`)
+  rather than assuming a checkout.
 - **Overriding the `action` hands the user full control.** We run their string
-  verbatim in the repo cwd — including any branch switching they choose to do —
-  and do not switch back for them. This is §1.2 applied to lifecycles: the smart
-  no-switch behaviour is the *default action's*, not a wrapper we impose on
+  verbatim in the appropriate cwd — including any branch switching they choose to
+  do — and do not switch back for them. This is §1.2 applied to lifecycles: the
+  smart no-switch behaviour is the *default action's*, not a wrapper we impose on
   overrides.
 - **Any hook exiting non-zero fails fast** (§7): the operation stops, the RAII
   restore guard returns the repo to its original branch, a log line is written,
@@ -283,11 +291,17 @@ anchor      = "main"               # build via the root (else builds itself)
   (§4.2). It may point at *any* repo, not only `main`. Unset / self → build at
   this repo's own `path`.
 
-There is deliberately **no** separate "source in a subdirectory, build at the
-root" axis. `anchor` names one base directory that is both the configure source
-and the build base. If a real project ever needs to configure a subdirectory of
-the anchor while building at the anchor, a future optional `configure_subdir` can
-be added — it is out of v1 because nothing needs it yet.
+`anchor` and `source_dir` are two orthogonal axes. `anchor` names *which repo's*
+checkout is the build base (`work.dir`); `source_dir` names *where within that
+base* the build system's top-level file (`CMakeLists.txt`/`meson.build`/…) lives,
+for the common case where it is not the checkout root. `source_dir` is a templated
+path on the build repo (`[repos.<name>]`), defaulting to `work.dir`; set it to
+e.g. `"{{work.dir}}/src"` to configure from a subdirectory. It changes only the
+backend's configure source — `work.dir` stays the checkout root that carries
+branch identity and anchors `build_dir`/`install_dir` templates, so the two never
+conflate. A subtree cannot express this: a subtree with `anchor = self` has no
+own git (no branch identity), and with `anchor = "main"` its `work.dir` becomes
+the anchor's root, not the subdirectory.
 
 ---
 
@@ -330,7 +344,9 @@ focus = "main"     # focus repo; defaults to "main"
 This one rule covers every case uniformly — there is no separate "component kind"
 or "build at root / source at root" machinery. A subtree that must build via the
 root and a submodule that must build via the root are spelled identically:
-`anchor = "main"`.
+`anchor = "main"`. `anchor` picks the base checkout; `source_dir` (§3.5) then
+picks the subdirectory within it that holds the build system's entry file, when
+that is not the root.
 
 A consequence worth stating: when a subtree sets `anchor = "main"`, its own
 subpath carries **no git meaning and no build-source meaning** — the configure
@@ -440,7 +456,25 @@ Environment beats `--toolchain` (consistent with the codebase's "env is the
 deliberate, ephemeral override" philosophy, §10). Per-project rewriting of a
 toolchain's internals is not supported by design.
 
-### 5.6 Presets
+### 5.6 Org palette — a referenceable namespace, not an applied layer
+
+An org may declare `[org.environment]` and `[org.definitions]` tables. These are
+exposed in the template context as `org.environment.*` / `org.definitions.*` and
+are intentionally **not** auto-merged into any build's logical config:
+
+- **Contrast with org presets (§5.6 below)**: presets ARE applied — either because
+  the project lists them in `default_presets`, because `applies_when` matches, or
+  because the user passes `--preset org/name`. The palette is a different concept:
+  named constants a project pulls from explicitly via `{{org.environment.X}}`.
+- **Why manual reference?** Auto-applying the palette would mean every project in
+  an org silently inherits every org-level env var, making builds unpredictable for
+  projects that don't want them. Manual reference makes the dependency explicit and
+  auditable.
+- **When to use the palette vs presets**: use the palette for shared constants
+  (registry URLs, version numbers, paths) that projects reference individually; use
+  presets for reusable build config bundles.
+
+### 5.7 Presets
 
 - **Three levels with cross-level merge**: presets exist at **org → project →
   repo**, declared via `[org.presets.NAME]`, `[project.presets.NAME]`,
@@ -580,8 +614,11 @@ treats every repo uniformly because a submodule is just a nested Repo (§2).
 ```
 update(project):
   for repo in repos, parents before nested (subtree contributes no git work):
-    if repo.path is missing → clone lifecycle
-    else                    → ensure-remotes (additive, §3.1) → pre → action → post
+    if repo.path is missing → clone lifecycle:
+        clone action (default: git clone + remotes + checkout + submodule init;
+                      an override runs in the current working directory)
+        post_clone (cwd = repo.path)
+    else → ensure-remotes (additive, §3.1) → pre_update → action → post_update (all cwd = repo.path)
 
 default update action:
   if currently on main_branch:  git fetch --all ; git merge --ff-only <upstream>/<main_branch>
@@ -785,8 +822,6 @@ name is a separate, out-of-scope concern.)
 
 - **[open]** Output *format* of `info` (`--json` rejected as the answer; the exact
   human/scriptable format is to be designed).
-- **future** A `configure_subdir` axis, only if a real "source in a subdir, build
-  at the anchor" project appears (§3.5).
 - **future** Which backends ship in v1 (cmake / meson / cargo are confirmed real;
   bazel / make pending a real need).
 - **future** The finer points of submodules inside worktrees beyond the v1 rule

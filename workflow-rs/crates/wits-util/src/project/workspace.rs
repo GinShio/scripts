@@ -8,20 +8,33 @@
 //! twice is a conflict, not a silent override — cross-file layering of one
 //! project was a foot-gun we don't reproduce.
 //!
-//! `repo.path` is treated as a literal location (with `~` expanded), not a
-//! template. The clone destination is a fixed fact; only build *outputs*
-//! (`build_dir`, `worktree_dir`) are templated. That keeps [`Workspace::project_for_path`]
-//! — the reverse lookup `wits stack` and git hooks lean on — answerable without a
-//! Profile.
+//! `repo.path` is a template resolved against a Profile-free context (`project.name`,
+//! `project.org`, `env.*`, `system.*`; no `repos.*` to avoid circularity). This
+//! lets paths like `~/Projects/{{project.org}}/{{project.name}}` work. Because
+//! no Profile is required, [`Workspace::project_for_path`] — the reverse lookup
+//! `wits stack` and git hooks lean on — stays answerable without a Profile.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
+use crate::template::{Engine, Value};
+
 use super::model::{
     infer_kind, is_nested, Kind, RawFile, RawPreset, RawProject, RawRepo, RawToolchain,
 };
+
+/// Org-level data retained after loading: a referenceable palette of shared
+/// values plus the org's declared presets. The palette is exposed under
+/// `org.environment.*` / `org.definitions.*` in template contexts, but is NOT
+/// automatically merged into any build's logical config — templates must
+/// reference it explicitly (e.g. `{{org.environment.MY_VAR}}`).
+pub struct OrgData {
+    pub environment: std::collections::BTreeMap<String, toml::Value>,
+    pub definitions: std::collections::BTreeMap<String, toml::Value>,
+    pub presets: std::collections::BTreeMap<String, RawPreset>,
+}
 
 /// One project as loaded from disk (still raw / unresolved).
 pub struct ProjectData {
@@ -52,15 +65,30 @@ impl ProjectData {
         self.repos.get(repo_name).map(|r| infer_kind(repo_name, r))
     }
 
-    /// The on-disk location of a repo: absolute paths as-is, a nested (relative)
-    /// path joined under `repos.main`. `~` is expanded.
-    pub fn repo_abs_path(&self, repo_name: &str) -> Option<PathBuf> {
-        let repo = self.repos.get(repo_name)?;
-        if is_nested(&repo.path) && repo_name != "main" {
-            let main = self.repos.get("main")?;
-            Some(expand_tilde(&main.path).join(&repo.path))
+    /// The on-disk location of a repo. `path` is resolved as a template against
+    /// a Profile-free context (`project.name`, `project.org`, `env.*`, `system.*`),
+    /// then `~` is expanded. Nested (relative) paths are joined under `repos.main`.
+    /// Returns an error if the template is malformed or resolves to a non-string.
+    pub fn repo_abs_path(&self, repo_name: &str) -> Result<PathBuf> {
+        let repo = self
+            .repos
+            .get(repo_name)
+            .with_context(|| format!("repo '{repo_name}' not found"))?;
+        let tpl = &repo.path;
+        let rendered = render_path_template(tpl, &self.name, self.org.as_deref())
+            .with_context(|| format!("resolving path template for repo '{repo_name}': {tpl:?}"))?;
+        if is_nested(&rendered) && repo_name != "main" {
+            let main = self.repos.get("main").with_context(|| {
+                format!("repo '{repo_name}' has a nested path but 'main' is not declared")
+            })?;
+            let main_tpl = &main.path;
+            let main_rendered = render_path_template(main_tpl, &self.name, self.org.as_deref())
+                .with_context(|| {
+                    format!("resolving path template for repo 'main': {main_tpl:?}")
+                })?;
+            Ok(expand_tilde(&main_rendered).join(&rendered))
         } else {
-            Some(expand_tilde(&repo.path))
+            Ok(expand_tilde(&rendered))
         }
     }
 }
@@ -71,8 +99,7 @@ pub struct Workspace {
     /// Bare name → the keys that carry it, for ambiguity detection.
     by_name: BTreeMap<String, Vec<String>>,
     toolchains: BTreeMap<String, RawToolchain>,
-    /// Org name → its presets.
-    orgs: BTreeMap<String, BTreeMap<String, RawPreset>>,
+    orgs: BTreeMap<String, OrgData>,
 }
 
 impl Workspace {
@@ -81,6 +108,10 @@ impl Workspace {
     }
 
     pub fn org_presets(&self, org: &str) -> Option<&BTreeMap<String, RawPreset>> {
+        self.orgs.get(org).map(|d| &d.presets)
+    }
+
+    pub fn org_base(&self, org: &str) -> Option<&OrgData> {
         self.orgs.get(org)
     }
 
@@ -124,7 +155,12 @@ impl Workspace {
             }
         }
         if let Some(org) = raw.org {
-            if self.orgs.insert(org.name.clone(), org.presets).is_some() {
+            let data = OrgData {
+                environment: org.environment,
+                definitions: org.definitions,
+                presets: org.presets,
+            };
+            if self.orgs.insert(org.name.clone(), data).is_some() {
                 bail!("org '{}' is declared more than once", org.name);
             }
         }
@@ -182,7 +218,7 @@ impl Workspace {
         let mut best: Option<(&ProjectData, usize)> = None;
         for project in self.projects.values() {
             for repo_name in project.repos.keys() {
-                let Some(repo_path) = project.repo_abs_path(repo_name) else {
+                let Ok(repo_path) = project.repo_abs_path(repo_name) else {
                     continue;
                 };
                 let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
@@ -225,6 +261,42 @@ pub fn looks_like_path(token: &str) -> bool {
         || token.starts_with('.')
         || token.starts_with('/')
         || token.starts_with('~')
+}
+
+/// Render a `repo.path` template against the Profile-free context:
+/// `project.name`, `project.org`, `system.*`, `env.*`. No `repos.*` to avoid
+/// circularity — this context is intentionally minimal and stable.
+fn render_path_template(
+    tpl: &str,
+    project_name: &str,
+    project_org: Option<&str>,
+) -> Result<String> {
+    let mut root = Value::Map(BTreeMap::new());
+    root.insert_path("project.name", Value::str(project_name));
+    root.insert_path("project.org", Value::str(project_org.unwrap_or_default()));
+
+    let cpu = std::thread::available_parallelism()
+        .map(|n| n.get() as i64)
+        .unwrap_or(1);
+    let mut cpu_map = BTreeMap::new();
+    cpu_map.insert("count".into(), Value::Int(cpu));
+    let mut sys = BTreeMap::new();
+    sys.insert("os".into(), Value::str(std::env::consts::OS));
+    sys.insert("arch".into(), Value::str(std::env::consts::ARCH));
+    sys.insert("cpu".into(), Value::Map(cpu_map));
+    root.insert_path("system", Value::Map(sys));
+
+    let mut env_map = BTreeMap::new();
+    for (k, v) in std::env::vars() {
+        env_map.insert(k, Value::Str(v));
+    }
+    root.insert_path("env", Value::Map(env_map));
+
+    let engine = Engine::new(root);
+    match engine.resolve_str(tpl)? {
+        Value::Str(s) => Ok(s),
+        other => anyhow::bail!("path template {tpl:?} resolved to a non-string: {other:?}"),
+    }
 }
 
 pub fn expand_tilde(path: &str) -> PathBuf {
@@ -315,6 +387,54 @@ mod tests {
         let found = ws.project_for_path(&checkout.join("src/sub")).unwrap();
         assert_eq!(found.name, "proj");
         assert!(ws.project_for_path(Path::new("/nowhere")).is_none());
+    }
+
+    #[test]
+    fn path_template_resolves_project_org_and_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        // Use an env var the template can reference without touching $HOME.
+        let key = "WITS_TEST_PATH_BASE_TEMPLATE";
+        std::env::set_var(key, base.to_str().unwrap());
+        let checkout = base.join("acme").join("myproj");
+        std::fs::create_dir_all(&checkout).unwrap();
+        write(
+            base,
+            "myproj.toml",
+            r#"
+            [project]
+            org = "acme"
+            [repos.main]
+            path = "{{env.WITS_TEST_PATH_BASE_TEMPLATE}}/{{project.org}}/{{project.name}}"
+            main_branch = "main"
+            "#,
+        );
+        let ws = Workspace::load_from(base).unwrap();
+        let project = ws.project("acme/myproj").unwrap();
+        let abs = project.repo_abs_path("main").unwrap();
+        assert_eq!(abs, checkout);
+        // project_for_path must resolve an inner path via the templated path.
+        let found = ws.project_for_path(&checkout.join("src")).unwrap();
+        assert_eq!(found.name, "myproj");
+        std::env::remove_var(key);
+    }
+
+    #[test]
+    fn malformed_path_template_is_hard_error() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "bad.toml",
+            r#"
+            [project]
+            [repos.main]
+            path = "{{no.such.var}}"
+            main_branch = "main"
+            "#,
+        );
+        let ws = Workspace::load_from(dir.path()).unwrap();
+        let project = ws.project("bad").unwrap();
+        assert!(project.repo_abs_path("main").is_err());
     }
 
     #[test]

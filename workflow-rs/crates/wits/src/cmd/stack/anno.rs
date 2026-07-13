@@ -9,9 +9,9 @@
 
 use std::collections::HashMap;
 
+use wits_util::forge::{self, MergeRequest, StateFilter};
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
-use wits_util::forge::{self, MergeRequest, StateFilter};
 use wits_util::remote::Remotes;
 
 use super::topology::Topology;

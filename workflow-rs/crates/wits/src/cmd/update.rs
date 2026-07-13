@@ -12,6 +12,7 @@
 //! which belongs to a fresh checkout — clone or worktree creation).
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use clap::Args;
@@ -35,10 +36,10 @@ pub struct UpdateArgs {
 pub fn run(args: &UpdateArgs) -> Result<()> {
     let ws = Workspace::load()?;
     let project = resolve_target(&ws, args.target.as_deref())?;
-    execute(project)
+    execute(&ws, project)
 }
 
-fn execute(project: &ProjectData) -> Result<()> {
+fn execute(ws: &Workspace, project: &ProjectData) -> Result<()> {
     for name in repo_order(project) {
         let repo = &project.repos[&name];
         if infer_kind(&name, repo) == Kind::Subtree {
@@ -49,10 +50,10 @@ fn execute(project: &ProjectData) -> Result<()> {
             .with_context(|| format!("cannot resolve path of repo '{name}'"))?;
         let git = Git::new(path);
         if !git.exists() {
-            clone_repo(project, &name, &git)
+            clone_repo(ws, project, &name, &git)
                 .with_context(|| format!("cloning repo '{name}' of project '{}'", project.name))?;
         } else {
-            update_repo(project, &name, &git)
+            update_repo(ws, project, &name, &git)
                 .with_context(|| format!("updating repo '{name}' of project '{}'", project.name))?;
         }
     }
@@ -73,14 +74,17 @@ fn repo_order(project: &ProjectData) -> Vec<String> {
     order
 }
 
-fn clone_repo(project: &ProjectData, name: &str, git: &Git) -> Result<()> {
+fn clone_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Git) -> Result<()> {
     let repo = &project.repos[name];
-    let engine = Engine::new(resolve::context_for_repo(project, name));
+    let engine = Engine::new(resolve::context_for_repo(ws, project, name));
 
     // A clone-phase `clone` override owns the whole thing; otherwise the default
-    // clones origin, checks out the main branch, and inits submodules.
+    // clones origin, checks out the main branch, and inits submodules. `git
+    // clone` creates the destination (and any leading dirs), so nothing is
+    // pre-created; a `clone` override runs in the current working directory,
+    // since the repo path does not exist yet.
     if let Some(action) = repo.hooks.get("clone") {
-        run_hook(&engine, git, action, "clone")?;
+        run_hook(&engine, None, action, "clone")?;
     } else {
         let origin = repo
             .remotes
@@ -94,13 +98,18 @@ fn clone_repo(project: &ProjectData, name: &str, git: &Git) -> Result<()> {
         }
         git.submodule_update(&git.materialised_submodules(), true)?;
     }
-    run_hook_opt(&engine, git, repo.hooks.get("post_clone"), "post_clone")?;
+    run_hook_opt(
+        &engine,
+        Some(git.path()),
+        repo.hooks.get("post_clone"),
+        "post_clone",
+    )?;
     Ok(())
 }
 
-fn update_repo(project: &ProjectData, name: &str, git: &Git) -> Result<()> {
+fn update_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Git) -> Result<()> {
     let repo = &project.repos[name];
-    let engine = Engine::new(resolve::context_for_repo(project, name));
+    let engine = Engine::new(resolve::context_for_repo(ws, project, name));
 
     ensure_remotes(git, repo)?;
 
@@ -108,15 +117,25 @@ fn update_repo(project: &ProjectData, name: &str, git: &Git) -> Result<()> {
     // branch, the guard returns us to where we started on any exit.
     let _guard = RestoreGuard::capture(git);
 
-    run_hook_opt(&engine, git, repo.hooks.get("pre_update"), "pre_update")?;
+    run_hook_opt(
+        &engine,
+        Some(git.path()),
+        repo.hooks.get("pre_update"),
+        "pre_update",
+    )?;
 
     if let Some(action) = repo.hooks.get("update") {
-        run_hook(&engine, git, action, "update")?;
+        run_hook(&engine, Some(git.path()), action, "update")?;
     } else {
         default_update(project, name, git, repo)?;
     }
 
-    run_hook_opt(&engine, git, repo.hooks.get("post_update"), "post_update")?;
+    run_hook_opt(
+        &engine,
+        Some(git.path()),
+        repo.hooks.get("post_update"),
+        "post_update",
+    )?;
     Ok(())
 }
 
@@ -175,15 +194,23 @@ fn ensure_remotes(git: &Git, repo: &RawRepo) -> Result<()> {
     Ok(())
 }
 
-fn run_hook_opt(engine: &Engine, git: &Git, hook: Option<&String>, phase: &str) -> Result<()> {
+fn run_hook_opt(
+    engine: &Engine,
+    cwd: Option<&Path>,
+    hook: Option<&String>,
+    phase: &str,
+) -> Result<()> {
     match hook {
-        Some(cmd) => run_hook(engine, git, cmd, phase),
+        Some(cmd) => run_hook(engine, cwd, cmd, phase),
         None => Ok(()),
     }
 }
 
-/// Run a templated hook via `sh -c`, cwd = the repo. A non-zero exit fails fast.
-fn run_hook(engine: &Engine, git: &Git, command: &str, phase: &str) -> Result<()> {
+/// Run a templated hook via `sh -c`. `cwd` selects the working directory;
+/// `None` inherits the process's, which is where a `clone` override runs since
+/// the repo path does not exist yet. `post_clone` and every update-phase hook
+/// run in the repo path itself. A non-zero exit fails fast.
+fn run_hook(engine: &Engine, cwd: Option<&Path>, command: &str, phase: &str) -> Result<()> {
     let rendered = engine
         .resolve_str(command)
         .with_context(|| format!("resolving {phase} hook"))?;
@@ -192,10 +219,12 @@ fn run_hook(engine: &Engine, git: &Git, command: &str, phase: &str) -> Result<()
         other => format!("{other:?}"),
     };
     log::info!("hook {phase}: {script}");
-    let code = wits_util::process::Command::new("sh")
-        .args(["-c".to_string(), script])
-        .current_dir(git.path())
-        .status()?;
+    let mut cmd = wits_util::process::Command::new("sh");
+    cmd.args(["-c".to_string(), script]);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let code = cmd.status()?;
     if code != 0 {
         anyhow::bail!("{phase} hook failed (exit {code})");
     }
