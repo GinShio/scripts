@@ -378,9 +378,13 @@ deliberately knows nothing of which build systems are implemented.
 `path` with `main_branch` → `submodule`; nested without `main_branch` → `subtree`.
 `repos.main` is always standalone.
 
-`[repos.<name>.remotes]` — `origin` (string), `upstream` (string, falls back to
-origin), `mirrors` (list of extra push URLs on origin). Reconciliation is
-additive only: missing remotes/mirror push-URLs are added; existing URLs are
+`[repos.<name>.remotes]` — `origin` (string, the push target / fork), `upstream`
+(string, the **sync source**), `mirrors` (list of extra push URLs on origin).
+The **sync source** = `upstream` if declared, else `origin`; it is what `clone`
+and `update` fetch from and fast-forward `main` against. When an `upstream` is
+declared, `origin` is **never fetched or cloned** — so a fork that does not yet
+exist on the server is fine (it is only added as a push target). Reconciliation
+is additive only: missing remotes/mirror push-URLs are added; existing URLs are
 never modified or removed; unmentioned remotes are untouched.
 
 `[repos.<name>.hooks]` — inline `sh -c` command strings, templated. Phases:
@@ -423,19 +427,23 @@ every character outside `[A-Za-z0-9._-]` (including `/`) with `_`.
 
 For each repo (parents before nested; subtrees do no git work):
 
-- **Missing path → clone**: action (default: `git clone`, set up remotes, checkout
-  `main_branch`, `submodule update --init --recursive`; a `clone` override runs in
-  the current working directory) → `post_clone` (cwd = repo path, now exists).
-  `git clone` creates the destination (and any leading directories) itself, so
-  nothing is pre-created.
+The **sync source** = `upstream` if declared, else `origin` (§9.1).
+
+- **Missing path → clone**: action (default: `git clone --origin <sync>` from the
+  sync source, set up remotes, checkout `main_branch`, `submodule update --init
+  --recursive`; a `clone` override runs in the current working directory) →
+  `post_clone` (cwd = repo path, now exists). `git clone` creates the destination
+  (and any leading directories) itself, so nothing is pre-created. Cloning names
+  the fetched remote after the sync source, so tracking an `upstream` leaves the
+  `origin` name free for a fork (added, not fetched, by remote reconciliation).
 - **Existing → update**: ensure remotes (additive) → `pre_update` → action →
   `post_update` (all with cwd = repo path).
 
 Default update action:
 
-- On `main_branch`: `git fetch --all` then `git merge --ff-only
-  <upstream>/<main_branch>`.
-- Otherwise: `git fetch <origin> <main_branch>:<main_branch>` — a ref-only
+- On `main_branch`: `git fetch <sync>` then `git merge --ff-only
+  <sync>/<main_branch>`.
+- Otherwise: `git fetch <sync> <main_branch>:<main_branch>` — a ref-only
   fast-forward that does not check out, does not touch the working tree, and does
   not expand a sparse checkout.
 - Declared submodule repos advance via their own lifecycle; undeclared nested

@@ -169,10 +169,19 @@ below apply to each `[repos.NAME]`.
 Remotes are declared with **roles**, so commands never guess which remote does
 what:
 
-- **`origin`** — the repo we work on (often our fork). Default fetch + push.
-- **`upstream`** — the PR / sync target. When absent, it logically falls back to
-  `origin` (we do not create a git remote for it in that case).
+- **`origin`** — the repo we push to (often our fork). It is only the *clone /
+  fetch* source when no `upstream` is declared; when an `upstream` is present,
+  nothing ever clones or fetches `origin`, so a fork that does not exist on the
+  server yet is fine — it is merely added as a push target.
+- **`upstream`** — the **sync source**: what `clone` and the default `update`
+  fetch from and fast-forward `main` against. When absent, the sync source falls
+  back to `origin` (we do not create a git remote for `upstream` in that case).
 - **`mirrors`** — extra *push* URLs attached to `origin`, so one push fans out.
+
+The **sync source is a single concept** used consistently — `upstream` if
+declared, else `origin` — for the clone source, the on-`main` fetch+merge, and
+the off-`main` ref-only fast-forward. This is what makes tracking an upstream
+while owning a not-yet-created fork work: the fork (`origin`) is never fetched.
 
 ```toml
 [repos.main.remotes]
@@ -620,9 +629,11 @@ update(project):
         post_clone (cwd = repo.path)
     else → ensure-remotes (additive, §3.1) → pre_update → action → post_update (all cwd = repo.path)
 
+  where sync = upstream if declared, else origin (§3.1)
+
 default update action:
-  if currently on main_branch:  git fetch --all ; git merge --ff-only <upstream>/<main_branch>
-  else:                         git fetch <origin> <main_branch>:<main_branch>   # ref-only fast-forward
+  if currently on main_branch:  git fetch <sync> ; git merge --ff-only <sync>/<main_branch>
+  else:                         git fetch <sync> <main_branch>:<main_branch>   # ref-only fast-forward
   then advance declared submodule repos (their own lifecycle), and refresh
        undeclared nested submodules with: git submodule update --recursive -- <materialised paths>
 ```

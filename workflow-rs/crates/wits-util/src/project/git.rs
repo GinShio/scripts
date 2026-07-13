@@ -309,12 +309,16 @@ impl Drop for RestoreGuard<'_> {
     }
 }
 
-/// Clone `url` into `dir` (its parent must exist). A free function because there
-/// is no repository yet to hang it off.
-pub fn clone(url: &str, dir: &Path) -> Result<()> {
+/// Clone `url` into `dir`, naming the fetched remote `remote`. A free function
+/// because there is no repository yet to hang it off. `--origin` lets a repo
+/// tracked from `upstream` leave the `origin` name free for a fork that may not
+/// exist on the server yet.
+pub fn clone(url: &str, remote: &str, dir: &Path) -> Result<()> {
     // Inherit stdio so clone progress streams live and in colour.
     let dir_s = dir.display().to_string();
-    let code = Command::new("git").args(["clone", url, &dir_s]).status()?;
+    let code = Command::new("git")
+        .args(["clone", "--origin", remote, url, &dir_s])
+        .status()?;
     if code == 0 {
         Ok(())
     } else {

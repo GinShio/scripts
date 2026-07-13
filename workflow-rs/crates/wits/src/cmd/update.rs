@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::Args;
 
 use wits_util::template::Engine;
@@ -86,12 +86,19 @@ fn clone_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Git) -> R
     if let Some(action) = repo.hooks.get("clone") {
         run_hook(&engine, None, action, "clone")?;
     } else {
-        let origin = repo
-            .remotes
-            .origin
-            .as_deref()
-            .context("cannot clone: no [remotes] origin declared")?;
-        git::clone(origin, git.path())?;
+        // Clone from the sync source: `upstream` if declared, else `origin`. A
+        // fork declared as `origin` may not exist on the server yet, so it is
+        // never the clone source when an `upstream` is given — `ensure_remotes`
+        // only *adds* it (no fetch) as the push target below.
+        let (clone_url, remote) = match (
+            repo.remotes.upstream.as_deref(),
+            repo.remotes.origin.as_deref(),
+        ) {
+            (Some(upstream), _) => (upstream, "upstream"),
+            (None, Some(origin)) => (origin, "origin"),
+            (None, None) => bail!("cannot clone: no [remotes] origin or upstream declared"),
+        };
+        git::clone(clone_url, remote, git.path())?;
         ensure_remotes(git, repo)?;
         if let Some(mb) = &repo.main_branch {
             git.checkout(mb)?;
@@ -144,20 +151,22 @@ fn default_update(project: &ProjectData, name: &str, git: &Git, repo: &RawRepo) 
         .main_branch
         .as_deref()
         .context("own-git repo has no main_branch")?;
+    // The sync source that `main` advances on: `upstream` if declared, else
+    // `origin`. A fork declared as `origin` need not exist — nothing fetches it.
+    let sync = if repo.remotes.upstream.is_some() {
+        "upstream"
+    } else {
+        "origin"
+    };
     let on_main = git.current_branch().as_deref() == Some(mb);
 
     if on_main {
-        git.fetch(&["--all"])?;
-        let remote = if repo.remotes.upstream.is_some() {
-            "upstream"
-        } else {
-            "origin"
-        };
-        git.merge_ff_only(&format!("{remote}/{mb}"))?;
+        git.fetch(&[sync])?;
+        git.merge_ff_only(&format!("{sync}/{mb}"))?;
     } else {
         // Ref-only fast-forward: update the local main ref without a checkout,
         // so the working tree (and a sparse cone) is left untouched.
-        git.fetch(&["origin", &format!("{mb}:{mb}")])?;
+        git.fetch(&[sync, &format!("{mb}:{mb}")])?;
     }
 
     // Undeclared nested submodules → recorded commit; declared ones are managed
