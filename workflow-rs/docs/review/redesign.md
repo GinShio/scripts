@@ -106,29 +106,31 @@ was correct-but-fragile.
 
 ### 1.2 One anchor type, one inference (folds design.md §5.2 + resolves the §7/§8 critique)
 
-The three near-duplicate placement enums (`Placement`, `RemotePlacement`,
-`SubmitPlacement`) and the **two** copies of "action → placement" inference
-(`Action::placement` and `submit::to_submit_comment`) collapse into one:
+The near-duplicate placement types and the two copies of the "action →
+placement" inference collapse into one `Anchor`, serialized directly as the
+read-view shape (no separate "placement" mirror):
 
 ```rust
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Anchor {
     /// A code line (or multi-line span) on a changed file. `end`/`start`
     /// each carry their own `Side` so a span can cross the delete/add boundary.
     Line { path: String, old_path: Option<String>,
-           end: LineRef, start: Option<LineRef>, version: DiffVersion },
+           end: LineRef, start: Option<LineRef> },
     /// A whole changed file, no line.
-    File { path: String, version: DiffVersion },
-    /// The MR conversation, no code anchor.
-    Mr,
+    File { path: String },
 }
+// The MR-level conversation is `Option<Anchor>::None` — no `Mr` variant needed.
 ```
 
-`version: DiffVersion` (the `{base, start, head}` a comment was written on) rides
-inside the anchor, resolved **once** from the snapshot history at build time.
-There is exactly one function `fn anchor_of(action, snapshots, files) -> Anchor`,
-used by both the read fold and submit, so the "`file`+`line` ⇒ line, `file` ⇒
-file, neither ⇒ mr" rule cannot drift between the two paths. The read view
-projects `Anchor` to JSON directly; no `From` chain, no rebuild.
+The snapshot version a comment was written on (`DiffVersion {base, start, head}`)
+does **not** live inside the anchor: it rides on the thread (`commit`) and on the
+`BatchAction`, resolved **once** from the snapshot history at build time. There is
+one inference, `comment_anchor(...)`, shared by the read fold and submit, so the
+"`file`+`line` ⇒ line, `file` ⇒ file, neither ⇒ MR-level" rule can't drift
+between the two paths. The read view serializes `Anchor` directly; no `From`
+chain, no rebuild.
 
 ---
 

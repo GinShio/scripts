@@ -33,7 +33,7 @@ The detail view, with the pending draft folded into the remote discussion.
 ```json
 {
   "schema": 1,
-  "mr": { "...": "MrInfo, see below" },
+  "mr": { "...": "MrSummary, see below" },
   "snapshot": { "base_sha": "aaaa…", "head_sha": "9f8e…" },
   "snapshots": [ { "base_sha": "aaaa…", "start_sha": "aaaa…", "head_sha": "9f8e…",
                    "fetched_at": "1719830400" } ],

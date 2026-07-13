@@ -34,45 +34,6 @@ pub fn state_word(state: MrState, draft: bool) -> &'static str {
     }
 }
 
-/// One MR's necessary metadata — the inbox row, and the header of the detail
-/// view. `state` is the typed lifecycle (`open`/`merged`/`closed`); draft-ness is
-/// the separate `draft` flag, not folded into a stringly-typed state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MrInfo {
-    pub id: String,
-    pub display: String,
-    pub state: MrState,
-    pub draft: bool,
-    pub title: String,
-    pub author: String,
-    pub base: String,
-    pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub head_sha: Option<String>,
-    pub updated_at: String,
-    pub labels: Vec<String>,
-    pub web_url: String,
-}
-
-impl From<MrSummary> for MrInfo {
-    fn from(s: MrSummary) -> Self {
-        MrInfo {
-            id: s.id,
-            display: s.display,
-            state: s.state,
-            draft: s.draft,
-            title: s.title,
-            author: s.author,
-            base: s.base,
-            source: s.source,
-            head_sha: s.head_sha,
-            updated_at: s.updated_at,
-            labels: s.labels,
-            web_url: s.web_url,
-        }
-    }
-}
-
 /// A commit in the reviewed range.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredCommit {
@@ -119,7 +80,7 @@ impl Snapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
     pub schema: u32,
-    pub mr: MrInfo,
+    pub mr: MrSummary,
     /// Every review point we have fetched and pinned, oldest first; the last is
     /// the current one.
     #[serde(default)]

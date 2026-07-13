@@ -828,7 +828,9 @@ impl Forge for GitHub {
             }
             landed.insert(*k, ok);
         }
-        // --- Replies to existing threads. ---
+        // --- Replies to existing threads. Each reply notifies the thread's
+        // participants on GitHub (one per reply — a real API limit, not a
+        // choice), so each successful one is counted honestly. ---
         for (k, thread, body) in &replies {
             let ok = self
                 .graphql(
@@ -836,7 +838,9 @@ impl Forge for GitHub {
                     json!({ "input": { "pullRequestReviewThreadId": thread, "body": body } }),
                 )
                 .is_ok();
-            if !ok {
+            if ok {
+                notifications += 1;
+            } else {
                 log::warn!("MR {id}: reply to {thread} failed");
             }
             landed.insert(*k, ok);

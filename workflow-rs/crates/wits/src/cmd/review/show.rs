@@ -8,12 +8,12 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use wits_util::forge::{Anchor, Side};
+use wits_util::forge::{Anchor, MrSummary, Side};
 use wits_util::git::Repository;
 
 use super::model::{
-    bare_thread_id, short, state_word, Action, Comment, Local, MrInfo, Snapshot, StoredCommit,
-    StoredFile, Thread, SCHEMA,
+    bare_thread_id, short, state_word, Action, Comment, Local, Snapshot, StoredCommit, StoredFile,
+    Thread, SCHEMA,
 };
 use super::{local, ShowArgs};
 
@@ -45,7 +45,7 @@ struct DraftView {
 #[derive(Serialize)]
 struct DetailView {
     schema: u32,
-    mr: MrInfo,
+    mr: MrSummary,
     snapshot: SnapshotView,
     /// The full snapshot history, oldest first, so the editor can offer
     /// switching (`diff --snapshot <sha>`).
@@ -65,7 +65,7 @@ struct InboxReview {
 #[derive(Serialize)]
 struct InboxItem {
     #[serde(flatten)]
-    mr: MrInfo,
+    mr: MrSummary,
     review: InboxReview,
 }
 

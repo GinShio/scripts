@@ -331,7 +331,7 @@ pub(crate) fn stack_chain(infos: &[model::Info], current: &str) -> (Vec<String>,
 pub(crate) fn stub_info(id: &str, base: &str, source: &str) -> model::Info {
     model::Info {
         schema: model::SCHEMA,
-        mr: model::MrInfo {
+        mr: wits_util::forge::MrSummary {
             id: id.into(),
             display: format!("#{id}"),
             state: wits_util::forge::MrState::Open,

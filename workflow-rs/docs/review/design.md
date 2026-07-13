@@ -196,21 +196,28 @@ outdated context freely: `diff --snapshot <sha>` resolves to that pinned point's
 
 ### 5.2 `Anchor` — file coordinates, computed locally, translated at submit
 
-A line anchor is one nested shape, shared by the local model and the forge
-boundary, with each endpoint carrying its own side so a multi-line span can
-cross sides:
+`Anchor` is one enum, shared by the local read model and the forge boundary, with
+each endpoint carrying its own side so a multi-line span can cross sides. Its
+*absence* (`Option<Anchor>::None`) is the MR-level conversation:
 
 ```
 LineRef { line: u32, side: Old | New }          // one endpoint
 
-Anchor {
-    path,                          // new_path; old_path kept for renames/deletes
-    old_path: Option<String>,
-    end: LineRef,                  // the anchor line (a single line when start is None)
-    start: Option<LineRef>,         // the first line of a multi-line span, if any
-    version: DiffVersion,           // the snapshot {base, start, head} this comment was written on
+enum Anchor {
+    Line {
+        path,                       // new_path; old_path kept for renames/deletes
+        old_path: Option<String>,
+        end: LineRef,               // the anchor line (a single line when start is None)
+        start: Option<LineRef>,     // the first line of a multi-line span, if any
+    },
+    File { path },                  // a whole changed file, no line
 }
 ```
+
+The snapshot a comment was written against (`DiffVersion {base, start, head}`) is
+**not** part of the anchor: it rides on the thread (`commit`) and on the
+`BatchAction` at submit time, resolved once from the snapshot history — so one
+anchor shape serves the read view, the store, and both forge mappers unchanged.
 
 Each endpoint carries its own `side` because a span can *cross sides* — a
 comment starting on a deleted (old-side) line and ending on an added (new-side)

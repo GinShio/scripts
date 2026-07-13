@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use wits_util::git::Repository;
 
 use super::config::{self, Config};
-use super::model::{Comments, Info, MrInfo, Snapshot, StoredCommit, StoredFile, Thread, SCHEMA};
+use super::model::{Comments, Info, Snapshot, StoredCommit, StoredFile, Thread, SCHEMA};
 use super::store::refs;
 use super::{online, parse_mr_handle, Online};
 
@@ -74,7 +74,7 @@ fn fetch_one(ctx: &Online, remote: &str, id: &str) -> Result<()> {
     // moved. Metadata and current-snapshot diff state are refreshed wholesale.
     let mut info = Info {
         schema: SCHEMA,
-        mr: MrInfo::from(details.summary),
+        mr: details.summary,
         snapshots: store.load_info(id).map(|i| i.snapshots).unwrap_or_default(),
         commits,
         files,
@@ -118,7 +118,7 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
     let summaries = ctx.forge.list_mrs(&query)?;
     let store = &ctx.local.store;
     for summary in summaries.iter() {
-        let mr = MrInfo::from(summary.clone());
+        let mr = summary.clone();
         let info = match store.load_info(&mr.id) {
             Some(mut existing) => {
                 existing.mr = mr;

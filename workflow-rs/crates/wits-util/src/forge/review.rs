@@ -103,10 +103,13 @@ pub struct FeedQuery {
 }
 
 /// The rich per-MR view the inbox needs — more than the terse [`MergeRequest`]
-/// the stack verbs use, because a reviewer scans by title/author/staleness.
+/// the stack verbs use, because a reviewer scans by title/author/staleness. This
+/// is also the persisted MR-metadata shape (`info.json`'s `mr`, and the `--json`
+/// `mr` object) — the read model stores it directly rather than mirroring it into
+/// a second near-identical struct.
 ///
 /// [`MergeRequest`]: super::MergeRequest
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MrSummary {
     pub id: String,
     pub display: String,
@@ -120,8 +123,10 @@ pub struct MrSummary {
     /// MR's `base` to another's `source` (empty when the platform withholds it,
     /// e.g. a search result).
     pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub head_sha: Option<String>,
     pub updated_at: String,
+    #[serde(default)]
     pub labels: Vec<String>,
     pub web_url: String,
 }
