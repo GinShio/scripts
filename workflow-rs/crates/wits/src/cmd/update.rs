@@ -195,11 +195,16 @@ fn default_update(
 fn ensure_remotes(git: &Repository, repo: &RawRepo) -> Result<()> {
     if let Some(origin) = &repo.remotes.origin {
         git.ensure_remote("origin", origin)?;
-        // Mirrors are extra push URLs on origin; git stops defaulting push to the
-        // fetch URL once any push URL exists, so origin's own URL must be one too.
-        git.ensure_push_url("origin", origin)?;
-        for mirror in &repo.remotes.mirrors {
-            git.ensure_push_url("origin", mirror)?;
+        // Only touch push URLs when there are mirrors. git pushes to the fetch URL
+        // by default, so with no mirrors there is nothing to add — and adding
+        // origin's own URL as an explicit pushurl would be pointless churn. Once a
+        // mirror makes an explicit pushurl necessary, git stops defaulting push to
+        // the fetch URL, so origin's own URL must be listed alongside the mirrors.
+        if !repo.remotes.mirrors.is_empty() {
+            git.ensure_push_url("origin", origin)?;
+            for mirror in &repo.remotes.mirrors {
+                git.ensure_push_url("origin", mirror)?;
+            }
         }
     }
     if let Some(upstream) = &repo.remotes.upstream {

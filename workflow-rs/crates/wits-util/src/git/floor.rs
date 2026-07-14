@@ -38,6 +38,16 @@ impl Repository {
         Ok(self.query(&["config", "--get", key]))
     }
 
+    /// Every value of a (possibly multi-valued) config key, exactly as written.
+    /// Unlike `git remote get-url`, `git config` does **not** apply
+    /// `url.*.insteadOf` rewrites, so this is the lens to use when an idempotent
+    /// compare must match the literal declared string (e.g. push URLs).
+    pub fn get_config_all(&self, key: &str) -> Vec<String> {
+        self.query(&["config", "--get-all", key])
+            .map(|s| s.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
     /// The branch currently checked out, or `None` on a detached HEAD. A
     /// detached HEAD has no name to push or build on, so the absence is
     /// meaningful rather than an error.

@@ -13,9 +13,11 @@ pub mod context;
 use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
 
+use anyhow::Context;
+
 use wits_util::git;
 use wits_util::project::model::Profile;
-use wits_util::project::workspace::{ProjectData, Workspace};
+use wits_util::project::workspace::{expand_tilde, looks_like_path, ProjectData, Workspace};
 use wits_util::project::{resolve, resolve_target};
 
 /// `wits project` — describe projects (the default), or manage a build context.
@@ -32,6 +34,29 @@ pub struct ProjectArgs {
 pub enum ProjectSub {
     /// Manage a branch's build context (worktree + build dir).
     Context(ContextArgs),
+    /// Print the main branch of the repo you are in (or a named project) —
+    /// the machine-readable answer scripts and git hooks need.
+    MainBranch(RepoQueryArgs),
+    /// Print the resolved build directory for a branch, one line, for scripts.
+    BuildDir(BuildDirArgs),
+}
+
+/// A repo-scoped query anchored by name or path (default: the current dir).
+#[derive(Debug, Args)]
+pub struct RepoQueryArgs {
+    /// Project name, or a path inside a checkout (default: the current dir).
+    #[arg(value_name = "NAME|PATH")]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct BuildDirArgs {
+    /// Project name, or a path inside a checkout (default: the current dir).
+    #[arg(value_name = "NAME|PATH")]
+    pub target: Option<String>,
+    /// The branch to resolve for (default: the anchored repo's current branch).
+    #[arg(short = 'b', long)]
+    pub branch: Option<String>,
 }
 
 /// The profile axes shared by `info` and `build` (they affect resolution).
@@ -117,7 +142,95 @@ pub fn run(args: &ProjectArgs) -> Result<()> {
     let ws = Workspace::load()?;
     match &args.command {
         Some(ProjectSub::Context(c)) => run_context(&ws, c),
+        Some(ProjectSub::MainBranch(a)) => main_branch(&ws, a),
+        Some(ProjectSub::BuildDir(a)) => build_dir(&ws, a),
         None => info(&ws, &args.info),
+    }
+}
+
+// --- machine-readable queries (for scripts / git hooks) -----------------------
+
+/// Resolve a target to `(project, anchor-repo)`: a path (or the current dir)
+/// resolves to the *containing* repo, a name to the project's focus repo.
+fn resolve_repo<'a>(ws: &'a Workspace, target: Option<&str>) -> Result<(&'a ProjectData, String)> {
+    match target {
+        None => {
+            let cwd = std::env::current_dir()?;
+            ws.repo_for_path(&cwd).context(
+                "not inside any known project; pass a name or run from inside a project's checkout",
+            )
+        }
+        Some(t) if looks_like_path(t) => {
+            let path = expand_tilde(t);
+            ws.repo_for_path(&path)
+                .with_context(|| format!("no project owns the path {}", path.display()))
+        }
+        Some(name) => {
+            let project = ws.project(name)?;
+            Ok((project, project.focus_name(None).to_owned()))
+        }
+    }
+}
+
+/// The main branch that governs the anchored repo: its identity repo's
+/// `main_branch` (a subtree inherits its anchor's). One line to stdout.
+fn main_branch(ws: &Workspace, args: &RepoQueryArgs) -> Result<()> {
+    let (project, repo) = resolve_repo(ws, args.target.as_deref())?;
+    let identity = resolve::identity_repo(project, &repo).unwrap_or(repo);
+    let mb = project
+        .repos
+        .get(&identity)
+        .and_then(|r| r.main_branch.clone())
+        .with_context(|| {
+            format!(
+                "repo '{identity}' of project '{}' has no main_branch",
+                project.key()
+            )
+        })?;
+    println!("{mb}");
+    Ok(())
+}
+
+/// The resolved build directory for a branch, one line to stdout — the query a
+/// checkout hook needs to point `compile_commands.json` at the active build.
+fn build_dir(ws: &Workspace, args: &BuildDirArgs) -> Result<()> {
+    let (project, repo) = resolve_repo(ws, args.target.as_deref())?;
+    let branch = args
+        .branch
+        .clone()
+        .or_else(|| {
+            resolve::identity_repo(project, &repo)
+                .and_then(|n| project.repo_abs_path(&n).ok())
+                .and_then(|p| git::Repository::new(&p).current_branch())
+        })
+        .context("could not determine a branch; pass --branch")?;
+    let profile = Profile {
+        focus: Some(repo),
+        branch: Some(branch),
+        ..Default::default()
+    };
+    let plan = resolve::plan(
+        ws,
+        project,
+        &resolve::PlanInput {
+            profile: &profile,
+            branch: profile.branch.as_deref().unwrap_or_default(),
+            inject_toolchain: false,
+            injector: None,
+            extra_config_args: &[],
+            extra_build_args: &[],
+            extra_install_args: &[],
+        },
+    )?;
+    match plan.build_dir {
+        Some(dir) => {
+            println!("{}", dir.display());
+            Ok(())
+        }
+        None => bail!(
+            "project '{}' has no build_dir template to resolve",
+            project.key()
+        ),
     }
 }
 

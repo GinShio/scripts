@@ -214,8 +214,17 @@ impl Workspace {
     /// prefix of `path`. This is the reverse lookup consumers need to answer
     /// "which project am I standing in?".
     pub fn project_for_path(&self, path: &Path) -> Option<&ProjectData> {
+        self.repo_for_path(path).map(|(p, _)| p)
+    }
+
+    /// Like [`project_for_path`](Self::project_for_path), but also names the
+    /// specific repo whose checkout is the deepest prefix of `path` — so a caller
+    /// standing in one repo of a multi-repo project (a submodule, a fork sibling)
+    /// can ask about *that* repo, not just the project. The repo name is returned
+    /// owned so the borrow of `self` stays tied only to the project.
+    pub fn repo_for_path(&self, path: &Path) -> Option<(&ProjectData, String)> {
         let query = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let mut best: Option<(&ProjectData, usize)> = None;
+        let mut best: Option<(&ProjectData, String, usize)> = None;
         for project in self.projects.values() {
             for repo_name in project.repos.keys() {
                 let Ok(repo_path) = project.repo_abs_path(repo_name) else {
@@ -224,13 +233,13 @@ impl Workspace {
                 let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
                 if query.starts_with(&repo_path) {
                     let depth = repo_path.components().count();
-                    if best.is_none_or(|(_, d)| depth > d) {
-                        best = Some((project, depth));
+                    if best.as_ref().is_none_or(|(_, _, d)| depth > *d) {
+                        best = Some((project, repo_name.clone(), depth));
                     }
                 }
             }
         }
-        best.map(|(p, _)| p)
+        best.map(|(p, name, _)| (p, name))
     }
 
     fn available(&self) -> String {

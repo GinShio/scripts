@@ -18,12 +18,6 @@ pub struct Worktree {
 impl Repository {
     // -- working-tree reads ---------------------------------------------------
 
-    pub fn push_urls(&self, name: &str) -> Vec<String> {
-        self.query(&["remote", "get-url", "--push", "--all", name])
-            .map(|s| s.lines().map(str::to_owned).collect())
-            .unwrap_or_default()
-    }
-
     /// Submodule paths recorded in `.gitmodules`, restricted to those that are
     /// materialised on disk (a sparse checkout may omit some).
     pub fn materialised_submodules(&self) -> Vec<String> {
@@ -122,7 +116,12 @@ impl Repository {
     }
 
     pub fn ensure_push_url(&self, name: &str, url: &str) -> Result<(), GitError> {
-        if !self.push_urls(name).iter().any(|u| u == url) {
+        // Compare against the *raw* configured push URLs (`git config`), never
+        // `git remote get-url`, whose output is rewritten by `url.*.insteadOf`.
+        // An exact-string guard on the rewritten form never matches the declared
+        // URL, so every run re-`--add`s it — the runaway pile of push URLs.
+        let configured = self.get_config_all(&format!("remote.{name}.pushurl"));
+        if !configured.iter().any(|u| u == url) {
             self.stream(
                 &format!("add push url to {name}"),
                 &["remote", "set-url", "--add", "--push", name, url],
