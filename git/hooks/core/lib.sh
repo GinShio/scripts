@@ -20,6 +20,35 @@ _cfg_env_name() {
     echo "$1" | tr '[:lower:]' '[:upper:]' | tr '.-' '__'
 }
 
+# True when $1 is a plain shell identifier ([A-Za-z_][A-Za-z0-9_]*). Config keys
+# come from a repo's own `.git/config`, whose quoted subsection can hold
+# arbitrary bytes; a twin name is trusted (fed to the reads below and to
+# `export`) only after passing this gate, so a crafted key can never smuggle
+# shell syntax in.
+_is_identifier() {
+    case "$1" in
+        '' | [!A-Za-z_]* | *[!A-Za-z0-9_]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Read the environment variable *named by* $1, without its value ever being
+# treated as code. POSIX sh has no `${!name}`, so indirection needs one `eval`;
+# we make it provably safe by (a) refusing a non-identifier name and (b) only
+# ever *reading* — the value is printed, never re-parsed. This replaces the older
+# habit of `eval "$name=$value"`, where a config value could be executed.
+_env_get() {
+    _is_identifier "$1" || return 1
+    eval "printf '%s' \"\${$1-}\""
+}
+
+# True when the (identifier) variable named by $1 is set, even if empty. Same
+# safety contract as `_env_get`.
+_env_is_set() {
+    _is_identifier "$1" || return 1
+    eval "[ \"\${$1+x}\" = x ]"
+}
+
 # Resolve a setting, environment twin first, then git config. This is the single
 # path every script uses, so one rule holds everywhere: env overrides config,
 # config is the standing value.
@@ -34,8 +63,7 @@ _cfg_env_name() {
 #   cfg_bool  <config-key> [default]   -> exit status (0 = true)
 #   cfg_value <config-key> [default]   -> echoes the resolved string
 cfg_bool() {
-    _env=$(_cfg_env_name "$1")
-    eval _val="\${$_env:-}"
+    _val=$(_env_get "$(_cfg_env_name "$1")")
     [ -n "$_val" ] && { is_truthy "$_val"; return; }
     if [ -z "${_WITS_CONFIG_WARMED:-}" ]; then
         _val=$(git config --bool "$1" 2>/dev/null)
@@ -44,8 +72,7 @@ cfg_bool() {
     is_truthy "${2:-false}"
 }
 cfg_value() {
-    _env=$(_cfg_env_name "$1")
-    eval _val="\${$_env:-}"
+    _val=$(_env_get "$(_cfg_env_name "$1")")
     [ -n "$_val" ] && { printf '%s\n' "$_val"; return; }
     if [ -z "${_WITS_CONFIG_WARMED:-}" ]; then
         _val=$(git config "$1" 2>/dev/null)

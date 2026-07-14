@@ -13,7 +13,7 @@
 
 use wits_util::git::Repository;
 
-use super::{resolution, MvArgs, RmArgs, TreeAction};
+use super::{fail_if_any, resolution, MvArgs, RmArgs, TreeAction};
 
 pub fn run(repo: &Repository, action: &TreeAction) -> anyhow::Result<()> {
     match action {
@@ -61,6 +61,7 @@ fn rm(repo: &Repository, args: &RmArgs) -> anyhow::Result<()> {
     let base = resolution::base_branch(repo)?;
     let mut topology = resolution::load_topology(repo);
     let mut changed = false;
+    let mut failures = 0usize;
 
     for branch in &args.branches {
         if *branch == base {
@@ -79,7 +80,13 @@ fn rm(repo: &Repository, args: &RmArgs) -> anyhow::Result<()> {
         if args.delete {
             match repo.delete_branch(branch, args.force) {
                 Ok(()) => log::info!("deleted branch {branch}"),
-                Err(e) => log::warn!("could not delete branch {branch}: {e}"),
+                // A requested branch delete that failed is a real failure, not a
+                // warning to shrug off — count it so the command exits non-zero,
+                // matching the other verbs' contract (the stack edit still saves).
+                Err(e) => {
+                    failures += 1;
+                    log::warn!("could not delete branch {branch}: {e}");
+                }
             }
         }
     }
@@ -87,7 +94,7 @@ fn rm(repo: &Repository, args: &RmArgs) -> anyhow::Result<()> {
     if changed {
         resolution::save_topology(repo, &topology)?;
     }
-    Ok(())
+    fail_if_any(failures)
 }
 
 fn mv(repo: &Repository, args: &MvArgs) -> anyhow::Result<()> {

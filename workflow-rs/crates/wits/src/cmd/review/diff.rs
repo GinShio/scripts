@@ -10,7 +10,7 @@ use serde::Serialize;
 
 use wits_util::git::Repository;
 
-use super::model::{StoredCommit, StoredFile, SCHEMA};
+use super::model::{range_artifacts, short, StoredCommit, StoredFile, SCHEMA};
 use super::{local, DiffArgs};
 
 #[derive(Serialize)]
@@ -63,25 +63,7 @@ pub fn run(repo: &Repository, args: &DiffArgs) -> Result<()> {
         return Ok(());
     }
 
-    let commits = ctx
-        .repo
-        .commits(&range)
-        .into_iter()
-        .map(|c| StoredCommit {
-            sha: c.hash,
-            subject: c.subject,
-        })
-        .collect();
-    let files = ctx
-        .repo
-        .changed_files(&range)
-        .into_iter()
-        .map(|f| StoredFile {
-            path: f.path,
-            old_path: f.old_path,
-            status: f.status.to_string(),
-        })
-        .collect();
+    let (commits, files) = range_artifacts(&ctx.repo, &range);
 
     let view = DiffView {
         schema: SCHEMA,
@@ -98,7 +80,7 @@ pub fn run(repo: &Repository, args: &DiffArgs) -> Result<()> {
     } else {
         println!("{} {}", view.mr, view.range);
         for c in &view.commits {
-            println!("  {} {}", &c.sha[..c.sha.len().min(8)], c.subject);
+            println!("  {} {}", short(&c.sha), c.subject);
         }
         for f in &view.files {
             println!("  {} {}", f.status, f.path);

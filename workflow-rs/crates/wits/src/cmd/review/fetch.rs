@@ -13,7 +13,7 @@ use wits_util::forge::DiffVersion;
 use wits_util::git::Repository;
 
 use super::config::{self, Config};
-use super::model::{Comments, Info, StoredCommit, StoredFile, Thread, SCHEMA};
+use super::model::{range_artifacts, Comments, Info, StoredCommit, StoredFile, Thread, SCHEMA};
 use super::store::refs;
 use super::{now_secs, online, parse_mr_handle, Online};
 
@@ -166,28 +166,11 @@ fn fetch_all_feeds(ctx: &Online, cfg: &Config, key: &str) -> Result<()> {
 }
 
 /// Commits (oldest-first) and changed files in `base..head`, derived from the
-/// fetched objects. Empty when the range can't be computed locally.
+/// fetched objects. Empty when the range can't be computed locally (a missing
+/// endpoint), delegating the mapping to [`range_artifacts`].
 fn local_range(repo: &Repository, base: &str, head: &str) -> (Vec<StoredCommit>, Vec<StoredFile>) {
     if base.is_empty() || head.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let range = format!("{base}..{head}");
-    let commits = repo
-        .commits(&range)
-        .into_iter()
-        .map(|c| StoredCommit {
-            sha: c.hash,
-            subject: c.subject,
-        })
-        .collect();
-    let files = repo
-        .changed_files(&range)
-        .into_iter()
-        .map(|f| StoredFile {
-            path: f.path,
-            old_path: f.old_path,
-            status: f.status.to_string(),
-        })
-        .collect();
-    (commits, files)
+    range_artifacts(repo, &format!("{base}..{head}"))
 }

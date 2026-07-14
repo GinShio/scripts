@@ -12,12 +12,11 @@
 
 use std::collections::HashMap;
 
-use wits_util::forge::Remotes;
-use wits_util::forge::{self, Forge, NewMr, StateFilter};
+use wits_util::forge::{Forge, NewMr, StateFilter};
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
 
-use super::{fail_if_any, map_parallel, resolution, SubmitArgs, TitleSource};
+use super::{fail_if_any, map_parallel, resolution, ForgeSession, SubmitArgs, TitleSource};
 
 /// What a branch needs, decided from its current remote MR state.
 enum Decision {
@@ -34,9 +33,8 @@ pub fn run(repo: &Repository, args: &SubmitArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let remotes = Remotes::resolve(repo);
-    let forge = forge::detect(repo, &remotes)?;
-    let noun = forge.noun();
+    let session = ForgeSession::open(repo)?;
+    let (forge, noun) = (&session.forge, session.noun);
     let tips = repo.branch_tips();
 
     // Phase 1 — read existing MR state for every branch, in parallel.

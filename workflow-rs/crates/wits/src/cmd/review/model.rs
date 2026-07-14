@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use wits_util::forge::{
     Anchor, DiffVersion, LineRef, MrState, MrSummary, RemoteComment, RemoteThread, Side, Verdict,
 };
+use wits_util::git::Repository;
 
 /// The store/JSON schema version. (Personal tooling — shapes change freely
 /// without a bump; this stays `1`.)
@@ -48,6 +49,31 @@ pub struct StoredFile {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub old_path: Option<String>,
     pub status: String,
+}
+
+/// A git range's commits (oldest first) and changed files, lifted into the
+/// stored review shapes. The single place `repo.commits`/`changed_files` become
+/// [`StoredCommit`]/[`StoredFile`] — shared by `fetch` (a snapshot's artifacts)
+/// and `diff` (an ad-hoc range), so the mapping can't drift between them.
+pub fn range_artifacts(repo: &Repository, range: &str) -> (Vec<StoredCommit>, Vec<StoredFile>) {
+    let commits = repo
+        .commits(range)
+        .into_iter()
+        .map(|c| StoredCommit {
+            sha: c.hash,
+            subject: c.subject,
+        })
+        .collect();
+    let files = repo
+        .changed_files(range)
+        .into_iter()
+        .map(|f| StoredFile {
+            path: f.path,
+            old_path: f.old_path,
+            status: f.status.to_string(),
+        })
+        .collect();
+    (commits, files)
 }
 
 /// `info.json` — the MR's necessary metadata and its snapshot history. A pure
@@ -345,54 +371,70 @@ impl Local {
     /// bare forge id so a `remote:<id>` written into the draft can't leak into a
     /// forge URL (a 404) or the read-fold's id match (a miss).
     pub fn normalize(&mut self, head: &str) {
-        // Last-wins per resolved thread: find the final resolve for each thread,
-        // keyed on the bare forge id so `remote:9987` and `9987` collapse together.
-        // The stored form is the bare id (canonical) so neither the read-fold nor
-        // submit ever has to deal with a stray prefix.
-        let mut last_resolve: std::collections::HashMap<String, bool> =
-            std::collections::HashMap::new();
-        for a in &self.actions {
-            if let Action::Resolve { thread, resolved } = a {
-                last_resolve.insert(bare_thread_id(thread).to_owned(), *resolved);
-            }
-        }
+        self.stamp_comments(head);
+        self.canonicalize_threads();
+        self.collapse();
+    }
 
-        let mut seen: Vec<Action> = Vec::new();
-        let mut resolved_emitted: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        for mut a in self.actions.drain(..) {
-            // Stamp unstamped comments with the current snapshot head, so
-            // hand-edited drafts get anchored before dedup and submission.
-            if let Action::Comment { ref mut commit, .. } = a {
-                if commit.is_none() && !head.is_empty() {
+    /// Anchor any unstamped comment to the current snapshot head, so hand-edited
+    /// or pre-commit drafts get a `commit` before dedup and submission.
+    fn stamp_comments(&mut self, head: &str) {
+        if head.is_empty() {
+            return;
+        }
+        for a in &mut self.actions {
+            if let Action::Comment { commit, .. } = a {
+                if commit.is_none() {
                     *commit = Some(head.to_owned());
                 }
             }
-            // Canonicalize thread-targeting actions to the bare forge id, so the
-            // stored draft never carries a `remote:` prefix that the read-fold or
-            // submit would have to strip.
-            match &mut a {
-                Action::Reply { thread, .. } | Action::Resolve { thread, .. } => {
-                    *thread = bare_thread_id(thread).to_owned();
-                }
-                _ => {}
+        }
+    }
+
+    /// Rewrite every `reply`/`resolve` thread to the bare forge id, so a draft
+    /// written with a `remote:` prefix can't leak that prefix into a forge URL (a
+    /// 404) or the read-fold's id match (a miss). After this pass, thread ids are
+    /// canonical, so later passes can key on them directly.
+    fn canonicalize_threads(&mut self) {
+        for a in &mut self.actions {
+            if let Action::Reply { thread, .. } | Action::Resolve { thread, .. } = a {
+                *thread = bare_thread_id(thread).to_owned();
             }
+        }
+    }
+
+    /// Drop exact-duplicate actions and collapse repeated resolutions of one
+    /// thread to the last stated intent, preserving first-seen order. Assumes
+    /// thread ids are already canonical ([`canonicalize_threads`]).
+    fn collapse(&mut self) {
+        use std::collections::{HashMap, HashSet};
+        let last_resolve: HashMap<String, bool> = self
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Resolve { thread, resolved } => Some((thread.clone(), *resolved)),
+                _ => None,
+            })
+            .collect();
+
+        let mut out: Vec<Action> = Vec::new();
+        let mut resolved_emitted: HashSet<String> = HashSet::new();
+        for a in self.actions.drain(..) {
             match &a {
                 Action::Resolve { thread, .. } => {
-                    let bare = thread.clone();
-                    if resolved_emitted.insert(bare.clone()) {
-                        let resolved = last_resolve[bare.as_str()];
-                        seen.push(Action::Resolve {
-                            thread: bare,
+                    if resolved_emitted.insert(thread.clone()) {
+                        let resolved = last_resolve[thread];
+                        out.push(Action::Resolve {
+                            thread: thread.clone(),
                             resolved,
                         });
                     }
                 }
-                _ if seen.contains(&a) => {}
-                _ => seen.push(a),
+                _ if out.contains(&a) => {}
+                _ => out.push(a),
             }
         }
-        self.actions = seen;
+        self.actions = out;
     }
 }
 

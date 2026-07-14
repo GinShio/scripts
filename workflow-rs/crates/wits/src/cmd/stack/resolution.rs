@@ -42,11 +42,22 @@ fn machete_path(repo: &Repository) -> Option<PathBuf> {
 }
 
 pub fn load_topology(repo: &Repository) -> Topology {
-    match machete_path(repo) {
-        Some(path) if path.exists() => {
-            Topology::parse(&fs::read_to_string(&path).unwrap_or_default())
+    let Some(path) = machete_path(repo).filter(|p| p.exists()) else {
+        return Topology::default();
+    };
+    match fs::read_to_string(&path) {
+        Ok(text) => Topology::parse(&text),
+        // A machete that exists but can't be read (permissions, a transient I/O
+        // error) is *not* the same as "no stack" — silently treating it as empty
+        // would drop every branch from scope. Warn loudly and fall back to empty
+        // rather than pretend the file said nothing.
+        Err(e) => {
+            log::warn!(
+                "could not read {}: {e}; treating the stack as empty",
+                path.display()
+            );
+            Topology::default()
         }
-        _ => Topology::default(),
     }
 }
 

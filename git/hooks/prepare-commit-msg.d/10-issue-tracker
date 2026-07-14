@@ -20,7 +20,6 @@ msg_file="$1"
 # A rebase replays commits that already have their prefix (and reword edits an
 # existing message); adding there would rewrite history, so stay out entirely.
 # The state dir is per-worktree, hence GIT_DIR rather than the common dir.
-git_dir
 if [ -d "$GIT_DIR/rebase-merge" ] || [ -d "$GIT_DIR/rebase-apply" ]; then
     exit 0
 fi

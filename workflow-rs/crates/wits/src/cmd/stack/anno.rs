@@ -9,13 +9,12 @@
 
 use std::collections::HashMap;
 
-use wits_util::forge::Remotes;
-use wits_util::forge::{self, MergeRequest, StateFilter};
+use wits_util::forge::MergeRequest;
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
 
 use super::topology::Topology;
-use super::{fail_if_any, map_parallel, resolution, ScopeArgs};
+use super::{fail_if_any, find_open_mrs, map_parallel, resolution, ForgeSession, ScopeArgs};
 
 const HEADER: &str = "<!-- wits stack: generated navigation, do not edit below -->";
 const FOOTER: &str = "<!-- wits stack: end navigation -->";
@@ -32,28 +31,12 @@ pub fn run(repo: &Repository, scope: &ScopeArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let remotes = Remotes::resolve(repo);
-    let forge = forge::detect(repo, &remotes)?;
-    let noun = forge.noun();
+    let session = ForgeSession::open(repo)?;
+    let noun = session.noun;
 
     // Discover the open MR for each branch up front; everything else is local.
-    let found = map_parallel(&plan.selected, |branch| {
-        (branch.clone(), forge.find(branch, StateFilter::Open))
-    });
-    let mut mrs: HashMap<String, MergeRequest> = HashMap::new();
-    let mut failures = 0usize;
-    for (branch, result) in found {
-        match result {
-            Ok(Some(mr)) => {
-                mrs.insert(branch, mr);
-            }
-            Ok(None) => log::info!("{branch}: no open {noun}"),
-            Err(e) => {
-                failures += 1;
-                log::warn!("{branch}: {e}");
-            }
-        }
-    }
+    let (found, mut failures) = find_open_mrs(&session, &plan.selected);
+    let mrs: HashMap<String, MergeRequest> = found.into_iter().collect();
     if mrs.is_empty() {
         log::info!("no open {noun}s to annotate");
         return fail_if_any(failures);
@@ -98,7 +81,7 @@ pub fn run(repo: &Repository, scope: &ScopeArgs) -> anyhow::Result<()> {
             wits_log::dry_run(&format!("update {noun} {display} description ({branch})"));
             return Ok(());
         }
-        forge.set_body(id, body)
+        session.forge.set_body(id, body)
     });
     for (item, result) in updates.iter().zip(results) {
         match result {
@@ -187,16 +170,24 @@ fn splice(body: &str, block: &str) -> String {
 }
 
 fn strip_generated(body: &str) -> String {
-    if let (Some(start), Some(footer_at)) = (body.find(HEADER), body.find(FOOTER)) {
-        let end = footer_at + FOOTER.len();
-        if end >= start {
-            let mut kept = String::new();
-            kept.push_str(&body[..start]);
-            kept.push_str(&body[end..]);
-            return kept.trim().to_owned();
-        }
-    }
-    body.trim().to_owned()
+    let Some(start) = body.find(HEADER) else {
+        return body.trim().to_owned();
+    };
+    // The generated block runs from the HEADER to the end of its FOOTER. Search
+    // for the FOOTER *after* the header so a footer accidentally left earlier in
+    // the prose can't be mistaken for ours. If the footer is intact, drop exactly
+    // that span; if it was torn off by a hand-edit, the block is unterminated —
+    // and since `anno` always appends the block at the tail, everything from the
+    // header onward is ours to drop. Either way exactly one marker pair survives.
+    let after_header = &body[start + HEADER.len()..];
+    let tail = match after_header.find(FOOTER) {
+        Some(rel) => &after_header[rel + FOOTER.len()..],
+        None => "",
+    };
+    let mut kept = String::with_capacity(start + tail.len());
+    kept.push_str(&body[..start]);
+    kept.push_str(tail);
+    kept.trim().to_owned()
 }
 
 #[cfg(test)]
@@ -264,6 +255,21 @@ mod tests {
         let once = splice("Hello.", &block);
         let twice = splice(&once, &block);
         assert_eq!(once, twice);
+    }
+
+    // A torn marker pair (footer hand-deleted) must not defeat stripping and
+    // leave two HEADERs behind — the generated block always sits at the tail, so
+    // everything from a lone HEADER onward is ours to drop.
+    #[test]
+    fn splice_recovers_from_a_torn_footer() {
+        let block = format!("{HEADER}\n\nfresh\n\n{FOOTER}");
+        // Body whose previous block lost its footer to a manual edit.
+        let torn = format!("Prose.\n\n{HEADER}\n\nstale nav with no footer");
+        let result = splice(&torn, &block);
+        assert!(result.starts_with("Prose."));
+        assert!(result.contains("fresh") && !result.contains("stale nav"));
+        assert_eq!(result.matches(HEADER).count(), 1);
+        assert_eq!(result.matches(FOOTER).count(), 1);
     }
 
     // Re-anno after the numbers change: the old block is replaced, not stacked.

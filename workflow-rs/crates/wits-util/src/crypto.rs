@@ -517,55 +517,26 @@ fn compute_siv_params(
 
     let ap = algo_params.as_bytes();
 
+    // Every RustCrypto hash implements the same `digest::Digest`/`Update` traits
+    // (re-exported identically by sha2/sha3/blake2), so one macro covers all
+    // eight: build the hasher, feed the framed fields, split out iv‖salt.
+    use sha2::digest::Digest;
+    macro_rules! siv {
+        ($ty:ty) => {{
+            let mut h = <$ty>::new();
+            feed(&mut h, ap, password, context, data);
+            extract(h.finalize().as_slice(), out_iv, out_salt)
+        }};
+    }
     match algo.hash {
-        HashAlgorithm::Sha256 => {
-            use sha2::{Digest, Sha256};
-            let mut h = Sha256::new();
-            feed(&mut h, ap, password, context, data);
-            extract(h.finalize().as_slice(), out_iv, out_salt)
-        }
-        HashAlgorithm::Sha384 => {
-            use sha2::{Digest, Sha384};
-            let mut h = Sha384::new();
-            feed(&mut h, ap, password, context, data);
-            extract(h.finalize().as_slice(), out_iv, out_salt)
-        }
-        HashAlgorithm::Sha512 => {
-            use sha2::{Digest, Sha512};
-            let mut h = Sha512::new();
-            feed(&mut h, ap, password, context, data);
-            extract(h.finalize().as_slice(), out_iv, out_salt)
-        }
-        HashAlgorithm::Sha3_256 => {
-            use sha3::{Digest, Sha3_256};
-            let mut h = Sha3_256::new();
-            feed(&mut h, ap, password, context, data);
-            extract(h.finalize().as_slice(), out_iv, out_salt)
-        }
-        HashAlgorithm::Sha3_384 => {
-            use sha3::{Digest, Sha3_384};
-            let mut h = Sha3_384::new();
-            feed(&mut h, ap, password, context, data);
-            extract(h.finalize().as_slice(), out_iv, out_salt)
-        }
-        HashAlgorithm::Sha3_512 => {
-            use sha3::{Digest, Sha3_512};
-            let mut h = Sha3_512::new();
-            feed(&mut h, ap, password, context, data);
-            extract(h.finalize().as_slice(), out_iv, out_salt)
-        }
-        HashAlgorithm::Blake2b => {
-            use blake2::{Blake2b512, Digest};
-            let mut h = Blake2b512::new();
-            feed(&mut h, ap, password, context, data);
-            extract(h.finalize().as_slice(), out_iv, out_salt)
-        }
-        HashAlgorithm::Blake2s => {
-            use blake2::{Blake2s256, Digest};
-            let mut h = Blake2s256::new();
-            feed(&mut h, ap, password, context, data);
-            extract(h.finalize().as_slice(), out_iv, out_salt)
-        }
+        HashAlgorithm::Sha256 => siv!(sha2::Sha256),
+        HashAlgorithm::Sha384 => siv!(sha2::Sha384),
+        HashAlgorithm::Sha512 => siv!(sha2::Sha512),
+        HashAlgorithm::Sha3_256 => siv!(sha3::Sha3_256),
+        HashAlgorithm::Sha3_384 => siv!(sha3::Sha3_384),
+        HashAlgorithm::Sha3_512 => siv!(sha3::Sha3_512),
+        HashAlgorithm::Blake2b => siv!(blake2::Blake2b512),
+        HashAlgorithm::Blake2s => siv!(blake2::Blake2s256),
     }
 }
 
@@ -590,25 +561,18 @@ fn derive_key(
             // and produces the wrong key, so pass `H` directly.
             use pbkdf2::pbkdf2_hmac;
 
+            macro_rules! kdf {
+                ($ty:ty) => {
+                    pbkdf2_hmac::<$ty>(password, salt, iters, &mut key)
+                };
+            }
             match hash {
-                HashAlgorithm::Sha256 => {
-                    pbkdf2_hmac::<sha2::Sha256>(password, salt, iters, &mut key);
-                }
-                HashAlgorithm::Sha384 => {
-                    pbkdf2_hmac::<sha2::Sha384>(password, salt, iters, &mut key);
-                }
-                HashAlgorithm::Sha512 => {
-                    pbkdf2_hmac::<sha2::Sha512>(password, salt, iters, &mut key);
-                }
-                HashAlgorithm::Sha3_256 => {
-                    pbkdf2_hmac::<sha3::Sha3_256>(password, salt, iters, &mut key);
-                }
-                HashAlgorithm::Sha3_384 => {
-                    pbkdf2_hmac::<sha3::Sha3_384>(password, salt, iters, &mut key);
-                }
-                HashAlgorithm::Sha3_512 => {
-                    pbkdf2_hmac::<sha3::Sha3_512>(password, salt, iters, &mut key);
-                }
+                HashAlgorithm::Sha256 => kdf!(sha2::Sha256),
+                HashAlgorithm::Sha384 => kdf!(sha2::Sha384),
+                HashAlgorithm::Sha512 => kdf!(sha2::Sha512),
+                HashAlgorithm::Sha3_256 => kdf!(sha3::Sha3_256),
+                HashAlgorithm::Sha3_384 => kdf!(sha3::Sha3_384),
+                HashAlgorithm::Sha3_512 => kdf!(sha3::Sha3_512),
                 HashAlgorithm::Blake2b | HashAlgorithm::Blake2s => {
                     // BLAKE2's buffer kind doesn't satisfy the trait bound
                     // pbkdf2_hmac requires, so this combination can't be
@@ -645,6 +609,48 @@ fn derive_key(
 // AEAD helpers
 // ---------------------------------------------------------------------------
 
+// AES-256-GCM and ChaCha20-Poly1305 share one `aead` trait surface (both ciphers
+// re-export the same `aead` crate), so the encrypt/decrypt bodies are generic
+// over the AEAD and the per-cipher `match` is a one-line dispatch. The two verbs
+// stay separate only to carry their distinct error variants.
+use aes_gcm::aead::{self, Aead, KeyInit, Payload};
+
+fn aead_seal<A: KeyInit + Aead>(
+    key: &[u8],
+    iv: &[u8; NONCE_SIZE],
+    plaintext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let cipher = A::new_from_slice(key).map_err(|_| CryptoError::EncryptionFailed)?;
+    cipher
+        .encrypt(
+            aead::Nonce::<A>::from_slice(iv),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::EncryptionFailed)
+}
+
+fn aead_open<A: KeyInit + Aead>(
+    key: &[u8],
+    iv: &[u8; NONCE_SIZE],
+    ciphertext_with_tag: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let cipher = A::new_from_slice(key).map_err(|_| CryptoError::AuthenticationFailed)?;
+    cipher
+        .decrypt(
+            aead::Nonce::<A>::from_slice(iv),
+            Payload {
+                msg: ciphertext_with_tag,
+                aad,
+            },
+        )
+        .map_err(|_| CryptoError::AuthenticationFailed)
+}
+
 fn aead_encrypt(
     cipher: CipherAlgorithm,
     key: &[u8],
@@ -653,41 +659,9 @@ fn aead_encrypt(
     aad: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
     match cipher {
-        CipherAlgorithm::Aes256Gcm => {
-            use aes_gcm::{
-                aead::{Aead, KeyInit, Payload},
-                Aes256Gcm, Nonce,
-            };
-            let cipher =
-                Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::EncryptionFailed)?;
-            let nonce = Nonce::from_slice(iv);
-            cipher
-                .encrypt(
-                    nonce,
-                    Payload {
-                        msg: plaintext,
-                        aad,
-                    },
-                )
-                .map_err(|_| CryptoError::EncryptionFailed)
-        }
+        CipherAlgorithm::Aes256Gcm => aead_seal::<aes_gcm::Aes256Gcm>(key, iv, plaintext, aad),
         CipherAlgorithm::ChaCha20Poly1305 => {
-            use chacha20poly1305::{
-                aead::{Aead, KeyInit, Payload},
-                ChaCha20Poly1305, Nonce,
-            };
-            let cipher =
-                ChaCha20Poly1305::new_from_slice(key).map_err(|_| CryptoError::EncryptionFailed)?;
-            let nonce = Nonce::from_slice(iv);
-            cipher
-                .encrypt(
-                    nonce,
-                    Payload {
-                        msg: plaintext,
-                        aad,
-                    },
-                )
-                .map_err(|_| CryptoError::EncryptionFailed)
+            aead_seal::<chacha20poly1305::ChaCha20Poly1305>(key, iv, plaintext, aad)
         }
     }
 }
@@ -701,40 +675,10 @@ fn aead_decrypt(
 ) -> Result<Vec<u8>, CryptoError> {
     match cipher {
         CipherAlgorithm::Aes256Gcm => {
-            use aes_gcm::{
-                aead::{Aead, KeyInit, Payload},
-                Aes256Gcm, Nonce,
-            };
-            let cipher =
-                Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::AuthenticationFailed)?;
-            let nonce = Nonce::from_slice(iv);
-            cipher
-                .decrypt(
-                    nonce,
-                    Payload {
-                        msg: ciphertext_with_tag,
-                        aad,
-                    },
-                )
-                .map_err(|_| CryptoError::AuthenticationFailed)
+            aead_open::<aes_gcm::Aes256Gcm>(key, iv, ciphertext_with_tag, aad)
         }
         CipherAlgorithm::ChaCha20Poly1305 => {
-            use chacha20poly1305::{
-                aead::{Aead, KeyInit, Payload},
-                ChaCha20Poly1305, Nonce,
-            };
-            let cipher = ChaCha20Poly1305::new_from_slice(key)
-                .map_err(|_| CryptoError::AuthenticationFailed)?;
-            let nonce = Nonce::from_slice(iv);
-            cipher
-                .decrypt(
-                    nonce,
-                    Payload {
-                        msg: ciphertext_with_tag,
-                        aad,
-                    },
-                )
-                .map_err(|_| CryptoError::AuthenticationFailed)
+            aead_open::<chacha20poly1305::ChaCha20Poly1305>(key, iv, ciphertext_with_tag, aad)
         }
     }
 }

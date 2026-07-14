@@ -263,35 +263,17 @@ pub fn looks_like_path(token: &str) -> bool {
         || token.starts_with('~')
 }
 
-/// Render a `repo.path` template against the Profile-free context:
-/// `project.name`, `project.org`, `system.*`, `env.*`. No `repos.*` to avoid
-/// circularity — this context is intentionally minimal and stable.
+/// Render a `repo.path` template against the shared Profile-free path context
+/// (`project.name`, `project.org`, `system.*`, `env.*`; no `repos.*`, which would
+/// be circular). Built by [`super::context::path_context`] so this exact same
+/// namespace backs `repo_abs_path` here and any other path resolve — they can't
+/// drift apart.
 fn render_path_template(
     tpl: &str,
     project_name: &str,
     project_org: Option<&str>,
 ) -> Result<String> {
-    let mut root = Value::Map(BTreeMap::new());
-    root.insert_path("project.name", Value::str(project_name));
-    root.insert_path("project.org", Value::str(project_org.unwrap_or_default()));
-
-    let cpu = std::thread::available_parallelism()
-        .map(|n| n.get() as i64)
-        .unwrap_or(1);
-    let mut cpu_map = BTreeMap::new();
-    cpu_map.insert("count".into(), Value::Int(cpu));
-    let mut sys = BTreeMap::new();
-    sys.insert("os".into(), Value::str(std::env::consts::OS));
-    sys.insert("arch".into(), Value::str(std::env::consts::ARCH));
-    sys.insert("cpu".into(), Value::Map(cpu_map));
-    root.insert_path("system", Value::Map(sys));
-
-    let mut env_map = BTreeMap::new();
-    for (k, v) in std::env::vars() {
-        env_map.insert(k, Value::Str(v));
-    }
-    root.insert_path("env", Value::Map(env_map));
-
+    let root = super::context::path_context(project_name, project_org);
     let engine = Engine::new(root);
     match engine.resolve_str(tpl)? {
         Value::Str(s) => Ok(s),

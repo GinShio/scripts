@@ -101,6 +101,7 @@ pub fn run_prune(repo: &Repository, args: &PruneArgs) -> Result<()> {
     // The dormancy cutoff, as a Unix instant: an MR last fetched before it is
     // stale. `--older-than` is a day count or an ISO-8601 date.
     let cutoff = args.older_than.as_deref().map(parse_cutoff).transpose()?;
+    let current = ctx.store.current();
 
     let mut pruned = 0;
     for info in ctx.store.list_infos() {
@@ -121,6 +122,11 @@ pub fn run_prune(repo: &Repository, args: &PruneArgs) -> Result<()> {
             }
         }
         ctx.store.delete_mr(id)?;
+        // If we just pruned the checked-out MR, drop the dangling pointer so a
+        // later `--next`/`--prev` doesn't navigate from a store that's gone.
+        if current.as_deref() == Some(id.as_str()) {
+            ctx.store.clear_current()?;
+        }
         let why = if terminal {
             state_word(info.mr.state, info.mr.draft)
         } else {
@@ -138,16 +144,44 @@ pub fn run_prune(repo: &Repository, args: &PruneArgs) -> Result<()> {
     Ok(())
 }
 
-/// Interpret `--older-than` as a number of days or an ISO-8601 date, returning
-/// the Unix instant before which an MR counts as dormant.
+/// Interpret `--older-than` and return the Unix instant before which an MR
+/// counts as dormant. Accepts a relative age — `<N>`, `<N>d` (days), `<N>w`
+/// (weeks) — or an absolute ISO-8601 date (`YYYY-MM-DD`).
+///
+/// A bare, unit-less number that is *shaped* like a year (four digits) is
+/// rejected rather than read as "that many days ago": `--older-than 2026` is
+/// almost always a mistyped date, and silently meaning ~5.5 years is worse than
+/// a clear error asking for `2026d` or `2026-01-01`.
 fn parse_cutoff(spec: &str) -> Result<i64> {
-    if let Ok(days) = spec.parse::<i64>() {
-        return Ok(super::now_secs() - days.saturating_mul(86_400));
+    let spec = spec.trim();
+
+    // A dash means an absolute date; nothing else here contains one.
+    if spec.contains('-') {
+        let epoch_day = iso_date_to_epoch_day(spec)
+            .with_context(|| format!("--older-than: '{spec}' is not a valid YYYY-MM-DD date"))?;
+        return Ok(epoch_day * 86_400);
     }
-    let epoch_day = iso_date_to_epoch_day(spec).with_context(|| {
-        format!("--older-than must be a day count or an ISO date, got '{spec}'")
+
+    let (digits, per) = match spec.strip_suffix(['d', 'D']) {
+        Some(n) => (n, 86_400),
+        None => match spec.strip_suffix(['w', 'W']) {
+            Some(n) => (n, 7 * 86_400),
+            None => (spec, 86_400),
+        },
+    };
+    let had_unit = digits.len() != spec.len();
+    let n: i64 = digits.trim().parse().map_err(|_| {
+        anyhow::anyhow!(
+            "--older-than must be <days>, <N>d, <N>w, or a YYYY-MM-DD date, got '{spec}'"
+        )
     })?;
-    Ok(epoch_day * 86_400)
+    if !had_unit && (1000..=9999).contains(&n) {
+        bail!(
+            "--older-than '{spec}' is ambiguous (a bare four-digit number reads as a year, \
+             not a day count); write '{n}d' for days or a full YYYY-MM-DD date"
+        );
+    }
+    Ok(super::now_secs() - n.saturating_mul(per))
 }
 
 /// Days since the Unix epoch for a `YYYY-MM-DD` date (Hinnant's days_from_civil),
@@ -189,6 +223,24 @@ fn days_in_month(year: i64, month: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cutoff_disambiguates_days_units_and_dates() {
+        let now = super::super::now_secs();
+        // Bare count and explicit `d` agree, and are in the past.
+        let bare = parse_cutoff("30").unwrap();
+        let dayed = parse_cutoff("30d").unwrap();
+        assert_eq!(bare, dayed);
+        assert!(bare <= now && bare >= now - 31 * 86_400);
+        // Weeks scale by 7.
+        assert_eq!(parse_cutoff("2w").unwrap(), parse_cutoff("14d").unwrap());
+        // A year-shaped bare number is refused; the same value with a unit is fine.
+        assert!(parse_cutoff("2026").is_err());
+        assert!(parse_cutoff("2026d").is_ok());
+        // An ISO date is absolute.
+        assert_eq!(parse_cutoff("1970-01-02").unwrap(), 86_400);
+        assert!(parse_cutoff("2026-13-01").is_err());
+    }
 
     #[test]
     fn iso_date_epoch_and_validation() {

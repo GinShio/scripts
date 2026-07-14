@@ -7,7 +7,7 @@
 
 use wits_util::git::Repository;
 
-use super::{map_parallel, resolution, ScopeArgs};
+use super::{fail_if_any, map_parallel, resolution, ScopeArgs};
 
 pub fn run(repo: &Repository, scope: &ScopeArgs) -> anyhow::Result<()> {
     let plan = resolution::plan_scoped(repo, scope)?;
@@ -43,8 +43,7 @@ pub fn run(repo: &Repository, scope: &ScopeArgs) -> anyhow::Result<()> {
         }
     }
 
-    if failures > 0 {
-        anyhow::bail!("{failures} branch(es) failed to push");
-    }
-    Ok(())
+    // Same all-or-nothing exit contract as submit/anno/decorate: per-branch
+    // failures are warned, and the command still exits non-zero if any occurred.
+    fail_if_any(failures)
 }

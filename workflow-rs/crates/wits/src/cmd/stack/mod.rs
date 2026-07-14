@@ -21,6 +21,9 @@ mod tree;
 
 use clap::{Args, Subcommand, ValueEnum};
 
+use wits_util::forge::{self, Forge, MergeRequest, Remotes, StateFilter};
+use wits_util::git::Repository;
+
 /// How many forge/push operations run at once. Stacks are small and the work is
 /// network-bound, so a modest fixed width keeps us from opening a connection per
 /// branch without any real tuning need.
@@ -166,7 +169,7 @@ pub struct SliceArgs {
 
 pub fn run(args: &StackArgs) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
-    let repo = wits_util::git::Repository::new(&cwd);
+    let repo = Repository::new(&cwd);
 
     match &args.action {
         StackAction::Sync(s) => sync::run(&repo, s),
@@ -211,4 +214,53 @@ pub(crate) fn fail_if_any(failures: usize) -> anyhow::Result<()> {
         anyhow::bail!("{failures} branch(es) failed");
     }
     Ok(())
+}
+
+/// A forge for this repo plus its user-facing noun ("PR"/"MR"), resolved once.
+///
+/// The three MR verbs (`submit`, `anno`, `decorate`) all open on the same
+/// `Remotes::resolve → detect → noun` bootstrap, so it lives here rather than
+/// being re-typed — and copied wrong — in each verb.
+pub(crate) struct ForgeSession {
+    pub forge: Box<dyn Forge>,
+    pub noun: &'static str,
+}
+
+impl ForgeSession {
+    pub(crate) fn open(repo: &Repository) -> anyhow::Result<Self> {
+        let remotes = Remotes::resolve(repo);
+        let forge = forge::detect(repo, &remotes)?;
+        let noun = forge.noun();
+        Ok(Self { forge, noun })
+    }
+}
+
+/// Find the open MR for each branch, in parallel, applying the verbs' shared
+/// reconciliation: a branch with no open MR logs a "no open <noun>" note, an
+/// error is counted and warned. Returns the `(branch, MR)` pairs that were found
+/// (in `branches` order) and the failure tally — the common front half of `anno`
+/// and `decorate`, which then each do their own thing with the MRs that exist.
+pub(crate) fn find_open_mrs(
+    session: &ForgeSession,
+    branches: &[String],
+) -> (Vec<(String, MergeRequest)>, usize) {
+    let found = map_parallel(branches, |branch| {
+        (
+            branch.clone(),
+            session.forge.find(branch, StateFilter::Open),
+        )
+    });
+    let mut mrs = Vec::new();
+    let mut failures = 0usize;
+    for (branch, result) in found {
+        match result {
+            Ok(Some(mr)) => mrs.push((branch, mr)),
+            Ok(None) => log::info!("{branch}: no open {}", session.noun),
+            Err(e) => {
+                failures += 1;
+                log::warn!("{branch}: {e}");
+            }
+        }
+    }
+    (mrs, failures)
 }

@@ -16,8 +16,12 @@
 //! `resolve::ToolchainInjector` seam, which the core owns and each backend in
 //! [`crate::build_system`] implements. See `docs/project/design.md` §1.4.
 
+mod context;
 pub mod model;
+mod presets;
 pub mod resolve;
+mod sys;
+mod toolchain;
 pub mod workspace;
 
 use anyhow::{Context, Result};

@@ -90,9 +90,13 @@ warm_config() {
             *)     _cfg_val= ;;
         esac
         _cfg_twin=$(_cfg_env_name "$_cfg_key")
-        if eval "[ -z \"\${$_cfg_twin+x}\" ]"; then
-            eval "$_cfg_twin=\$_cfg_val"
-            export "$_cfg_twin"
+        # A crafted config subsection could produce a twin that isn't a clean
+        # identifier; skip it rather than feed it to `export`. The value is
+        # assigned by `export name=value` (never `eval`), so a config value can
+        # never be executed — and a twin the user already set wins.
+        _is_identifier "$_cfg_twin" || continue
+        if ! _env_is_set "$_cfg_twin"; then
+            export "$_cfg_twin=$_cfg_val"
         fi
     done <<_WITS_CFG_EOF
 $(git config --get-regexp "$_re" 2>/dev/null)

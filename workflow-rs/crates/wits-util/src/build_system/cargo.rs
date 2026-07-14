@@ -1,6 +1,8 @@
 //! The cargo backend. cargo drives rustc, so most of the canonical vocabulary
 //! maps to environment (build scripts and the `cc` crate read `CC`/`CXX`), and
-//! there is no separate configure step.
+//! there is no separate configure step. cargo has no `-D`-style definition
+//! mechanism, so project/preset `definitions` have no landing spot here and are
+//! warned about rather than silently dropped or faked as `--config`.
 
 use std::path::Path;
 
@@ -74,6 +76,26 @@ impl Backend for Cargo {
                 args.push("--profile".into());
                 args.push(other.to_string());
             }
+        }
+        // cargo has no analogue of cmake/meson `-D` definitions: `--config` is a
+        // *cargo-config* override on a fixed schema (`build.*`, `profile.*`, …),
+        // not a general key=value channel, so a project/preset definition can't
+        // be mapped onto it. Rather than drop them silently (looks fine, does
+        // nothing) or fake a `--config` (looks like it works, doesn't), say so —
+        // the real escape hatch for a cargo build is extra args / Cargo.toml.
+        if !ctx.logical.definitions.is_empty() {
+            let names: Vec<&str> = ctx
+                .logical
+                .definitions
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect();
+            log::warn!(
+                "cargo has no build-definition mechanism; ignoring {} definition(s) ({}). \
+                 Use --extra-build-args (e.g. --features …) or [profile]/[features] in Cargo.toml.",
+                names.len(),
+                names.join(", ")
+            );
         }
         args.extend(ctx.logical.extra_build_args.iter().cloned());
         steps.push(Step::new("Build", "cargo", args, ctx.source_dir));

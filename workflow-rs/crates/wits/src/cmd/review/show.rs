@@ -12,8 +12,8 @@ use wits_util::forge::{Anchor, DiffVersion, MrSummary, Side};
 use wits_util::git::Repository;
 
 use super::model::{
-    bare_thread_id, short, state_word, Action, Comment, Local, StoredCommit, StoredFile, Thread,
-    SCHEMA,
+    bare_thread_id, short, state_word, Action, Comment, Info, Local, StoredCommit, StoredFile,
+    Thread, SCHEMA,
 };
 use super::{local, ShowArgs};
 
@@ -84,26 +84,32 @@ pub fn run(repo: &Repository, args: &ShowArgs) -> Result<()> {
 }
 
 fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
+    let view = build_detail_view(ctx, id, args)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&view)?);
+    } else {
+        print_detail_human(&view);
+    }
+    Ok(())
+}
+
+/// Assemble the merged detail view for one MR: load its three store files, fold
+/// the draft into the remote threads, recompute outdate flags locally, apply the
+/// display filters, and stitch in stack neighbours. Pure data — no I/O to
+/// stdout — so it is the one place the read model is built (and the natural test
+/// seam), leaving `show_detail` to only choose JSON vs. human rendering.
+fn build_detail_view(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<DetailView> {
     let info = ctx.store.load_info(id).with_context(|| {
         format!("MR {id} isn't in the store yet — run `wits review fetch {id}` first")
     })?;
     let comments = ctx.store.load_comments(id);
     let draft = ctx.store.load_local(id)?;
 
-    let infos = ctx.store.list_infos();
-    let (nodes, position) = super::stack_chain(&infos, id);
-    let neighbors = Neighbors {
-        position,
-        prev_mr: position.checked_sub(1).and_then(|i| nodes.get(i).cloned()),
-        next_mr: nodes.get(position + 1).cloned(),
-        nodes,
-    };
-
     let mut threads = merge_threads(comments.threads, &draft, info.head());
     recompute_outdated(&ctx.repo, &mut threads, info.head());
     apply_filters(&mut threads, args);
 
-    let view = DetailView {
+    Ok(DetailView {
         schema: SCHEMA,
         snapshot: SnapshotView {
             base_sha: info
@@ -113,7 +119,7 @@ fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
             head_sha: info.head().unwrap_or_default().to_owned(),
         },
         snapshots: info.snapshots.clone(),
-        neighbors,
+        neighbors: neighbors(&ctx.store.list_infos(), id),
         commits: info.commits.clone(),
         files: info.files.clone(),
         threads,
@@ -123,14 +129,19 @@ fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
             pending: pending_count(&draft),
         },
         mr: info.mr,
-    };
+    })
+}
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&view)?);
-    } else {
-        print_detail_human(&view);
+/// The stack neighbours of `id`: its position in the reconstructed chain plus
+/// the ids immediately below and above it.
+fn neighbors(infos: &[Info], id: &str) -> Neighbors {
+    let (nodes, position) = super::stack_chain(infos, id);
+    Neighbors {
+        position,
+        prev_mr: position.checked_sub(1).and_then(|i| nodes.get(i).cloned()),
+        next_mr: nodes.get(position + 1).cloned(),
+        nodes,
     }
-    Ok(())
 }
 
 /// Fold the draft into the remote threads: new comments become local threads,

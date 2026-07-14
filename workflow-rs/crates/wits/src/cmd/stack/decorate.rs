@@ -12,18 +12,11 @@
 //! re-running is safe. Like `submit`, it leaves the work of *finding* the MR to
 //! the forge and never pushes.
 
-use wits_util::forge::Remotes;
-use wits_util::forge::{self, Attributes, StateFilter};
+use wits_util::forge::Attributes;
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
 
-use super::{fail_if_any, map_parallel, resolution, DecorateArgs};
-
-enum Outcome {
-    Done(String),
-    NoMr,
-    Failed(String),
-}
+use super::{fail_if_any, find_open_mrs, map_parallel, resolution, DecorateArgs, ForgeSession};
 
 pub fn run(repo: &Repository, args: &DecorateArgs) -> anyhow::Result<()> {
     let attrs = Attributes {
@@ -40,41 +33,32 @@ pub fn run(repo: &Repository, args: &DecorateArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let remotes = Remotes::resolve(repo);
-    let forge = forge::detect(repo, &remotes)?;
-    let noun = forge.noun();
+    let session = ForgeSession::open(repo)?;
+    let noun = session.noun;
 
-    let outcomes = map_parallel(&branches, |branch| {
-        let outcome = match forge.find(branch, StateFilter::Open) {
-            Ok(Some(mr)) => {
-                if wits_log::is_dry_run() {
-                    wits_log::dry_run(&format!(
-                        "decorate {noun} {} ({branch}): {}",
-                        mr.display,
-                        attrs.summary()
-                    ));
-                    Outcome::Done(mr.display)
-                } else {
-                    match forge.apply_attributes(&mr.id, &attrs) {
-                        Ok(()) => Outcome::Done(mr.display),
-                        Err(e) => Outcome::Failed(e.to_string()),
-                    }
-                }
-            }
-            Ok(None) => Outcome::NoMr,
-            Err(e) => Outcome::Failed(e.to_string()),
-        };
-        (branch.clone(), outcome)
+    // Find the open MRs (shared with `anno`), then apply attributes to each in
+    // parallel — independent per MR, so a slow forge call for one doesn't stall
+    // the rest.
+    let (mrs, mut failures) = find_open_mrs(&session, &branches);
+    let results = map_parallel(&mrs, |(branch, mr)| {
+        if wits_log::is_dry_run() {
+            wits_log::dry_run(&format!(
+                "decorate {noun} {} ({branch}): {}",
+                mr.display,
+                attrs.summary()
+            ));
+            return Ok(());
+        }
+        session.forge.apply_attributes(&mr.id, &attrs)
     });
-
-    let mut failures = 0usize;
-    for (branch, outcome) in outcomes {
-        match outcome {
-            Outcome::Done(display) => log::info!("decorated {noun} {display} ({branch})"),
-            Outcome::NoMr => log::info!("{branch}: no open {noun}"),
-            Outcome::Failed(e) => {
+    for ((branch, mr), result) in mrs.iter().zip(results) {
+        match result {
+            // Keep the full `anyhow` chain in the log rather than flattening to a
+            // bare string, so a forge error's cause survives.
+            Ok(()) => log::info!("decorated {noun} {} ({branch})", mr.display),
+            Err(e) => {
                 failures += 1;
-                log::warn!("{branch}: {e}");
+                log::warn!("{branch}: {e:#}");
             }
         }
     }

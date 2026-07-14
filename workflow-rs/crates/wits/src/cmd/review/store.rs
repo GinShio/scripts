@@ -180,6 +180,12 @@ impl Store {
         fs::write(self.root.join("current"), id).context("recording current review")?;
         Ok(())
     }
+
+    /// Forget the current-checkout pointer — used when the MR it names is pruned,
+    /// so a later `--next`/`--prev` can't navigate from a store that's gone.
+    pub fn clear_current(&self) -> Result<()> {
+        remove_if_present(&self.root.join("current"))
+    }
 }
 
 /// The git-ref namespace that pins a reviewed snapshot's objects alive.
@@ -197,9 +203,23 @@ pub mod refs {
     }
 }
 
+/// Read a JSON cache file, or `None` when it is absent. A file that *exists* but
+/// won't parse is corruption, not absence: these are all refetchable caches
+/// (`info`/`comments`/`inflight`), so we degrade to `None` rather than error —
+/// but we warn, so a corrupt cache is never silently invisible (unlike the
+/// precious `local.json`, which surfaces a hard error in `load_local`).
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
     let text = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
+    match serde_json::from_str(&text) {
+        Ok(value) => Some(value),
+        Err(e) => {
+            log::warn!(
+                "{}: ignoring unparseable cache ({e}); re-run `wits review fetch`",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
