@@ -20,12 +20,11 @@ away, which is the point. Each configurable behaviour is described with its keys
 below; how those keys are read — git config versus environment — is spelled out
 once in [How settings are read](#how-settings-are-read).
 
-Two external tools also ride along on several hooks and need no setup from you:
-**Git LFS** keeps large-file objects synced (on checkout, merge, commit, and
-push), and **git-branchless** records history events for its smartlog/undo (on
-nearly every hook). Both are silent when the tool isn't installed and neither has
-anything to configure, so the sections below only cover the framework's own
-scripts.
+Two external tools are assumed to be installed and ride along on several hooks
+with no setup from you: **Git LFS** keeps large-file objects synced (on checkout,
+merge, commit, and push), and **git-branchless** records history events for its
+smartlog/undo (on nearly every hook). Neither has anything to configure, so the
+sections below only cover the framework's own scripts.
 
 ## How settings are read
 

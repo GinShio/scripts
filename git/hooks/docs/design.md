@@ -74,8 +74,12 @@ non-zero exit stops the hook with that status.** For a blocking hook
 detected secret should abort the commit, and later checks are pointless once one
 has already failed. For an advisory hook (`post-checkout`, `post-merge`) the
 same rule means a script that genuinely fails takes the chain down with it, so
-those scripts are written to be tolerant: a missing optional tool is a silent
-`exit 0`, never an error (§ the `command -v` guards throughout).
+those scripts are written to be tolerant: a failure in a non-essential step (a
+branchless recorder, an LFS sync) is logged and carried on rather than aborting
+the chain. The one exception is the formatter/linter `command -v` guards — a
+missing language tool is a silent `exit 0` because formatting and linting are
+environment-dependent; git itself, git-lfs, and git-branchless are assumed
+present.
 
 Splitting one concern per file is what makes the disable hierarchy (§6) and the
 overlays (§5) possible, and what keeps each script short enough to read in one

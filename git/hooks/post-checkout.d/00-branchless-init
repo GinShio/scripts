@@ -8,8 +8,6 @@
 # Only act on branch checkouts (flag == 1), never on file checkouts.
 [ "$3" = "1" ] || exit 0
 
-command -v git-branchless >/dev/null 2>&1 || exit 0
-
 # `git branchless init` writes <common-git-dir>/branchless/config and adds an
 # [include] entry to the repo config. Its presence means we are already set up.
 # Use the common dir so linked worktrees share the main repo's state.
