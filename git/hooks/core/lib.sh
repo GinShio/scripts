@@ -159,30 +159,16 @@ resolve_build_dirs() {
     _repo="$1"
     _branch="$2"
 
-    # Locate builder.py through the workflow environment; do nothing if either
-    # the env file or the builder is absent.
-    _env_file="${XDG_CONFIG_HOME:-$HOME/.config}/workflow/.env"
-    [ -f "$_env_file" ] || return 0
-    . "$_env_file"
-    _builder_script="$PROJECTS_SCRIPT_DIR/builder.py"
-    [ -f "$_builder_script" ] || return 0
+    # The wits project registry is the source of truth: it resolves the one build
+    # dir for this checkout's branch directly, from the current directory. Prefer
+    # it when installed; fall back to the legacy builder.py listing otherwise.
+    if command -v wits >/dev/null 2>&1; then
+        _bd=$(wits project build-dir "$_repo" --branch "$_branch" 2>/dev/null) &&
+            [ -n "$_bd" ] && { echo "$_bd"; return; }
+    fi
 
-    # stderr suppressed so a stray usage message doesn't leak into the output.
-    _output=$(python3 "$_builder_script" list "$_repo" --branch "$_branch" --show-build-dir --no-submodules 2>/dev/null)
-
-    echo "$_output" | while read -r line; do
-        [ -z "$line" ] && continue
-        case "$line" in ---*) continue ;; esac
-        case "$line" in *"Build Dir"*) continue ;; esac
-        case "$line" in *"not found"*) continue ;; esac
-        case "$line" in *"No projects found"*) continue ;; esac
-        case "$line" in Warning:*) continue ;; esac
-        case "$line" in Error:*) continue ;; esac
-
-        # Last column is the build dir; only emit absolute paths.
-        _build_dir=$(echo "$line" | awk '{print $NF}')
-        case "$_build_dir" in /*) echo "$_build_dir";; *) continue ;; esac
-    done
+    # Fallback to assumption build dir.
+    echo "$_repo/_build"
 }
 
 # Resolve Main/Default Branch Name
@@ -190,12 +176,11 @@ resolve_build_dirs() {
 get_main_branch() {
     _remote="${1:-origin}"
 
-    # 0. Check User Configuration (Highest Priority)
-    # Useful for monorepos or non-standard layouts.
-    _cfg_branch=$(git config ginshio.workflow.main-branch 2>/dev/null)
-    if [ -n "$_cfg_branch" ]; then
-        echo "$_cfg_branch"
-        return
+    # 1. The wits project registry — authoritative for a known project, below an
+    # explicit git-config override but above the remote-HEAD / name guesses.
+    if command -v wits >/dev/null 2>&1; then
+        _wits_mb=$(wits project main-branch 2>/dev/null) &&
+            [ -n "$_wits_mb" ] && { echo "$_wits_mb"; return; }
     fi
 
     # 1. Check local tracking info (fastest)
