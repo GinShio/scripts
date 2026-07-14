@@ -63,7 +63,7 @@ pub enum TranscryptAction {
 pub fn run(args: &TranscryptArgs) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     let repo = Repository::new(&cwd);
-    let resolver = Resolver::new(Some(&repo), "transcrypt", Some(args.context.as_str()));
+    let resolver = Resolver::new(Some(&repo), "wits.transcrypt", Some(args.context.as_str()));
 
     match &args.action {
         TranscryptAction::Status => status(&resolver, &args.context),
@@ -95,7 +95,7 @@ fn resolve_crypto_config(
 ) -> anyhow::Result<(String, CipherAlgorithm, HashAlgorithm, KdfAlgorithm, u32)> {
     let password = resolver.get("password").map(|rv| rv.value).ok_or_else(|| {
         anyhow::anyhow!(
-            "no password configured; set TRANSCRYPT_PASSWORD or git config transcrypt.password"
+            "no password configured; set WITS_TRANSCRYPT_PASSWORD or git config wits.transcrypt.password"
         )
     })?;
 
@@ -204,7 +204,7 @@ fn recover(resolver: &Resolver<'_>, file: Option<&str>, data: &[u8]) -> anyhow::
     match wits_util::crypto::decrypt(ciphertext, &password, &opts) {
         Ok(plaintext) => Ok(plaintext),
         Err(e) => {
-            if std::env::var("TRANSCRYPT_ALLOW_RAW_FALLBACK").is_ok() {
+            if std::env::var("WITS_TRANSCRYPT_ALLOW_RAW_FALLBACK").is_ok() {
                 log::warn!("decryption failed ({e}); passing raw content through");
                 Ok(data.to_vec())
             } else {

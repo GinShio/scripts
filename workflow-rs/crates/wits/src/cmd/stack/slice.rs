@@ -220,10 +220,11 @@ fn chain_branches(raw: Vec<String>, base: &str) -> Vec<String> {
         .collect()
 }
 
-/// The branch-name prefix for suggestions: an explicit setting, else a slug of
-/// the user's name, else a neutral `stack/`.
+/// The branch-name prefix for suggestions: an explicit setting
+/// (`wits.stack.prefix`), else a slug of the user's name, else a neutral
+/// `stack/`.
 fn stack_prefix(repo: &Repository) -> String {
-    if let Some(prefix) = repo.get_config("workflow.branch-prefix").ok().flatten() {
+    if let Some(prefix) = repo.get_config("wits.stack.prefix").ok().flatten() {
         if !prefix.is_empty() {
             return prefix;
         }

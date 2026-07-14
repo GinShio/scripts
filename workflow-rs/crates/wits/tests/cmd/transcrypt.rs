@@ -66,7 +66,7 @@ fn run_textconv(file_name: &str, contents: &[u8], env: &[(&str, &str)]) -> Run {
     }
 }
 
-const PASSWORD: (&str, &str) = ("TRANSCRYPT_PASSWORD", "test-passphrase");
+const PASSWORD: (&str, &str) = ("WITS_TRANSCRYPT_PASSWORD", "test-passphrase");
 
 #[test]
 fn clean_then_smudge_round_trips() {
@@ -101,7 +101,7 @@ fn smudge_without_a_password_passes_bytes_through() {
     let out = run(
         &["transcrypt", "smudge", "secret.txt"],
         &[],
-        &["TRANSCRYPT_PASSWORD"],
+        &["WITS_TRANSCRYPT_PASSWORD"],
         blob,
     );
     assert!(out.success);
@@ -118,7 +118,7 @@ fn smudge_with_the_wrong_password_fails_loudly() {
     );
     let out = run(
         &["transcrypt", "smudge", "secret.txt"],
-        &[("TRANSCRYPT_PASSWORD", "the-wrong-one")],
+        &[("WITS_TRANSCRYPT_PASSWORD", "the-wrong-one")],
         &[],
         &cleaned.stdout,
     );
@@ -136,8 +136,8 @@ fn the_escape_hatch_forces_a_wrong_password_through() {
     let out = run(
         &["transcrypt", "smudge", "secret.txt"],
         &[
-            ("TRANSCRYPT_PASSWORD", "the-wrong-one"),
-            ("TRANSCRYPT_ALLOW_RAW_FALLBACK", "1"),
+            ("WITS_TRANSCRYPT_PASSWORD", "the-wrong-one"),
+            ("WITS_TRANSCRYPT_ALLOW_RAW_FALLBACK", "1"),
         ],
         &[],
         &cleaned.stdout,

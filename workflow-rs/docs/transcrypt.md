@@ -33,7 +33,7 @@ The password is the only thing `transcrypt` can't work without. Put it in the
 repo's git config:
 
 ```sh
-git config transcrypt.password 'correct horse battery staple'
+git config wits.transcrypt.password 'correct horse battery staple'
 ```
 
 This lives in `.git/config`, which is local to your clone and never committed —
@@ -42,7 +42,7 @@ you'd rather not store it at all (e.g. on CI), provide it through the
 environment instead and skip this step:
 
 ```sh
-export TRANSCRYPT_PASSWORD='correct horse battery staple'
+export WITS_TRANSCRYPT_PASSWORD='correct horse battery staple'
 ```
 
 ### 2. Register the filters
@@ -110,7 +110,7 @@ into plaintext, set the password and re-run the smudge filter:
 
 ```sh
 git clone <url> && cd <repo>
-git config transcrypt.password 'correct horse battery staple'
+git config wits.transcrypt.password 'correct horse battery staple'
 
 # force the working tree to be re-smudged now that the password exists
 rm -rf secrets && git checkout -- secrets/
@@ -128,8 +128,8 @@ file encrypted under one cipher/KDF/digest can only be decrypted with the same
 ones:
 
 ```sh
-git config transcrypt.cipher chacha20-poly1305
-git config transcrypt.kdf    argon2id
+git config wits.transcrypt.cipher chacha20-poly1305
+git config wits.transcrypt.kdf    argon2id
 ```
 
 ## Multiple contexts
@@ -140,7 +140,7 @@ context gets its own password, its own filter, and its own `.gitattributes`
 rule. The filter command carries the context through `-C`:
 
 ```sh
-git config transcrypt.prod.password 'a different password'
+git config wits.transcrypt.prod.password 'a different password'
 
 git config filter.transcrypt-prod.clean    'wits transcrypt -C prod clean %f'
 git config filter.transcrypt-prod.smudge   'wits transcrypt -C prod smudge %f'
@@ -162,11 +162,11 @@ named `<ctx>`, insert it as shown; the default context omits that segment.
 
 | Setting | Environment variable | Git config key | Default |
 |---|---|---|---|
-| Password | `TRANSCRYPT_[<CTX>_]PASSWORD` | `transcrypt.[<ctx>.]password` | *(required)* |
-| Cipher | `TRANSCRYPT_[<CTX>_]CIPHER` | `transcrypt.[<ctx>.]cipher` | `aes-256-gcm` |
-| Digest | `TRANSCRYPT_[<CTX>_]DIGEST` | `transcrypt.[<ctx>.]digest` | `sha256` |
-| KDF | `TRANSCRYPT_[<CTX>_]KDF` | `transcrypt.[<ctx>.]kdf` | `pbkdf2` |
-| Iterations | `TRANSCRYPT_[<CTX>_]ITERATIONS` | `transcrypt.[<ctx>.]iterations` | historical default for the KDF |
+| Password | `WITS_TRANSCRYPT_[<CTX>_]PASSWORD` | `wits.transcrypt.[<ctx>.]password` | *(required)* |
+| Cipher | `WITS_TRANSCRYPT_[<CTX>_]CIPHER` | `wits.transcrypt.[<ctx>.]cipher` | `aes-256-gcm` |
+| Digest | `WITS_TRANSCRYPT_[<CTX>_]DIGEST` | `wits.transcrypt.[<ctx>.]digest` | `sha256` |
+| KDF | `WITS_TRANSCRYPT_[<CTX>_]KDF` | `wits.transcrypt.[<ctx>.]kdf` | `pbkdf2` |
+| Iterations | `WITS_TRANSCRYPT_[<CTX>_]ITERATIONS` | `wits.transcrypt.[<ctx>.]iterations` | historical default for the KDF |
 
 Accepted values: cipher `aes-256-gcm` \| `chacha20-poly1305`; KDF `pbkdf2` \|
 `argon2id`; digest `sha256` \| `sha384` \| `sha512` \| `sha3256` \| `sha3384` \|
@@ -177,10 +177,10 @@ use it with `argon2id`, or pick a SHA digest).
 
 When the same setting is defined in more than one place, the first hit wins:
 
-1. Environment variable, context-specific — `TRANSCRYPT_<CTX>_<KEY>`
-2. Environment variable — `TRANSCRYPT_<KEY>`
-3. Git config, context-specific — `transcrypt.<ctx>.<key>`
-4. Git config — `transcrypt.<key>`
+1. Environment variable, context-specific — `WITS_TRANSCRYPT_<CTX>_<KEY>`
+2. Environment variable — `WITS_TRANSCRYPT_<KEY>`
+3. Git config, context-specific — `wits.transcrypt.<ctx>.<key>`
+4. Git config — `wits.transcrypt.<key>`
 5. Built-in default
 
 Environment beats git config because it's the more deliberate, throwaway
@@ -207,7 +207,7 @@ These two cases are treated very differently on purpose:
 - **Wrong password.** This fails loudly, because quietly writing corrupted
   plaintext into the working tree is worse than stopping. If you need to force
   the raw ciphertext through anyway — say, to unblock a checkout and investigate
-  — set `TRANSCRYPT_ALLOW_RAW_FALLBACK=1`.
+  — set `WITS_TRANSCRYPT_ALLOW_RAW_FALLBACK=1`.
 
 A third case is content that isn't a transcrypt packet at all: a file matched by
 `.gitattributes` but committed before encryption was set up, or a binary blob.
@@ -219,8 +219,8 @@ under the wrong password trips the loud failure above.
 
 | Symptom | Cause and fix |
 |---|---|
-| `git add` of a secret aborts with "no password configured" | Set `transcrypt.password` (or `TRANSCRYPT_PASSWORD`) before adding. With `required = true`, a failing filter correctly stops the operation. |
+| `git add` of a secret aborts with "no password configured" | Set `wits.transcrypt.password` (or `WITS_TRANSCRYPT_PASSWORD`) before adding. With `required = true`, a failing filter correctly stops the operation. |
 | Working-tree files are base64 gibberish | The password isn't set in this clone, so `smudge` passed the ciphertext through. Set the password, then `rm` and re-checkout the paths. |
-| Checkout fails with an authentication error | Wrong password (or the file was moved to a path that doesn't match how it was encrypted). Fix the password, or set `TRANSCRYPT_ALLOW_RAW_FALLBACK=1` to check out the raw bytes and investigate. |
+| Checkout fails with an authentication error | Wrong password (or the file was moved to a path that doesn't match how it was encrypted). Fix the password, or set `WITS_TRANSCRYPT_ALLOW_RAW_FALLBACK=1` to check out the raw bytes and investigate. |
 | Old files won't decrypt after you changed `cipher`/`kdf`/`digest` | Those settings are part of how each file was sealed. Restore the previous values, or decrypt with the old settings and re-encrypt with the new ones. |
 | `wits transcrypt status` shows a value you didn't expect | Check the source column — an environment variable will quietly override git config. The resolution order above explains who wins. |

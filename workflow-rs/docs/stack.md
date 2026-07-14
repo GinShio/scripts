@@ -113,7 +113,7 @@ pick d4e5f6a Wire up the UI
 Uncomment the `update-ref` lines where you want a branch to start, save, and let
 the rebase finish. The branches are created at the end of the rebase (safe even
 for the branch you're on), and `.git/machete` is written to match. Branch-name
-suggestions use `workflow.branch-prefix` if set, otherwise a slug of your
+suggestions use `wits.stack.prefix` if set, otherwise a slug of your
 `user.name`, otherwise `stack/`.
 
 You don't *have* to use `slice` — any branches you create yourself and record in
@@ -308,7 +308,8 @@ Like every `wits` tool, `stack` has direct forms via symlink — `wits-stack`,
 
 ## Configuration reference
 
-All keys live under git config's `workflow.*` namespace.
+All keys live under git config's `wits.*` namespace — forge identity and tokens
+under the shared `wits.forge.*`, and `stack`'s own settings under `wits.stack.*`.
 
 | Setting | Key | Notes |
 |---|---|---|
@@ -318,7 +319,7 @@ All keys live under git config's `workflow.*` namespace.
 | Token (env) | `GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITEA_TOKEN`, `FORGEJO_TOKEN`, `CODEBERG_TOKEN` | Used when no config key matches. |
 | Service override | `wits.forge.<host>.service` | Name a self-hosted host's type |
 | API base override | `wits.forge.<host>.api-url` | For self-hosted / enterprise endpoints |
-| Branch prefix | `workflow.branch-prefix` | `slice` name suggestions (default: slug of `user.name`, else `stack/`) |
+| Branch prefix | `wits.stack.prefix` | `slice` name suggestions (default: slug of `user.name`, else `stack/`) |
 
 There is intentionally **no** base-branch config key: the base is resolved from
 the merge target's remote HEAD, then `main`/`master`/`trunk`. (A future

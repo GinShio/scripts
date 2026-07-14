@@ -57,7 +57,9 @@ impl Repository {
 
     /// Whether the path is a git repository (inside a work tree).
     pub fn is_repo(&self) -> bool {
-        self.query(&["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
+        self.query(&["rev-parse", "--is-inside-work-tree"])
+            .as_deref()
+            == Some("true")
     }
 
     /// Whether the path exists on disk at all — the "is there a checkout here?"
@@ -246,10 +248,20 @@ impl Repository {
 
     /// Fetch a remote ref into a local ref, forcing the update. Used to pull an
     /// MR head (`refs/pull/<n>/head`) into a `refs/wits/review/*` pin.
-    pub fn fetch_ref(&self, remote: &str, remote_ref: &str, local_ref: &str) -> Result<(), GitError> {
+    pub fn fetch_ref(
+        &self,
+        remote: &str,
+        remote_ref: &str,
+        local_ref: &str,
+    ) -> Result<(), GitError> {
         self.capture(
             format!("fetch {remote_ref} from {remote}"),
-            &["fetch", "--no-tags", remote, &format!("+{remote_ref}:{local_ref}")],
+            &[
+                "fetch",
+                "--no-tags",
+                remote,
+                &format!("+{remote_ref}:{local_ref}"),
+            ],
             true,
         )
     }
@@ -279,7 +291,11 @@ impl Repository {
     /// Delete a ref. Mutating on purpose — this is `prune`'s cleanup, which a
     /// `-n` run should preview rather than perform.
     pub fn delete_ref(&self, name: &str) -> Result<(), GitError> {
-        self.capture(format!("delete ref {name}"), &["update-ref", "-d", name], false)
+        self.capture(
+            format!("delete ref {name}"),
+            &["update-ref", "-d", name],
+            false,
+        )
     }
 
     /// Every ref under `prefix` (e.g. `refs/wits/review/`) mapped to its target
@@ -326,7 +342,7 @@ mod tests {
         let _guard = crate::log::test_flag_guard();
         let dir = init_repo();
         Command::new("git")
-            .args(["config", "transcrypt.password", "hunter2"])
+            .args(["config", "wits.transcrypt.password", "hunter2"])
             .current_dir(dir.path())
             .force_run()
             .exec()
@@ -334,10 +350,10 @@ mod tests {
 
         let repo = Repository::new(dir.path());
         assert_eq!(
-            repo.get_config("transcrypt.password").unwrap(),
+            repo.get_config("wits.transcrypt.password").unwrap(),
             Some("hunter2".to_owned())
         );
-        assert_eq!(repo.get_config("transcrypt.absent").unwrap(), None);
+        assert_eq!(repo.get_config("wits.transcrypt.absent").unwrap(), None);
     }
 
     #[test]

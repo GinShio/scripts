@@ -180,7 +180,7 @@ run.
 The right source of truth is the future `project` subcommand: given a checkout's
 source path it will answer "what project is this, and what is its main branch?".
 Until it exists we skip straight to the two mechanical fallbacks above. We
-deliberately do **not** add a `workflow.base-branch` config key — the answer
+deliberately do **not** add a `wits.stack.base-branch` config key — the answer
 should come from project identity, not a hand-maintained per-repo setting, and an
 override now would only be a thing to migrate away from later. If nothing
 resolves, that is a hard error, not a guess.
@@ -357,8 +357,8 @@ authoritative list of assigned branches, because git leaves HEAD in a misleading
 position when the checked-out branch is itself an intermediate update-ref target.
 From that list we (re)write `.git/machete`.
 
-Suggested branch names use a configurable prefix (`workflow.branch-prefix`, else
-a slug of `user.name`, else `stack/`).
+Suggested branch names use a configurable prefix (`wits.stack.prefix`, else a
+slug of `user.name`, else `stack/`).
 
 ## 10. Concurrency
 
@@ -376,9 +376,9 @@ any fan-out.
 ## 11. Configuration (pointer, not reference)
 
 Only the shape, kept light here on purpose — the complete, reader-facing table
-lives in `docs/stack.md`. Config is read from git config under the `workflow.*`
-namespace: a branch-name prefix for `slice`, per-host service/api-url overrides
-for self-hosted forges, and the token chain of §7.4. There is intentionally no
+lives in `docs/stack.md`. Config is read from git config under the `wits.*`
+namespace: `wits.stack.prefix` for `slice`, and the shared `wits.forge.*`
+per-host service/api-url overrides plus the token chain of §7.4. There is intentionally no
 base-branch config key (§5.1). Per-run intents (draft, title source, force) are
 **CLI options**, not config — they describe one invocation, not a standing
 preference.

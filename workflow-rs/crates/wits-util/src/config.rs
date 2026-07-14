@@ -140,7 +140,10 @@ pub struct ResolvedValue {
 ///
 /// The same logical key maps to an env var (`PREFIX_[CONTEXT_]KEY`, upper-cased)
 /// and a git config key (`prefix.[context.]key`, lower-cased); env always wins
-/// because it is the more deliberate, ephemeral override.
+/// because it is the more deliberate, ephemeral override. The `prefix` is the
+/// git-config spelling and may be dotted (`wits.transcrypt`); the env form
+/// replaces those dots with underscores (`WITS_TRANSCRYPT_…`), so a subcommand's
+/// keys land under one consistent `wits.<sub>` / `WITS_<SUB>_` namespace.
 pub struct Resolver<'repo> {
     repo: Option<&'repo Repository>,
     prefix: String,
@@ -216,7 +219,10 @@ impl<'repo> Resolver<'repo> {
             Some(c) => format!("{}_{}_{}", self.prefix, c, key),
             None => format!("{}_{}", self.prefix, key),
         };
-        std::env::var(name.to_uppercase()).ok()
+        // A dotted prefix (`wits.transcrypt`) is the git-config spelling; in an
+        // env var the dots become underscores, so `wits.transcrypt`/`password`
+        // reads `WITS_TRANSCRYPT_PASSWORD`.
+        std::env::var(name.replace('.', "_").to_uppercase()).ok()
     }
 
     fn get_git(&self, repo: &Repository, ctx: Option<&str>, key: &str) -> Option<String> {
