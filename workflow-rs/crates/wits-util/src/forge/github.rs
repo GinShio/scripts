@@ -9,12 +9,12 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 
+use super::RemoteInfo;
 use super::{
     pick, request, ActionKey, Anchor, Attributes, Auth, BatchAction, BatchOutcome, DiffVersion,
     FeedQuery, Forge, LineRef, MergeRequest, MrDetails, MrState, MrSummary, NewMr, RemoteComment,
     RemoteThread, ReviewBatch, Side, StateFilter, Verdict, SELF_REF,
 };
-use crate::remote::RemoteInfo;
 
 pub struct GitHub {
     /// The GraphQL endpoint (`…/graphql`) — the whole GitHub forge speaks
@@ -964,7 +964,7 @@ impl Forge for GitHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::Service;
+    use crate::forge::Service;
     use serde_json::json;
 
     fn gh() -> GitHub {

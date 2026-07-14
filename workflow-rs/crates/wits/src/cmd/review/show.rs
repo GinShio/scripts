@@ -216,7 +216,7 @@ fn pending_comment(id: &str, body: &str) -> Comment {
     }
 }
 
-/// Recompute each line thread's `outdated` locally (redesign §5): a thread is
+/// Recompute each line thread's `outdated` locally (design.md §6): a thread is
 /// outdated when the line(s) it is anchored to fall inside a region the file
 /// changed between the commit the comment was written on and the current head.
 /// Uniform across forges and offline, from the objects `fetch` already pins.

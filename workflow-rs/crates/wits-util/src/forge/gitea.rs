@@ -10,11 +10,11 @@ use serde_json::{json, Value};
 
 use std::collections::HashMap;
 
+use super::RemoteInfo;
 use super::{
     current_user, pick, request, resolve_self, Attributes, Auth, Forge, MergeRequest, MrState,
     NewMr, StateFilter, SELF_REF,
 };
-use crate::remote::RemoteInfo;
 
 const WIP_PREFIX: &str = "WIP: ";
 

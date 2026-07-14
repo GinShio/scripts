@@ -8,10 +8,15 @@
 //! floor instead of reinventing it.
 //!
 //! The modules are flat on purpose. There is still a rough gradient — `config`,
-//! `crypto`, `git`, `log`, `process`, `resolver`, `template` are the thin floor;
-//! `build_system`, `forge`, `project`, `remote` are subsystems with real domain
-//! logic — but they sit side by side so a consumer names `wits_util::process` or
+//! `crypto`, `git`, `log`, `process`, `template` are the thin floor;
+//! `build_system`, `forge`, `project` are subsystems with real domain logic — but
+//! they sit side by side so a consumer names `wits_util::process` or
 //! `wits_util::forge` directly, without a grouping layer in between.
+//!
+//! Two pairs that were once separate modules are now unified where they belong:
+//! `config` folds in the single-setting `Resolver` (both answer "where does this
+//! come from?"), and the git-remote parsing that feeds forge detection lives in
+//! `forge::remote` (re-exported from `forge`), beside the forge it serves.
 
 pub mod build_system;
 pub mod config;
@@ -21,6 +26,4 @@ pub mod git;
 pub mod log;
 pub mod process;
 pub mod project;
-pub mod remote;
-pub mod resolver;
 pub mod template;

@@ -219,7 +219,7 @@ Force-*with-lease* rather than plain force: a stack is rewritten constantly, so
 non-fast-forward pushes are normal, but `--force-with-lease` still refuses to
 clobber a remote that someone else advanced — the one safety we actually want.
 
-## 7. Remotes, roles, and forges (`wits_util::remote`, `wits_util::forge`)
+## 7. Remotes, roles, and forges (`wits_util::forge`)
 
 ### 7.1 Two roles, made explicit
 
@@ -237,7 +237,7 @@ cross-project dance (create on the source project with a numeric
 `target_project_id`; the MR then lives in the target, where reads and edits go).
 The forge layer hides this — the verbs never know whether a fork is involved.
 
-### 7.2 URL parsing and detection (`wits_util::remote`)
+### 7.2 URL parsing and detection (`wits_util::forge::remote`)
 
 Parse the messy reality of remote URLs into `host / owner / repo` plus a detected
 service: scp-syntax (`git@host:owner/repo`), full URIs, SSH alias resolution via

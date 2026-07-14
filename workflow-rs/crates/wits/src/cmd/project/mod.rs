@@ -13,9 +13,10 @@ pub mod context;
 use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
 
+use wits_util::git;
 use wits_util::project::model::Profile;
 use wits_util::project::workspace::{ProjectData, Workspace};
-use wits_util::project::{git, resolve, resolve_target};
+use wits_util::project::{resolve, resolve_target};
 
 /// `wits project` — describe projects (the default), or manage a build context.
 #[derive(Debug, Args)]

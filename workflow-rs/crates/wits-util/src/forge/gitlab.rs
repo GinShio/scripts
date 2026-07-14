@@ -19,12 +19,12 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
+use super::RemoteInfo;
 use super::{
     encode, pick, request, ActionKey, Anchor, Attributes, Auth, BatchAction, BatchOutcome,
     DiffVersion, FeedQuery, Forge, LineRef, MergeRequest, MrDetails, MrState, MrSummary, NewMr,
     RemoteComment, RemoteThread, ReviewBatch, Side, StateFilter, Verdict, SELF_REF,
 };
-use crate::remote::RemoteInfo;
 
 const DRAFT_PREFIX: &str = "Draft: ";
 
@@ -671,7 +671,7 @@ impl Forge for GitLab {
                 resolved,
                 // GitLab exposes no cheap per-note outdated flag; left false in
                 // v1 (see the review docs' capability matrix). Local outdate
-                // computation (redesign §5) will supersede this.
+                // computation (design.md §6) supersedes this.
                 outdated: false,
                 anchor,
                 commit,
@@ -907,7 +907,7 @@ impl Forge for GitLab {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::Service;
+    use crate::forge::Service;
     use serde_json::json;
 
     fn info(host: &str, owner: &str, repo: &str) -> RemoteInfo {

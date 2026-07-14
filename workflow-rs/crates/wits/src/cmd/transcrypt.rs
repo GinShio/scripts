@@ -23,11 +23,11 @@ use std::io::{Read, Write};
 use anyhow::Context;
 use clap::Args;
 
+use wits_util::config::Resolver;
 use wits_util::crypto::{
     CipherAlgorithm, DecryptOptions, EncryptOptions, HashAlgorithm, KdfAlgorithm, SivMode,
 };
 use wits_util::git::Repository;
-use wits_util::resolver::Resolver;
 
 #[derive(Debug, Args)]
 pub struct TranscryptArgs {

@@ -18,6 +18,8 @@
 //! repo to it behind a [`RestoreGuard`], so the working tree is always returned
 //! to where it started — even on failure.
 
+use std::path::PathBuf;
+
 use anyhow::{bail, Context, Result};
 use clap::Args;
 
@@ -25,7 +27,7 @@ use wits_util::process::Command;
 
 use crate::cmd::project::ProfileArgs;
 use wits_util::build_system::{for_system, Backend, BuildMode, EmitContext};
-use wits_util::project::git::{Git, RestoreGuard};
+use wits_util::git::{Git, RestoreGuard};
 use wits_util::project::model::{BranchStrategy, Profile};
 use wits_util::project::resolve::{self, Plan, PlanInput, ToolchainInjector};
 use wits_util::project::resolve_target;
@@ -54,6 +56,11 @@ pub struct BuildArgs {
     /// Install after building.
     #[arg(long)]
     pub install: bool,
+    /// Override the install prefix, ignoring the project's configured
+    /// `install_dir` (the backend's install-prefix, e.g. cmake's
+    /// `CMAKE_INSTALL_PREFIX`). Affects configure as well as install.
+    #[arg(long = "install-dir", value_name = "DIR")]
+    pub install_dir: Option<PathBuf>,
     /// Build a specific target.
     #[arg(short = 't', long = "target")]
     pub build_target: Option<String>,
@@ -81,6 +88,9 @@ pub struct BuildArgs {
 pub struct BuildOptions {
     pub mode: BuildMode,
     pub install: bool,
+    /// A command-line override of the resolved install prefix (§5.5); `None`
+    /// leaves the project's configured `install_dir` in force.
+    pub install_dir: Option<PathBuf>,
     pub target: Option<String>,
     pub extra_config_args: Vec<String>,
     pub extra_build_args: Vec<String>,
@@ -132,6 +142,7 @@ fn build_options(a: &BuildArgs) -> Result<BuildOptions> {
     Ok(BuildOptions {
         mode,
         install: a.install,
+        install_dir: a.install_dir.clone(),
         target: a.build_target.clone(),
         extra_config_args: cfg,
         extra_build_args: build,
@@ -164,7 +175,14 @@ fn execute(
         None => None,
     };
 
-    let plan = make_plan(ws, project, profile, opts, &branch, backend.as_deref())?;
+    let mut plan = make_plan(ws, project, profile, opts, &branch, backend.as_deref())?;
+
+    // A `--install-dir` on the command line overrides the project's resolved
+    // prefix (§5.5, highest priority). `install_dir` only feeds the backend's
+    // install-prefix step, so overriding the final plan value is sufficient.
+    if let Some(dir) = &opts.install_dir {
+        plan.install_dir = Some(dir.clone());
+    }
 
     let Some(build_dir) = plan.build_dir.clone() else {
         log::warn!(

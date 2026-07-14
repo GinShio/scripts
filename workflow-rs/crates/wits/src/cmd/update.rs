@@ -19,7 +19,7 @@ use clap::Args;
 
 use wits_util::template::Engine;
 
-use wits_util::project::git::{self, Git, RestoreGuard};
+use wits_util::git::{self, Git, RestoreGuard};
 use wits_util::project::model::{infer_kind, Kind, RawRepo};
 use wits_util::project::resolve;
 use wits_util::project::resolve_target;

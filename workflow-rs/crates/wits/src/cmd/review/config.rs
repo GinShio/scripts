@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use wits_util::forge::RemoteInfo;
 use wits_util::forge::{FeedQuery, FeedStates};
-use wits_util::remote::RemoteInfo;
 
 /// How many MRs a feed pulls when it doesn't say otherwise — a cap so a large
 /// repo can't flood the inbox.

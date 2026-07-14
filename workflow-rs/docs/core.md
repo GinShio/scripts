@@ -2,8 +2,8 @@
 
 The `wits-util` crate (`crates/wits-util/`) is the shared library behind the
 `wits` binary and its plugins. Its modules are flat, but there is a gradient:
-this document covers the thin *floor* — `process`, `git`, `config`, `resolver`,
-`crypto`, `log`, `template` — the primitives the commands and subsystems lean on.
+this document covers the thin *floor* — `process`, `git`, `config`, `crypto`,
+`log`, `template` — the primitives the commands and subsystems lean on.
 It records *why* each one exists and the one decision in it that isn't obvious —
 the kind of thing that is invisible in the code and expensive to rediscover. For
 the mechanics, read the module; for the API, read the signatures.
@@ -37,48 +37,56 @@ shell runs means we read precisely what they would, with no second
 implementation to keep honest. A process spawn per query is free next to the
 work these commands actually do.
 
-The surface grows strictly with what the commands need, and only ever has. It
-started as config reads; the stack tool added branch and ref reads, a commit-log
-range read (for MR titles), remote-URL reads, and one mutation — a
-force-with-lease push. The lease, not a bare force, is the deliberate bit: a
-stack is rewritten constantly so non-fast-forward pushes are the norm, but the
-lease still refuses to clobber a remote someone else moved.
+The module holds two handles at different altitudes, split by role rather than
+by location. `Repository` is the read/ref floor: config, branch and ref reads, a
+commit-log range read (for MR titles), remote-URL reads, and a couple of
+mutations — the force-with-lease push (the lease, not a bare force, is the
+deliberate bit: a stack is rewritten constantly so non-fast-forward pushes are
+the norm, but the lease still refuses to clobber a remote someone else moved) and
+the review-fetch ref plumbing. `Git` is the wider working-tree surface the
+`project`/`build`/`update` actions drive — worktrees, stashes, submodules,
+branch switches, clone — with mutations that inherit stdio so progress streams
+live. These once lived in two module trees (`git` and `project::git`); folding
+them into one `git/` module makes the read-floor-vs-mutation-surface split
+legible instead of accidental.
 
 The larger git-hosting concerns — parsing remote URLs, detecting a forge,
-talking to its MR API — deliberately do *not* live in `core`. They sit in
-`util/` (`wits_util::remote`, `wits_util::forge`), because they carry real domain logic of
-their own and `core` is kept to the floor. See `docs/stack/design.md` for that
-layer's shape.
+talking to its MR API — deliberately do *not* live on this floor. They sit in
+`wits_util::forge` (remote-URL parsing is `forge::remote`, beside the forge
+detection it feeds), because they carry real domain logic of their own. See
+`docs/stack/design.md` for that layer's shape.
 
-## `config` — finding a tool's config tree
+## `config` — where does configuration come from?
 
 There are two entirely different "config" questions, and conflating them is how a
-config system rots. This module owns the coarse one: *where is the config
-directory, and what `*.toml` files are in it?* — as opposed to `resolver` below,
-which answers the fine one: *what is the value of one setting?* Keeping them
-apart means the directory search and the file walk stay generic OS-convention
-plumbing with no idea what a "project" or a "toolchain" is.
+config system rots — so this one module answers both, deliberately, at two
+scopes that share a purpose but never each other's logic.
 
-The search order is the usual env → XDG → HOME ladder, parameterised per tool by
-a `Root { env, xdg, home }` so a second subsystem gets the same behaviour just by
-naming its own variable and subpaths, not by copying the walk. Discovery returns
-every nested `*.toml` in sorted order, and a missing root is an empty list rather
-than an error — an uninstalled tool simply has nothing to load. What a subsystem
-then *does* with those files — route each by section (as `project` does) or
-deep-merge them into one document — is its own business; this layer only finds
-them.
+**The coarse one — the config *tree*.** *Where is the config directory, and what
+`*.toml` files are in it?* The search order is the usual env → XDG → HOME ladder,
+parameterised per tool by a `Root { env, xdg, home }` so a second subsystem gets
+the same behaviour just by naming its own variable and subpaths, not by copying
+the walk. Discovery returns every nested `*.toml` in sorted order, and a missing
+root is an empty list rather than an error — an uninstalled tool simply has
+nothing to load. What a subsystem then *does* with those files — route each by
+section (as `project` does) or deep-merge them into one document — is its own
+business; this layer only finds them.
 
-## `resolver` — layered config resolution
+**The fine one — a single *setting*** (`Resolver`). *What is the value of one
+setting?* A value like the encryption password can live in an environment
+variable or in git config, and we want one predictable precedence order (env over
+git) with no bootstrap loop — the resolver can't itself need config to find
+config. The subtle part is context isolation: a repository can hold several
+independent secret sets — `default`, `prod`, and so on — and when a non-default
+context is active the resolver refuses to fall back to the bare, context-less
+key. Falling back would silently hand a `prod` operation the `default` password
+and encrypt data under the wrong key; the bare key is only consulted for the
+default context.
 
-A setting like the encryption password can live in an environment variable or in
-git config, and we want one predictable precedence order with no bootstrap loop
-(the resolver can't itself need config to find config).
-
-The subtle part is context isolation. A repository can hold several independent
-secret sets — `default`, `prod`, and so on. When a non-default context is active
-the resolver refuses to fall back to the bare, context-less key. Falling back
-would silently hand a `prod` operation the `default` password and encrypt data
-under the wrong key; the bare key is only consulted for the default context.
+The two halves stay strictly separate in code (the directory search knows nothing
+of secrets, and the setting lookup knows nothing of `*.toml` trees) — they live in
+one module because they are the same question at two granularities, not because
+they share machinery.
 
 ## `crypto` — authenticated encryption shaped by git filters
 

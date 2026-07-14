@@ -2,20 +2,20 @@
 //! effects.
 //!
 //! This is the one place that knows what a project *is* — `model`, `workspace`,
-//! and `resolve` describe and resolve without side effects, and `git` is the
-//! project-shaped git surface those actions drive. It lives under `util` (not
-//! `cmd`) because it is a self-contained subsystem the commands *compose*, not a
-//! command itself: the `wits project` CLI shell (`cmd::project`), and the separate
-//! `wits build` / `wits update` commands (`cmd::build`, `cmd::update`), are all
-//! consumers of this public API ([`resolve_target`], `resolve::plan`, `git`),
-//! not peers sharing its internals.
+//! and `resolve` describe and resolve without side effects. The git surface
+//! those actions drive is *not* here: it moved to the unified [`crate::git`]
+//! module (as [`crate::git::Git`]), beside the read/ref floor it shares a binary
+//! with. This core lives under `util` (not `cmd`) because it is a self-contained
+//! subsystem the commands *compose*, not a command itself: the `wits project`
+//! CLI shell (`cmd::project`), and the separate `wits build` / `wits update`
+//! commands, are all consumers of this public API ([`resolve_target`],
+//! `resolve::plan`), not peers sharing its internals.
 //!
-//! The build systems are *not* here: they are a build-time concern, so the core
-//! never names a backend. Its only tie to them is the
+//! The build systems are *not* here either: they are a build-time concern, so
+//! the core never names a backend. Its only tie to them is the
 //! `resolve::ToolchainInjector` seam, which the core owns and each backend in
 //! [`crate::build_system`] implements. See `docs/project/design.md` §1.4.
 
-pub mod git;
 pub mod model;
 pub mod resolve;
 pub mod workspace;

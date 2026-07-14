@@ -12,7 +12,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use wits_util::project::git::Git;
+use wits_util::git::Git;
 use wits_util::project::model::{BranchStrategy, Profile};
 use wits_util::project::resolve::{self, Plan, PlanInput};
 use wits_util::project::workspace::{ProjectData, Workspace};

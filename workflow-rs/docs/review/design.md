@@ -6,11 +6,14 @@
 > code is authoritative and this file has been kept in step (see §17 for what was
 > deliberately scoped out).
 >
-> The *forge boundary* (§10/§11) and outdating (§6) were later revised to be
-> **API-native** — grounded in the current GitHub GraphQL and GitLab
-> `bulk_publish` APIs rather than one shape smeared over both. That revision's
-> rationale is in [`review/redesign.md`](redesign.md); the sections below reflect
-> its outcome, not the superseded first cut.
+> The *forge boundary* (§10/§11) and outdating (§6) were revised once during
+> implementation to be **API-native** — grounded in the current GitHub GraphQL
+> and GitLab draft-note APIs rather than one shape smeared over both. The sections
+> below reflect that outcome; the rationale for the revision and the verified,
+> field-by-field **API ground truth** it rests on are folded in as
+> [Appendix A](#appendix-a--why-the-forge-boundary-is-api-native) and
+> [Appendix B](#appendix-b--verified-api-ground-truth) at the end of this file
+> (this doc is self-contained — there is no separate revision doc).
 >
 > This file explains *why the tool is shaped the way it is*. The companion usage
 > document (`docs/review.md`) explains *how to drive it* and carries the full,
@@ -112,12 +115,12 @@ every read still runs.
 
 `review` follows `stack`'s `core`/`util`/`cmd` line and reuses that layer whole.
 The command's own logic lives under `cmd/review/`; the git-hosting concerns it
-leans on stay in `util/` (`forge`, `remote`) and grow there (§10). Concretely:
+leans on stay in `wits_util::forge` and grow there (§10). Concretely:
 
-- **Reuse unchanged:** `wits_util::remote` (URL parsing, origin/upstream roles),
-  `forge::detect` (which platform, which token), the `Repository` git floor, the
-  `log`/`process` dry-run machinery, and `stack::resolution` for the "what is a
-  stack" question when reviewing my own (§13).
+- **Reuse unchanged:** `wits_util::forge::remote` (URL parsing, origin/upstream
+  roles), `forge::detect` (which platform, which token), the `Repository` git
+  floor, the `log`/`process` dry-run machinery, and `stack::resolution` for the
+  "what is a stack" question when reviewing my own (§13).
 - **Extend:** the `Forge` trait gains a review-facing half (§10) — added to the
   same trait, not a parallel one, so "add a forge" stays one self-contained
   mapping.
@@ -668,8 +671,8 @@ without inventing anything the forge can't store.
 ## 14. Materialization — worktree or in-place
 
 To debug/build/fuzz/test an MR's code, the tool must put it somewhere runnable
-without clobbering your current work. `checkout` reuses `project`'s existing git
-worktree/checkout operations (`wits_util::project::git`) and supports both modes,
+without clobbering your current work. `checkout` reuses the unified git module's
+worktree/checkout operations (`wits_util::git::Git`) and supports both modes,
 chosen per invocation so neither is forced on the user:
 
 - **Worktree mode (default):** add a worktree for the MR at a sibling path,
@@ -757,7 +760,7 @@ expansion, two-sided multi-line spans, worktree/in-place materialization with
 stack navigation, `prune` (day count or ISO date), and parallel submit with
 **per-action, key-based `BatchOutcome` reconciliation**.
 
-Delivered by the API-native revision (§10/§11, [`redesign.md`](redesign.md)): the
+Delivered by the API-native revision (§10/§11; rationale in Appendix A): the
 **whole GitHub forge on GraphQL**; **thread resolve/unresolve on both forges**
 (GitHub `resolveReviewThread`, GitLab discussion PUT); GitLab's **single
 `bulk_publish`** carrying comments + replies + **summary** (as a position-less
@@ -791,3 +794,80 @@ Deliberately deferred, and honest about it:
   live outdate/CI push (§12).
 - **future** CI status surfaced into `show` (shared with `stack`'s own deferred CI
   read-back).
+
+## Appendix A — why the forge boundary is API-native
+
+The first cut of the forge layer picked one intermediate shape — *"a batch is a
+verdict + summary + line/file comments; everything else is a separate call"* —
+and bent each backend to fit. Held against the real APIs, that shape fit
+**neither** platform, so §10/§11 were revised to let each `Forge` own the mapping
+of one rich review batch onto its native primitive and report honestly what it
+could and couldn't do. The three findings that forced the revision:
+
+- **GitLab can batch more than the old shape allowed.** Its draft-notes +
+  `bulk_publish` primitive carries line comments, file comments, MR-level notes,
+  replies, and the summary as one publish — one notification. The first cut
+  instead posted the summary as a lone draft, published with an empty body, then
+  fired separate calls for replies and resolves.
+- **GitHub REST could batch *less* than the old shape assumed.** The REST review
+  endpoint takes only line comments (no `subject_type`), silently dropping the
+  file-level comments the old code sent inside the batch, and it cannot read or
+  set thread resolution. So the whole GitHub forge moved to **GraphQL**, where
+  reviews are actually modelled (threads with `isResolved`/`isOutdated`,
+  resolution mutations, and a `search` that returns real `PullRequest` objects).
+- **Outdating cannot be read uniformly off either forge** (GitLab exposes no
+  cheap per-thread flag; GitHub only via GraphQL), so it became a **local**
+  inference over the pinned objects (§6) — uniform, offline, and testable.
+
+One correction landed late, when the mapping was checked against *release status*
+rather than just the docs: the `reviewer_state`/`note` body on GitLab's
+`bulk_publish` (which would fold the verdict and summary into the one publish) is
+an **unmerged proposal** (gitlab-org/gitlab!237813), present in no shipped
+release and silently ignored by the API if sent. So the summary rides as a
+position-less draft note and the verdict is a separate released
+`approve`/`unapprove`/no-op call (§10 A3). If that proposal ships, folding both
+back into the one publish is a version-gated optimisation, never a correctness
+dependency.
+
+## Appendix B — verified API ground truth
+
+The boundary rests on these concrete facts, recorded so a future change can be
+checked against them rather than re-derived. (Sources: the official GitHub
+GraphQL and GitLab REST references, re-checked against *release status* in
+2026-07.)
+
+### B.1 GitHub GraphQL (the whole forge)
+
+| Need | Mutation / query | Key fields |
+|---|---|---|
+| Submit a review (verdict + summary + line threads) | `addPullRequestReview` | `pullRequestId`, `commitOID`, `event` (`COMMENT`/`APPROVE`/`REQUEST_CHANGES`; omit ⇒ **PENDING**), `body`, `threads: [DraftPullRequestReviewThread]` |
+| A line thread in that batch | `DraftPullRequestReviewThread` | `body!`, `path`, `line!`, `side`, `startLine`, `startSide` — **no `subjectType`** (so no file-level here) |
+| A **file-level** thread | `addPullRequestReviewThread` on the pending review | `pullRequestReviewId`, `path`, `subjectType: FILE`, `body!` |
+| Publish a pending review | `submitPullRequestReview` | `pullRequestReviewId`, `event`, `body` |
+| Reply into a thread (rides the review) | `addPullRequestReviewThreadReply` | `pullRequestReviewId` (the *pending* review), `pullRequestReviewThreadId!`, `body!` |
+| Resolve / unresolve | `resolveReviewThread` / `unresolveReviewThread` | `threadId` (`PRRT_…`) |
+| MR-level (conversation) comment | `addComment` | `subjectId` (PR node id), `body` — an issue comment, **not** part of the review (its own notification) |
+| Read threads | `pullRequest.reviewThreads.nodes` | `id`, `isResolved`, `isOutdated`, `path`, `line`/`originalLine`, `startLine`/`originalStartLine`, `diffSide`/`startDiffSide`, `subjectType`, `comments{ nodes{ databaseId, author, body, createdAt, originalCommit{oid} } }` |
+| Feed / details | `search(type: ISSUE, "repo:o/r is:pr …")` → `... on PullRequest` | `number`, `title`, `author{login}`, `baseRefName`, `headRefName`, `headRefOid`, `state`, `isDraft`, `labels`, `updatedAt`, `url` |
+
+A review of only line comments/summary/verdict is one atomic
+`addPullRequestReview`. Add file comments or replies and it becomes the pending
+flow (create pending → attach FILE threads and replies by review id → submit) —
+still one review, one notification. An empty `COMMENT`/`REQUEST_CHANGES` review
+(no body, no comments) is rejected; only `APPROVE` may be empty.
+
+### B.2 GitLab REST (the review backend)
+
+| Need | Endpoint | Key fields |
+|---|---|---|
+| Draft a diff/file/reply/summary note | `POST …/merge_requests/:iid/draft_notes` | `note!`; `position{base_sha,start_sha,head_sha,new_path,old_path,new_line/old_line,line_range,position_type}` (`file` since 16.4; a `line_range` endpoint **requires** `line_code` = `SHA1(path)_old_new`); `in_reply_to_discussion_id`; `resolve_discussion` — a note with no `position` is an MR-level/summary note |
+| Publish the whole batch | `POST …/draft_notes/bulk_publish` | **no body** in any shipped release (the `reviewer_state`/`note` body is the *unmerged* !237813); publishes *all* of the user's pending drafts as one review |
+| Set the verdict | `POST …/approve` / `POST …/unapprove` | the only released reviewer actions; there is **no** released API to set the formal `reviewed`/`requested_changes` reviewer state |
+| Resolve a discussion | `PUT …/discussions/:id` | `resolved` (a bare resolve can't ride the batch — a draft note needs a body) |
+| Delete a draft (deferred cleanup) | `DELETE …/draft_notes/:id` | 404 ⇒ already gone |
+| Read discussions | `GET …/merge_requests/:iid/discussions` | notes with `position`, `resolvable`, `resolved`, `system` |
+| Feed | `GET …/merge_requests?state=opened&…` | server-side `labels`/`author`/`assignee`/`reviewer`/`draft` filters; returns `iid`, `target_branch`, `source_branch`, `sha`, `draft`, `labels`, … |
+
+One bodyless `bulk_publish` publishes the comments, replies and summary together
+(one notification); the verdict is a separate call afterwards
+(`approve`→`/approve`, `request-changes`→`/unapprove`, `comment`→no-op).

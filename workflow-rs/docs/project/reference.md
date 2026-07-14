@@ -57,6 +57,7 @@ These set the `Profile` axes and therefore change how paths (`work.dir`,
 | `--build-only` | | Compile only; assume already configured (errors if not). |
 | `--reconfig` | | Delete the build dir and configure fresh. |
 | `--install` | | Add an install step after building. |
+| `--install-dir <DIR>` | | Override the resolved `install_dir` prefix (the backend's install-prefix, e.g. cmake's `CMAKE_INSTALL_PREFIX`). Affects configure as well as install. |
 | `--uninstall` | | Reverse an install (backend-driven; see §7.3). Mutually exclusive with a build. |
 | `--target <T>` | `-t` | Build a specific target (where the backend supports it). |
 | `--extra-config-args <A>…` | `-Xconfig,<arg>` | Raw args appended to the configure command, verbatim. |

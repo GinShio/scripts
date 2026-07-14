@@ -370,7 +370,7 @@ fn preview(id: &str, local: &Local, noun: &str) {
 mod tests {
     use super::*;
     use wits_util::forge::github::GitHub;
-    use wits_util::remote::{RemoteInfo, Service};
+    use wits_util::forge::{RemoteInfo, Service};
 
     fn github() -> GitHub {
         GitHub::new(

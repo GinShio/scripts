@@ -392,7 +392,7 @@ re-indenting.
 | attribute application (labels/assignees/reviewers) | `src/cmd/stack/decorate.rs`, `src/util/forge/*` (`apply_attributes`) |
 | structure edits (prune/rm/mv), `remove` splice | `src/cmd/stack/tree.rs`, `topology.rs` (`remove`) |
 | forge primitives + normalized MR + detection | `src/util/forge/` |
-| remote URL parsing + origin/upstream roles | `src/util/remote.rs` |
+| remote URL parsing + origin/upstream roles | `src/util/forge/remote.rs` |
 
 ---
 

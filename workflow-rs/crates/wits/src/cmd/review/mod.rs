@@ -26,9 +26,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 
-use wits_util::forge::{self, Forge};
+use wits_util::forge::{self, Forge, RemoteInfo, Remotes};
 use wits_util::git::Repository;
-use wits_util::remote::{RemoteInfo, Remotes};
 
 use store::Store;
 

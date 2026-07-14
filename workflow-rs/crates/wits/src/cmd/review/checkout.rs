@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 
 use wits_util::forge::MrState;
+use wits_util::git::Git;
 use wits_util::git::Repository;
-use wits_util::project::git::Git;
 
 use super::model::{short, state_word};
 use super::store::refs;

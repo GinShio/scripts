@@ -1,20 +1,13 @@
-//! Talking to git by shelling out to the `git` binary.
-//!
-//! The obvious alternative is linking libgit2, and for a tool that mostly reads
-//! config and refs that seems heavier than warranted. The deciding factor isn't
-//! weight though — it's fidelity. A user's real git behaviour is the sum of
-//! their `~/.gitconfig` includes, conditional includes, credential helpers, SSH
-//! config and agent forwarding. libgit2 reimplements a subset of that and drifts
-//! from the CLI in exactly the corners (includes, helpers) that config and
-//! remote resolution care about. Driving the same `git` the user's shell does
-//! means we read precisely what they would, with no second implementation to
-//! keep in sync. The cost is a process spawn per query, which is nothing next to
-//! the network round-trips these tools spend most of their time on.
+//! The read/ref floor: [`Repository`], a cheap path handle every `git` read runs
+//! against. Config, branches, commits, ranges, and the review-fetch ref plumbing
+//! live here; the wider working-tree surface is its sibling [`super::Git`]. See
+//! the [module overview](super) for why the whole tool drives the `git` binary
+//! rather than libgit2.
 //!
 //! The surface grows strictly with what the commands need. Reads opt into
-//! [`force_run`](crate::process::Command::force_run) so they still answer
-//! during a dry-run — control flow depends on them, and a dry-run that can't
-//! read the world tells you nothing.
+//! [`force_run`](crate::process::Command::force_run) so they still answer during
+//! a dry-run — control flow depends on them, and a dry-run that can't read the
+//! world tells you nothing.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

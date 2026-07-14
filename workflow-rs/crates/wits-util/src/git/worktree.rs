@@ -1,10 +1,10 @@
-//! Git operations the `project` actions need, driven through the `git` CLI.
-//!
-//! This lives beside the command rather than in `core::git` on purpose: it is a
-//! wide, mutation-heavy, project-specific surface (worktrees, submodules, stash
-//! dances, remote reconciliation), and `core` is kept to the floor. Reads opt
-//! into `force_run` so a dry-run still introspects the world; mutations do not,
-//! so `-n` prints them instead of running them.
+//! The working-tree surface: [`Git`], the wide, mutation-heavy handle the
+//! `project`/`build`/`update` actions drive — worktrees, submodules, stash
+//! dances, branch switches, clone. It sits beside the read/ref floor
+//! [`super::Repository`] under one `git` module (they share a binary and a
+//! philosophy; see the [module overview](super)). Reads opt into `force_run` so
+//! a dry-run still introspects the world; mutations do not, so `-n` prints them
+//! instead of running them, and they inherit stdio so progress streams live.
 
 use std::path::{Path, PathBuf};
 

@@ -18,17 +18,18 @@
 pub mod gitea;
 pub mod github;
 pub mod gitlab;
+pub mod remote;
 pub mod review;
 
 use serde_json::Value;
 
+pub use remote::{parse_url, RemoteInfo, Remotes, Service};
 pub use review::{
     ActionKey, Anchor, BatchAction, BatchOutcome, DiffVersion, FeedQuery, FeedStates, LineRef,
     MrDetails, MrSummary, RemoteComment, RemoteThread, ReviewBatch, Side, Verdict,
 };
 
 use crate::git::Repository;
-use crate::remote::{Remotes, Service};
 
 /// An MR's lifecycle, normalized across platforms that spell it differently
 /// (GitHub folds "merged" into "closed"; GitLab keeps them apart).
