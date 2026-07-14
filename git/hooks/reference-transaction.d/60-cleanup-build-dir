@@ -18,17 +18,7 @@ while read -r old_sha new_sha ref_name; do
         *) continue ;;
     esac
 
-    resolve_build_dirs "$repo_name" "$branch" | while read -r build_dir; do
-        # builder.py may report either the base dir or a "-Debug"/"-Release"
-        # variant; normalize to the base and remove every known variant.
-        base=${build_dir%-Debug}
-        base=${base%-Release}
-        for suffix in "" "-Debug" "-Release"; do
-            target="${base}${suffix}"
-            if [ -n "$target" ] && [ -d "$target" ]; then
-                log_warn "Branch '$branch' deleted; removing build dir: $target"
-                rm -rf "$target"
-            fi
-        done
+    resolve_build_dirs "$branch" | while read -r build_dir; do
+        rm -rf "$build_dir"
     done
 done

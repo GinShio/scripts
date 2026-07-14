@@ -153,22 +153,33 @@ prompt_confirm() {
     esac
 }
 
-# Resolve build directories for a specific repo/branch using builder.py.
-# Usage: resolve_build_dirs <repo_name> <branch_name>
+# Resolve build directories for a specific branch using wits.
+# Usage: resolve_build_dirs <branch_name>
 resolve_build_dirs() {
-    _repo="$1"
-    _branch="$2"
+    _branch="$1"
+    _repo="$GIT_TOPLEVEL"
+    _bd=""
 
     # The wits project registry is the source of truth: it resolves the one build
-    # dir for this checkout's branch directly, from the current directory. Prefer
-    # it when installed; fall back to the legacy builder.py listing otherwise.
+    # dir for this checkout's branch directly, from the current directory.
     if command -v wits >/dev/null 2>&1; then
-        _bd=$(wits project build-dir "$_repo" --branch "$_branch" 2>/dev/null) &&
-            [ -n "$_bd" ] && { echo "$_bd"; return; }
+        _bd=$(wits project build-dir "$_repo" --branch "$_branch" 2>/dev/null)
     fi
 
-    # Fallback to assumption build dir.
-    echo "$_repo/_build"
+    # Fallback
+    if [ -z "$_bd" ]; then
+        _bd="$_repo/_build"
+    fi
+
+    # the base dir may has a "-debug"/"-release" variant; normalize to the base and remove every known variant.
+    _bd_base=${_bd%-debug}
+    _bd_base=${_bd_base%-release}
+    for suffix in "" "-debug" "-release"; do
+        _bd_target="${_bd_base}${suffix}"
+        if [ -n "$_bd_target" ] && [ -d "$_bd_target" ]; then
+            echo "$_bd_target"
+        fi
+    done
 }
 
 # Resolve Main/Default Branch Name
@@ -183,17 +194,17 @@ get_main_branch() {
             [ -n "$_wits_mb" ] && { echo "$_wits_mb"; return; }
     fi
 
-    # 1. Check local tracking info (fastest)
+    # 2. Check local tracking info (fastest)
     if _remote_head=$(git symbolic-ref "refs/remotes/$_remote/HEAD" 2>/dev/null); then
         echo "${_remote_head#refs/remotes/$_remote/}"
         return
     fi
 
-    # 1.1 Verify if 'refs/remotes/origin/HEAD' is missing, try to detect it once?
+    # 2.1 Verify if 'refs/remotes/origin/HEAD' is missing, try to detect it once?
     # This invokes network and is slow, so we only implicitly trust if cached.
     # Alternatively, users should run `git remote set-head origin -a`
 
-    # 2. Guess common names
+    # 3. Guess common names
     for _candidate in main master trunk development; do
         if git show-ref --verify --quiet "refs/heads/$_candidate"; then
             echo "$_candidate"
@@ -205,7 +216,7 @@ get_main_branch() {
         fi
     done
 
-    # 3. Fallback
+    # 4. Fallback
     echo "master"
 }
 
