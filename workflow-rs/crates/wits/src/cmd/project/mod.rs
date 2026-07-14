@@ -184,7 +184,7 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
             .repo_abs_path(name)
             .map(|p| p.display().to_string())
             .unwrap_or_default();
-        let git = git::Git::new(&path);
+        let git = git::Repository::new(&path);
         let state = if git.is_repo() {
             let branch = git.current_branch().unwrap_or_else(|| "-".into());
             let commit = git.head_commit().unwrap_or_else(|| "-".into());
@@ -206,7 +206,7 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
     let branch = profile.branch.clone().or_else(|| {
         resolve::identity_repo(project, project.focus_name(profile.focus.as_deref()))
             .and_then(|n| project.repo_abs_path(&n).ok())
-            .and_then(|p| git::Git::new(&p).current_branch())
+            .and_then(|p| git::Repository::new(&p).current_branch())
     });
     match branch {
         Some(branch) => {

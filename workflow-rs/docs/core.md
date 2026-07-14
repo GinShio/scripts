@@ -37,18 +37,20 @@ shell runs means we read precisely what they would, with no second
 implementation to keep honest. A process spawn per query is free next to the
 work these commands actually do.
 
-The module holds two handles at different altitudes, split by role rather than
-by location. `Repository` is the read/ref floor: config, branch and ref reads, a
-commit-log range read (for MR titles), remote-URL reads, and a couple of
-mutations — the force-with-lease push (the lease, not a bare force, is the
-deliberate bit: a stack is rewritten constantly so non-fast-forward pushes are
-the norm, but the lease still refuses to clobber a remote someone else moved) and
-the review-fetch ref plumbing. `Git` is the wider working-tree surface the
-`project`/`build`/`update` actions drive — worktrees, stashes, submodules,
-branch switches, clone — with mutations that inherit stdio so progress streams
-live. These once lived in two module trees (`git` and `project::git`); folding
-them into one `git/` module makes the read-floor-vs-mutation-surface split
-legible instead of accidental.
+There is one handle, `Repository` — a cheap wrapper over a repo path — carrying
+the whole surface. It reaches from the read/ref floor (config, branch and ref
+reads, a commit-log range read for MR titles, the force-with-lease push — the
+lease, not a bare force, is the deliberate bit: a stack is rewritten constantly
+so non-fast-forward pushes are the norm, yet the lease still refuses to clobber a
+remote someone else moved — and the review-fetch ref plumbing) up to the wider
+working-tree porcelain the `project`/`build`/`update` actions drive (worktrees,
+stashes, submodules, branch switches, clone). Those were once *two* types in two
+module trees (`git` and `project::git`) with overlapping reads; fusing them into
+one `Repository` removes that duplication, and the file split (`git/floor.rs` vs
+`git/worktree.rs`) keeps the two concerns legible without splitting the type. The
+three ways a git child is run — a captured read that answers under dry-run, a
+captured mutation that keeps git's error text, a streamed mutation that inherits
+the terminal and honours dry-run — are the module's three private primitives.
 
 The larger git-hosting concerns — parsing remote URLs, detecting a forge,
 talking to its MR API — deliberately do *not* live on this floor. They sit in

@@ -1,28 +1,12 @@
-//! The read/ref floor: [`Repository`], a cheap path handle every `git` read runs
-//! against. Config, branches, commits, ranges, and the review-fetch ref plumbing
-//! live here; the wider working-tree surface is its sibling [`super::Git`]. See
-//! the [module overview](super) for why the whole tool drives the `git` binary
-//! rather than libgit2.
-//!
-//! The surface grows strictly with what the commands need. Reads opt into
-//! [`force_run`](crate::process::Command::force_run) so they still answer during
-//! a dry-run — control flow depends on them, and a dry-run that can't read the
-//! world tells you nothing.
+//! The read/ref floor: config, branches, commits, ranges, and the ref plumbing
+//! (pushes, branch deletes, and the `review` object-fetch/pin refs). Reads run
+//! even under a dry-run; the ref/push mutations are captured so a failure keeps
+//! git's own message. See the [module overview](super).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use thiserror::Error;
-
-use crate::process::{Command, ProcessError};
-
-#[derive(Debug, Error)]
-pub enum GitError {
-    #[error("git command failed: {0}")]
-    Process(#[from] ProcessError),
-    #[error("git {operation} failed: {message}")]
-    Failed { operation: String, message: String },
-}
+use super::{GitError, Repository};
 
 /// A commit's identity and its message pre-split into subject (first line) and
 /// body. The split lives here because the two are almost always wanted
@@ -46,45 +30,8 @@ pub struct FileChange {
     pub status: char,
 }
 
-/// A handle to a repository on disk. Holds no resources and is cheap to clone;
-/// it's really just the path every `git` invocation runs against.
-#[derive(Debug, Clone)]
-pub struct Repository {
-    path: std::path::PathBuf,
-}
-
 impl Repository {
-    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    fn git(&self) -> Command {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(&self.path);
-        cmd
-    }
-
-    /// Run a read-only git query and return its trimmed stdout, or `None` when
-    /// the command exits non-zero or prints nothing. The whole read surface is
-    /// built on this, so the dry-run/force decision lives in exactly one place.
-    fn query(&self, args: &[&str]) -> Option<String> {
-        let result = self
-            .git()
-            .args(args.iter().copied())
-            .force_run()
-            .exec()
-            .ok()?;
-        if result.is_success() {
-            let out = result.stdout_trimmed();
-            if out.is_empty() {
-                None
-            } else {
-                Some(out.to_owned())
-            }
-        } else {
-            None
-        }
-    }
+    // -- reads ----------------------------------------------------------------
 
     /// Read a config value, or `None` when the key is unset.
     pub fn get_config(&self, key: &str) -> Result<Option<String>, GitError> {
@@ -101,6 +48,32 @@ impl Repository {
     /// Resolve a revision to a full commit hash, or `None` if it doesn't exist.
     pub fn rev_parse(&self, spec: &str) -> Option<String> {
         self.query(&["rev-parse", "--verify", "--quiet", spec])
+    }
+
+    /// Whether a revision exists — the boolean form of [`rev_parse`](Self::rev_parse).
+    pub fn rev_exists(&self, spec: &str) -> bool {
+        self.rev_parse(spec).is_some()
+    }
+
+    /// Whether the path is a git repository (inside a work tree).
+    pub fn is_repo(&self) -> bool {
+        self.query(&["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
+    }
+
+    /// Whether the path exists on disk at all — the "is there a checkout here?"
+    /// question `update` asks before deciding clone-vs-refresh.
+    pub fn exists(&self) -> bool {
+        self.path().exists()
+    }
+
+    /// The short HEAD commit, or `None` on an unborn branch.
+    pub fn head_commit(&self) -> Option<String> {
+        self.query(&["rev-parse", "--short", "HEAD"])
+    }
+
+    /// Whether the working tree has uncommitted changes (tracked or untracked).
+    pub fn is_dirty(&self) -> bool {
+        self.query(&["status", "--porcelain"]).is_some()
     }
 
     /// The absolute path of the `.git` directory, the natural home for a tool's
@@ -194,133 +167,6 @@ impl Repository {
             .collect()
     }
 
-    /// Force-push a branch to a remote, but refuse to overwrite commits the
-    /// remote has that we don't (`--force-with-lease`). History-editing
-    /// workflows make non-fast-forward pushes routine, so a plain force is the
-    /// reflex — yet plain force will happily discard a push someone else made.
-    /// The lease keeps the legitimate "I rewrote my own branch" case working
-    /// while failing closed when the remote moved underneath us. Mutating, so
-    /// dry-run prints rather than pushes.
-    pub fn push_force_with_lease(&self, remote: &str, branch: &str) -> Result<(), GitError> {
-        let result = self
-            .git()
-            .args(["push", remote, branch, "--force-with-lease"])
-            .exec()?;
-        if result.is_success() {
-            Ok(())
-        } else {
-            Err(GitError::Failed {
-                operation: format!("push {branch} -> {remote}"),
-                message: result.stderr.trim().to_owned(),
-            })
-        }
-    }
-
-    /// Delete a local branch. Without `force` this is `git branch -d`, which
-    /// refuses to drop a branch that isn't merged — the safety we want by
-    /// default; `force` escalates to `-D`. Mutating, so dry-run prints.
-    pub fn delete_branch(&self, name: &str, force: bool) -> Result<(), GitError> {
-        let flag = if force { "-D" } else { "-d" };
-        let result = self.git().args(["branch", flag, name]).exec()?;
-        if result.is_success() {
-            Ok(())
-        } else {
-            Err(GitError::Failed {
-                operation: format!("delete branch {name}"),
-                message: result.stderr.trim().to_owned(),
-            })
-        }
-    }
-
-    // -- Review support -------------------------------------------------------
-    //
-    // Fetching an MR's objects and holding them alive with our own refs. These
-    // are the acquisition step `review` depends on: they run even under dry-run
-    // (like every other read), because a dry-run that can't see the world tells
-    // you nothing, and pinning a ref is our own local bookkeeping, not a change
-    // to the remote or the user's branches.
-
-    /// Fetch a remote ref into a local ref, forcing the update. Used to pull an
-    /// MR head (`refs/pull/<n>/head`) into a `refs/wits/review/*` pin.
-    pub fn fetch_ref(
-        &self,
-        remote: &str,
-        remote_ref: &str,
-        local_ref: &str,
-    ) -> Result<(), GitError> {
-        let refspec = format!("+{remote_ref}:{local_ref}");
-        let result = self
-            .git()
-            .args(["fetch", "--no-tags", remote, &refspec])
-            .force_run()
-            .exec()?;
-        if result.is_success() {
-            Ok(())
-        } else {
-            Err(GitError::Failed {
-                operation: format!("fetch {remote_ref} from {remote}"),
-                message: result.stderr.trim().to_owned(),
-            })
-        }
-    }
-
-    /// Best-effort fetch of a bare object (e.g. an MR's base SHA, which may not
-    /// be an ancestor of the head we already pulled) into a local ref. Servers
-    /// that forbid fetching an arbitrary SHA make this fail; that is fine — the
-    /// caller treats the object as simply unavailable.
-    pub fn try_fetch_object(&self, remote: &str, sha: &str, local_ref: &str) -> bool {
-        self.git()
-            .args(["fetch", "--no-tags", remote, &format!("+{sha}:{local_ref}")])
-            .force_run()
-            .exec()
-            .map(|r| r.is_success())
-            .unwrap_or(false)
-    }
-
-    /// Point a ref at an object (our own `refs/wits/review/*` bookkeeping).
-    pub fn update_ref(&self, name: &str, target: &str) -> Result<(), GitError> {
-        let result = self
-            .git()
-            .args(["update-ref", name, target])
-            .force_run()
-            .exec()?;
-        if result.is_success() {
-            Ok(())
-        } else {
-            Err(GitError::Failed {
-                operation: format!("update-ref {name}"),
-                message: result.stderr.trim().to_owned(),
-            })
-        }
-    }
-
-    /// Delete a ref. Mutating on purpose — this is `prune`'s cleanup, which a
-    /// `-n` run should preview rather than perform.
-    pub fn delete_ref(&self, name: &str) -> Result<(), GitError> {
-        let result = self.git().args(["update-ref", "-d", name]).exec()?;
-        if result.is_success() {
-            Ok(())
-        } else {
-            Err(GitError::Failed {
-                operation: format!("delete ref {name}"),
-                message: result.stderr.trim().to_owned(),
-            })
-        }
-    }
-
-    /// Every ref under `prefix` (e.g. `refs/wits/review/`) mapped to its target
-    /// object id. The record of which snapshots we have pinned.
-    pub fn refs_under(&self, prefix: &str) -> Vec<(String, String)> {
-        let Some(out) = self.query(&["for-each-ref", "--format=%(refname) %(objectname)", prefix])
-        else {
-            return Vec::new();
-        };
-        out.lines()
-            .filter_map(|line| line.split_once(' '))
-            .map(|(name, oid)| (name.to_owned(), oid.to_owned()))
-            .collect()
-    }
-
     /// The files a range (`base..head`) touched, rename-aware. Empty when the
     /// range can't be computed (e.g. the base object isn't present locally),
     /// which the caller treats as "unknown" rather than "nothing changed".
@@ -362,6 +208,91 @@ impl Repository {
             args.push(p);
         }
         self.query(&args)
+    }
+
+    // -- ref & history mutations (captured) -----------------------------------
+
+    /// Force-push a branch to a remote, but refuse to overwrite commits the
+    /// remote has that we don't (`--force-with-lease`). History-editing
+    /// workflows make non-fast-forward pushes routine, so a plain force is the
+    /// reflex — yet plain force will happily discard a push someone else made.
+    /// The lease keeps the legitimate "I rewrote my own branch" case working
+    /// while failing closed when the remote moved underneath us. Mutating, so
+    /// dry-run prints rather than pushes.
+    pub fn push_force_with_lease(&self, remote: &str, branch: &str) -> Result<(), GitError> {
+        self.capture(
+            format!("push {branch} -> {remote}"),
+            &["push", remote, branch, "--force-with-lease"],
+            false,
+        )
+    }
+
+    /// Delete a local branch. Without `force` this is `git branch -d`, which
+    /// refuses to drop a branch that isn't merged — the safety we want by
+    /// default; `force` escalates to `-D`. Mutating, so dry-run prints.
+    pub fn delete_branch(&self, name: &str, force: bool) -> Result<(), GitError> {
+        let flag = if force { "-D" } else { "-d" };
+        self.capture(
+            format!("delete branch {name}"),
+            &["branch", flag, name],
+            false,
+        )
+    }
+
+    // The `review` acquisition refs: fetch an MR's objects and hold them alive
+    // with our own `refs/wits/review/*` pins. These run even under dry-run (like
+    // every other read) — pinning a ref is local bookkeeping, not a change to the
+    // remote or the user's branches.
+
+    /// Fetch a remote ref into a local ref, forcing the update. Used to pull an
+    /// MR head (`refs/pull/<n>/head`) into a `refs/wits/review/*` pin.
+    pub fn fetch_ref(&self, remote: &str, remote_ref: &str, local_ref: &str) -> Result<(), GitError> {
+        self.capture(
+            format!("fetch {remote_ref} from {remote}"),
+            &["fetch", "--no-tags", remote, &format!("+{remote_ref}:{local_ref}")],
+            true,
+        )
+    }
+
+    /// Best-effort fetch of a bare object (e.g. an MR's base SHA, which may not
+    /// be an ancestor of the head we already pulled) into a local ref. Servers
+    /// that forbid fetching an arbitrary SHA make this fail; that is fine — the
+    /// caller treats the object as simply unavailable.
+    pub fn try_fetch_object(&self, remote: &str, sha: &str, local_ref: &str) -> bool {
+        self.capture(
+            format!("fetch object {sha}"),
+            &["fetch", "--no-tags", remote, &format!("+{sha}:{local_ref}")],
+            true,
+        )
+        .is_ok()
+    }
+
+    /// Point a ref at an object (our own `refs/wits/review/*` bookkeeping).
+    pub fn update_ref(&self, name: &str, target: &str) -> Result<(), GitError> {
+        self.capture(
+            format!("update-ref {name}"),
+            &["update-ref", name, target],
+            true,
+        )
+    }
+
+    /// Delete a ref. Mutating on purpose — this is `prune`'s cleanup, which a
+    /// `-n` run should preview rather than perform.
+    pub fn delete_ref(&self, name: &str) -> Result<(), GitError> {
+        self.capture(format!("delete ref {name}"), &["update-ref", "-d", name], false)
+    }
+
+    /// Every ref under `prefix` (e.g. `refs/wits/review/`) mapped to its target
+    /// object id. The record of which snapshots we have pinned.
+    pub fn refs_under(&self, prefix: &str) -> Vec<(String, String)> {
+        let Some(out) = self.query(&["for-each-ref", "--format=%(refname) %(objectname)", prefix])
+        else {
+            return Vec::new();
+        };
+        out.lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(name, oid)| (name.to_owned(), oid.to_owned()))
+            .collect()
     }
 }
 

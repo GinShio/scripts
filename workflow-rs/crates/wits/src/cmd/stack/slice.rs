@@ -60,7 +60,11 @@ pub fn run(repo: &Repository, base: Option<&str>) -> anyhow::Result<()> {
 
     // Three short-lived files: our seed todo, the editor wrapper script, and the
     // place the wrapper copies the user's final todo so we can read it back.
-    let tmp = std::env::temp_dir();
+    // Prefer `$XDG_RUNTIME_DIR` — a per-user, 0700 tmpfs — over the world-writable
+    // `/tmp`, so the wrapper script we create and then execute can't be raced or
+    // symlink-swapped by another local user; fall back to the system temp dir
+    // when the runtime dir isn't set.
+    let tmp = runtime_dir();
     let unique = std::process::id();
     let content_path = tmp.join(format!("wits-slice-{unique}.todo"));
     let capture_path = tmp.join(format!("wits-slice-{unique}.capture"));
@@ -231,6 +235,16 @@ fn stack_prefix(repo: &Repository) -> String {
         }
     }
     "stack/".to_owned()
+}
+
+/// The directory for our short-lived scratch files: `$XDG_RUNTIME_DIR` when set
+/// (a per-user, 0700 runtime dir — the safe home for an executable we create and
+/// run), otherwise the system temp dir (`/tmp`).
+fn runtime_dir() -> std::path::PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 /// Resolve the editor the wrapper should open, following git's own precedence.

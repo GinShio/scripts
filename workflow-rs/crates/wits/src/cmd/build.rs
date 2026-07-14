@@ -27,7 +27,7 @@ use wits_util::process::Command;
 
 use crate::cmd::project::ProfileArgs;
 use wits_util::build_system::{for_system, Backend, BuildMode, EmitContext};
-use wits_util::git::{Git, RestoreGuard};
+use wits_util::git::{Repository, RestoreGuard};
 use wits_util::project::model::{BranchStrategy, Profile};
 use wits_util::project::resolve::{self, Plan, PlanInput, ToolchainInjector};
 use wits_util::project::resolve_target;
@@ -198,7 +198,7 @@ fn execute(
     // the restore guard can borrow it.
     let identity_git = match (plan.strategy, &plan.identity_repo) {
         (BranchStrategy::InPlace, Some(name)) => {
-            Some(Git::new(project.repo_abs_path(name).with_context(
+            Some(Repository::new(project.repo_abs_path(name).with_context(
                 || format!("cannot resolve path of repo '{name}'"),
             )?))
         }
@@ -304,7 +304,7 @@ fn plan_with(
 
 /// Set up the in-place dance for the identity repo, returning a guard that
 /// restores it. `None` when no switch is needed (already on the target).
-fn prepare_in_place<'a>(git: &'a Git, plan: &Plan) -> Result<Option<RestoreGuard<'a>>> {
+fn prepare_in_place<'a>(git: &'a Repository, plan: &Plan) -> Result<Option<RestoreGuard<'a>>> {
     let current = git
         .current_branch()
         .context("focus repo is in a detached HEAD; pass --branch and check out a branch")?;
@@ -334,7 +334,7 @@ fn current_branch(project: &ProjectData, identity: Option<&str>) -> Result<Strin
     let path = project
         .repo_abs_path(name)
         .with_context(|| format!("cannot resolve path of repo '{name}'"))?;
-    Git::new(path)
+    Repository::new(path)
         .current_branch()
         .context("detached HEAD is unsupported; pass --branch")
 }

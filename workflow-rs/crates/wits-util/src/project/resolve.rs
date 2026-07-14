@@ -108,7 +108,7 @@ pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Res
     let strategy = BranchStrategy::parse(project.repos[&build_repo].branch_strategy.as_deref())?;
 
     let branch_raw = input.branch.to_owned();
-    let branch_slug = slugify(&branch_raw);
+    let branch_slug = path_slug(&branch_raw);
     let build_type = profile
         .build_type
         .clone()
@@ -900,8 +900,11 @@ fn read_total_memory_gb() -> Option<i64> {
     }
 }
 
-/// Filesystem-safe branch slug: every character outside `[A-Za-z0-9._-]` → `_`.
-pub fn slugify(branch: &str) -> String {
+/// A filesystem-safe path component from a branch name: every character outside
+/// `[A-Za-z0-9._-]` → `_`. Distinct from `stack::slice`'s branch-name slug,
+/// which *mints* a new branch name (lowercasing, collapsing to `-`); this only
+/// makes an existing branch safe to drop into a `build_dir`/`work.dir` path.
+pub fn path_slug(branch: &str) -> String {
     branch
         .chars()
         .map(|c| {

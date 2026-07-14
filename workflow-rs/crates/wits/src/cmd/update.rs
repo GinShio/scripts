@@ -19,7 +19,7 @@ use clap::Args;
 
 use wits_util::template::Engine;
 
-use wits_util::git::{self, Git, RestoreGuard};
+use wits_util::git::{self, Repository, RestoreGuard};
 use wits_util::project::model::{infer_kind, Kind, RawRepo};
 use wits_util::project::resolve;
 use wits_util::project::resolve_target;
@@ -48,7 +48,7 @@ fn execute(ws: &Workspace, project: &ProjectData) -> Result<()> {
         let path = project
             .repo_abs_path(&name)
             .with_context(|| format!("cannot resolve path of repo '{name}'"))?;
-        let git = Git::new(path);
+        let git = Repository::new(path);
         if !git.exists() {
             clone_repo(ws, project, &name, &git)
                 .with_context(|| format!("cloning repo '{name}' of project '{}'", project.name))?;
@@ -74,7 +74,7 @@ fn repo_order(project: &ProjectData) -> Vec<String> {
     order
 }
 
-fn clone_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Git) -> Result<()> {
+fn clone_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Repository) -> Result<()> {
     let repo = &project.repos[name];
     let engine = Engine::new(resolve::context_for_repo(ws, project, name));
 
@@ -114,7 +114,7 @@ fn clone_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Git) -> R
     Ok(())
 }
 
-fn update_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Git) -> Result<()> {
+fn update_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Repository) -> Result<()> {
     let repo = &project.repos[name];
     let engine = Engine::new(resolve::context_for_repo(ws, project, name));
 
@@ -146,7 +146,12 @@ fn update_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Git) -> 
     Ok(())
 }
 
-fn default_update(project: &ProjectData, name: &str, git: &Git, repo: &RawRepo) -> Result<()> {
+fn default_update(
+    project: &ProjectData,
+    name: &str,
+    git: &Repository,
+    repo: &RawRepo,
+) -> Result<()> {
     let mb = repo
         .main_branch
         .as_deref()
@@ -187,7 +192,7 @@ fn default_update(project: &ProjectData, name: &str, git: &Git, repo: &RawRepo) 
 }
 
 /// Additive remote reconciliation (§3.1): add what's missing, never modify.
-fn ensure_remotes(git: &Git, repo: &RawRepo) -> Result<()> {
+fn ensure_remotes(git: &Repository, repo: &RawRepo) -> Result<()> {
     if let Some(origin) = &repo.remotes.origin {
         git.ensure_remote("origin", origin)?;
         // Mirrors are extra push URLs on origin; git stops defaulting push to the

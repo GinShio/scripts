@@ -672,7 +672,7 @@ without inventing anything the forge can't store.
 
 To debug/build/fuzz/test an MR's code, the tool must put it somewhere runnable
 without clobbering your current work. `checkout` reuses the unified git module's
-worktree/checkout operations (`wits_util::git::Git`) and supports both modes,
+worktree/checkout operations (`wits_util::git::Repository`) and supports both modes,
 chosen per invocation so neither is forced on the user:
 
 - **Worktree mode (default):** add a worktree for the MR at a sibling path,

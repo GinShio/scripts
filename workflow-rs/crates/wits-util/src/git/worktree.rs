@@ -1,103 +1,22 @@
-//! The working-tree surface: [`Git`], the wide, mutation-heavy handle the
-//! `project`/`build`/`update` actions drive — worktrees, submodules, stash
-//! dances, branch switches, clone. It sits beside the read/ref floor
-//! [`super::Repository`] under one `git` module (they share a binary and a
-//! philosophy; see the [module overview](super)). Reads opt into `force_run` so
-//! a dry-run still introspects the world; mutations do not, so `-n` prints them
-//! instead of running them, and they inherit stdio so progress streams live.
+//! The working-tree porcelain: worktrees, stashes, submodules, branch switches,
+//! sparse cones, and clone — the wide, mutation-heavy surface the
+//! `project`/`build`/`update` actions drive. Its mutations stream to the
+//! terminal so progress shows live; its reads answer even under dry-run. See the
+//! [module overview](super).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::{bail, Result};
-
+use super::{GitError, Repository};
 use crate::process::Command;
-
-pub struct Git {
-    dir: PathBuf,
-}
 
 /// One `git worktree list` entry.
 pub struct Worktree {
-    pub path: PathBuf,
+    pub path: std::path::PathBuf,
     pub branch: Option<String>,
 }
 
-impl Git {
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Git { dir: dir.into() }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.dir
-    }
-
-    fn git(&self) -> Command {
-        let mut c = Command::new("git");
-        c.current_dir(&self.dir);
-        c
-    }
-
-    /// A read-only query: trimmed stdout, or `None` on failure/empty. Runs even
-    /// under dry-run.
-    fn query(&self, args: &[&str]) -> Option<String> {
-        let out = self
-            .git()
-            .args(args.iter().copied())
-            .force_run()
-            .exec()
-            .ok()?;
-        if out.is_success() {
-            let s = out.stdout_trimmed();
-            (!s.is_empty()).then(|| s.to_owned())
-        } else {
-            None
-        }
-    }
-
-    /// A mutation: printed under dry-run, otherwise run with inherited stdio so
-    /// its progress streams live and in colour (git detects the tty). The child
-    /// prints its own error to stderr, so a non-zero exit needs only a terse tag.
-    fn run(&self, note: &str, args: &[&str]) -> Result<()> {
-        let code = self.git().args(args.iter().copied()).status()?;
-        if code == 0 {
-            Ok(())
-        } else {
-            bail!("{note} failed (exit {code})");
-        }
-    }
-
-    // --- reads ---------------------------------------------------------------
-
-    pub fn exists(&self) -> bool {
-        self.dir.exists()
-    }
-
-    pub fn is_repo(&self) -> bool {
-        self.query(&["rev-parse", "--is-inside-work-tree"])
-            .as_deref()
-            == Some("true")
-    }
-
-    pub fn current_branch(&self) -> Option<String> {
-        self.query(&["symbolic-ref", "--quiet", "--short", "HEAD"])
-    }
-
-    pub fn head_commit(&self) -> Option<String> {
-        self.query(&["rev-parse", "--short", "HEAD"])
-    }
-
-    pub fn rev_exists(&self, rev: &str) -> bool {
-        self.query(&["rev-parse", "--verify", "--quiet", rev])
-            .is_some()
-    }
-
-    pub fn is_dirty(&self) -> bool {
-        self.query(&["status", "--porcelain"]).is_some()
-    }
-
-    pub fn remote_url(&self, name: &str) -> Option<String> {
-        self.query(&["remote", "get-url", name])
-    }
+impl Repository {
+    // -- working-tree reads ---------------------------------------------------
 
     pub fn push_urls(&self, name: &str) -> Vec<String> {
         self.query(&["remote", "get-url", "--push", "--all", name])
@@ -114,7 +33,7 @@ impl Git {
         };
         out.lines()
             .filter_map(|line| line.split_once(' ').map(|(_, p)| p.trim().to_owned()))
-            .filter(|p| self.dir.join(p).exists())
+            .filter(|p| self.path().join(p).exists())
             .collect()
     }
 
@@ -123,7 +42,7 @@ impl Git {
             return Vec::new();
         };
         let mut result = Vec::new();
-        let mut path: Option<PathBuf> = None;
+        let mut path: Option<std::path::PathBuf> = None;
         let mut branch: Option<String> = None;
         for line in out.lines() {
             if let Some(p) = line.strip_prefix("worktree ") {
@@ -133,7 +52,7 @@ impl Git {
                         branch: branch.take(),
                     });
                 }
-                path = Some(PathBuf::from(p));
+                path = Some(std::path::PathBuf::from(p));
                 branch = None;
             } else if let Some(b) = line.strip_prefix("branch ") {
                 branch = Some(b.trim_start_matches("refs/heads/").to_owned());
@@ -152,52 +71,59 @@ impl Git {
             == Some("true")
     }
 
-    // --- mutations -----------------------------------------------------------
+    /// The active sparse-checkout patterns (empty if not sparse).
+    pub fn sparse_list(&self) -> Vec<String> {
+        self.query(&["sparse-checkout", "list"])
+            .map(|s| s.lines().map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
 
-    pub fn switch(&self, branch: &str) -> Result<()> {
-        self.run(&format!("switch to {branch}"), &["switch", branch])
+    // -- working-tree mutations (streamed) ------------------------------------
+
+    pub fn switch(&self, branch: &str) -> Result<(), GitError> {
+        self.stream(&format!("switch to {branch}"), &["switch", branch])
     }
 
     /// Stash the working tree (including untracked). Returns whether anything was
     /// stashed, so a caller only pops when it pushed.
-    pub fn stash_push(&self, message: &str) -> Result<bool> {
+    pub fn stash_push(&self, message: &str) -> Result<bool, GitError> {
         if !self.is_dirty() {
             return Ok(false);
         }
-        self.run(
+        self.stream(
             "stash",
             &["stash", "push", "--include-untracked", "--message", message],
         )?;
         Ok(true)
     }
 
-    pub fn stash_pop(&self) -> Result<()> {
-        self.run("stash pop", &["stash", "pop"])
+    pub fn stash_pop(&self) -> Result<(), GitError> {
+        self.stream("stash pop", &["stash", "pop"])
     }
 
-    pub fn fetch(&self, args: &[&str]) -> Result<()> {
+    pub fn fetch(&self, args: &[&str]) -> Result<(), GitError> {
         let mut all = vec!["fetch"];
         all.extend_from_slice(args);
-        self.run("fetch", &all)
+        self.stream("fetch", &all)
     }
 
-    pub fn merge_ff_only(&self, rev: &str) -> Result<()> {
-        self.run(
+    pub fn merge_ff_only(&self, rev: &str) -> Result<(), GitError> {
+        self.stream(
             &format!("fast-forward to {rev}"),
             &["merge", "--ff-only", rev],
         )
     }
 
-    pub fn ensure_remote(&self, name: &str, url: &str) -> Result<()> {
+    pub fn ensure_remote(&self, name: &str, url: &str) -> Result<(), GitError> {
         if self.remote_url(name).is_none() {
-            self.run(&format!("add remote {name}"), &["remote", "add", name, url])?;
+            self.stream(&format!("add remote {name}"), &["remote", "add", name, url])?;
         }
         Ok(())
     }
 
-    pub fn ensure_push_url(&self, name: &str, url: &str) -> Result<()> {
+    pub fn ensure_push_url(&self, name: &str, url: &str) -> Result<(), GitError> {
         if !self.push_urls(name).iter().any(|u| u == url) {
-            self.run(
+            self.stream(
                 &format!("add push url to {name}"),
                 &["remote", "set-url", "--add", "--push", name, url],
             )?;
@@ -205,7 +131,7 @@ impl Git {
         Ok(())
     }
 
-    pub fn submodule_update(&self, paths: &[String], init: bool) -> Result<()> {
+    pub fn submodule_update(&self, paths: &[String], init: bool) -> Result<(), GitError> {
         if paths.is_empty() {
             return Ok(());
         }
@@ -216,10 +142,15 @@ impl Git {
         args.push("--");
         let path_refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         args.extend(path_refs);
-        self.run("submodule update", &args)
+        self.stream("submodule update", &args)
     }
 
-    pub fn worktree_add(&self, dir: &Path, branch: &str, no_checkout: bool) -> Result<()> {
+    pub fn worktree_add(
+        &self,
+        dir: &Path,
+        branch: &str,
+        no_checkout: bool,
+    ) -> Result<(), GitError> {
         let dir_s = dir.display().to_string();
         let mut args = vec!["worktree", "add"];
         if no_checkout {
@@ -227,41 +158,34 @@ impl Git {
         }
         args.push(&dir_s);
         args.push(branch);
-        self.run(&format!("add worktree for {branch}"), &args)
+        self.stream(&format!("add worktree for {branch}"), &args)
     }
 
-    pub fn worktree_remove(&self, dir: &Path, force: bool) -> Result<()> {
+    pub fn worktree_remove(&self, dir: &Path, force: bool) -> Result<(), GitError> {
         let dir_s = dir.display().to_string();
         let mut args = vec!["worktree", "remove"];
         if force {
             args.push("--force");
         }
         args.push(&dir_s);
-        self.run("remove worktree", &args)
+        self.stream("remove worktree", &args)
     }
 
-    pub fn checkout(&self, rev: &str) -> Result<()> {
-        self.run(&format!("checkout {rev}"), &["checkout", rev])
+    pub fn checkout(&self, rev: &str) -> Result<(), GitError> {
+        self.stream(&format!("checkout {rev}"), &["checkout", rev])
     }
 
-    /// The active sparse-checkout patterns (empty if not sparse).
-    pub fn sparse_list(&self) -> Vec<String> {
-        self.query(&["sparse-checkout", "list"])
-            .map(|s| s.lines().map(str::to_owned).collect())
-            .unwrap_or_default()
-    }
-
-    pub fn sparse_set(&self, patterns: &[String]) -> Result<()> {
+    pub fn sparse_set(&self, patterns: &[String]) -> Result<(), GitError> {
         let mut args = vec!["sparse-checkout", "set"];
         let refs: Vec<&str> = patterns.iter().map(String::as_str).collect();
         args.extend(refs);
-        self.run("set sparse-checkout", &args)
+        self.stream("set sparse-checkout", &args)
     }
 
     /// Populate the working tree from HEAD (used after a `--no-checkout` worktree
     /// add once sparse patterns are in place).
-    pub fn checkout_head(&self) -> Result<()> {
-        self.run("checkout HEAD", &["checkout", "HEAD"])
+    pub fn checkout_head(&self) -> Result<(), GitError> {
+        self.stream("checkout HEAD", &["checkout", "HEAD"])
     }
 }
 
@@ -272,17 +196,17 @@ impl Git {
 /// best-effort and logs (Drop cannot return errors), which is the right failure
 /// mode — a failed restore should warn, not mask the original error.
 pub struct RestoreGuard<'a> {
-    git: &'a Git,
+    repo: &'a Repository,
     original_branch: Option<String>,
     stashed: bool,
 }
 
 impl<'a> RestoreGuard<'a> {
     /// Capture the current branch as the state to return to.
-    pub fn capture(git: &'a Git) -> Self {
+    pub fn capture(repo: &'a Repository) -> Self {
         RestoreGuard {
-            git,
-            original_branch: git.current_branch(),
+            repo,
+            original_branch: repo.current_branch(),
             stashed: false,
         }
     }
@@ -295,14 +219,14 @@ impl<'a> RestoreGuard<'a> {
 impl Drop for RestoreGuard<'_> {
     fn drop(&mut self) {
         if let Some(orig) = &self.original_branch {
-            if self.git.current_branch().as_deref() != Some(orig.as_str()) {
-                if let Err(e) = self.git.switch(orig) {
+            if self.repo.current_branch().as_deref() != Some(orig.as_str()) {
+                if let Err(e) = self.repo.switch(orig) {
                     log::warn!("could not restore branch {orig}: {e}");
                 }
             }
         }
         if self.stashed {
-            if let Err(e) = self.git.stash_pop() {
+            if let Err(e) = self.repo.stash_pop() {
                 log::warn!("could not pop auto-stash: {e}");
             }
         }
@@ -313,7 +237,7 @@ impl Drop for RestoreGuard<'_> {
 /// because there is no repository yet to hang it off. `--origin` lets a repo
 /// tracked from `upstream` leave the `origin` name free for a fork that may not
 /// exist on the server yet.
-pub fn clone(url: &str, remote: &str, dir: &Path) -> Result<()> {
+pub fn clone(url: &str, remote: &str, dir: &Path) -> Result<(), GitError> {
     // Inherit stdio so clone progress streams live and in colour.
     let dir_s = dir.display().to_string();
     let code = Command::new("git")
@@ -322,6 +246,9 @@ pub fn clone(url: &str, remote: &str, dir: &Path) -> Result<()> {
     if code == 0 {
         Ok(())
     } else {
-        bail!("clone {url} failed (exit {code})");
+        Err(GitError::Failed {
+            operation: format!("clone {url}"),
+            message: format!("exit {code}"),
+        })
     }
 }

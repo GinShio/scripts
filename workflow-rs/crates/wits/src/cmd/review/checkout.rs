@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 
 use wits_util::forge::MrState;
-use wits_util::git::Git;
 use wits_util::git::Repository;
 
 use super::model::{short, state_word};
@@ -32,7 +31,7 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
     };
 
     let toplevel = ctx.repo.toplevel().unwrap_or_else(|| PathBuf::from("."));
-    let git = Git::new(&toplevel);
+    let git = Repository::new(&toplevel);
 
     if args.in_place {
         if git.is_dirty() {

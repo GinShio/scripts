@@ -12,7 +12,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
-use wits_util::git::Git;
+use wits_util::git::Repository;
 use wits_util::project::model::{BranchStrategy, Profile};
 use wits_util::project::resolve::{self, Plan, PlanInput};
 use wits_util::project::workspace::{ProjectData, Workspace};
@@ -35,7 +35,7 @@ pub fn create(
     let build_repo_path = project
         .repo_abs_path(&plan.build_repo)
         .with_context(|| format!("cannot resolve path of repo '{}'", plan.build_repo))?;
-    let git = Git::new(&build_repo_path);
+    let git = Repository::new(&build_repo_path);
     let target = &plan.work_dir;
 
     if target.exists() {
@@ -60,7 +60,7 @@ pub fn create(
     let sparse = git.is_sparse();
     git.worktree_add(target, branch, sparse)?;
 
-    let wt = Git::new(target);
+    let wt = Repository::new(target);
     if sparse {
         // Replicate the source's cone so the new worktree materialises only it,
         // then populate.
@@ -90,7 +90,7 @@ pub fn prune(
         let build_repo_path = project
             .repo_abs_path(&plan.build_repo)
             .with_context(|| format!("cannot resolve path of repo '{}'", plan.build_repo))?;
-        Git::new(&build_repo_path).worktree_remove(&plan.work_dir, force)?;
+        Repository::new(&build_repo_path).worktree_remove(&plan.work_dir, force)?;
     }
 
     // Remove the build dir for this branch (both strategies); never install_dir.
