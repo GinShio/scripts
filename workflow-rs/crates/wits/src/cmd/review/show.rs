@@ -12,8 +12,7 @@ use wits_util::forge::{Anchor, DiffVersion, MrSummary, Side};
 use wits_util::git::Repository;
 
 use super::model::{
-    bare_thread_id, short, state_word, Action, Comment, Info, Local, StoredCommit, StoredFile,
-    Thread, SCHEMA,
+    short, state_word, Action, Comment, Info, Local, StoredCommit, StoredFile, Thread, SCHEMA,
 };
 use super::{local, ShowArgs};
 
@@ -164,7 +163,7 @@ fn merge_threads(mut threads: Vec<Thread>, draft: &Local, head: Option<&str>) ->
                 });
             }
             Action::Reply { thread, body } => {
-                let target = format!("remote:{}", bare_thread_id(thread));
+                let target = thread.remote_ref();
                 if let Some(t) = threads.iter_mut().find(|t| t.id == target) {
                     t.comments.push(pending_comment(&local_id, body));
                 } else {
@@ -174,15 +173,14 @@ fn merge_threads(mut threads: Vec<Thread>, draft: &Local, head: Option<&str>) ->
                     threads.push(orphan_thread(
                         &local_id,
                         &format!(
-                            "reply to unknown thread {} — run `wits review fetch` (was: {})",
-                            bare_thread_id(thread),
+                            "reply to unknown thread {thread} — run `wits review fetch` (was: {})",
                             first_line(body)
                         ),
                     ));
                 }
             }
             Action::Resolve { thread, resolved } => {
-                let target = format!("remote:{}", bare_thread_id(thread));
+                let target = thread.remote_ref();
                 if let Some(t) = threads.iter_mut().find(|t| t.id == target) {
                     t.resolved = *resolved;
                 } else {
@@ -190,8 +188,7 @@ fn merge_threads(mut threads: Vec<Thread>, draft: &Local, head: Option<&str>) ->
                     threads.push(orphan_thread(
                         &local_id,
                         &format!(
-                            "pending {verb} of unknown thread {} — run `wits review fetch`",
-                            bare_thread_id(thread)
+                            "pending {verb} of unknown thread {thread} — run `wits review fetch`"
                         ),
                     ));
                 }
@@ -555,14 +552,14 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
             }
             Action::Reply { thread, body } => {
                 println!(
-                    "  local:{i}  reply -> remote:{}  {}",
-                    bare_thread_id(thread),
+                    "  local:{i}  reply -> {}  {}",
+                    thread.remote_ref(),
                     first_line(body)
                 )
             }
             Action::Resolve { thread, resolved } => {
                 let verb = if *resolved { "resolve" } else { "unresolve" };
-                println!("  local:{i}  {verb} remote:{}", bare_thread_id(thread))
+                println!("  local:{i}  {verb} {}", thread.remote_ref())
             }
         }
     }

@@ -14,7 +14,7 @@ use wits_util::forge::{BatchAction, DiffVersion, Forge, ReviewBatch};
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
 
-use super::model::{bare_thread_id, comment_anchor, Action, Local, StoredFile};
+use super::model::{comment_anchor, Action, Local, StoredFile};
 use super::{online, Online, SubmitArgs};
 
 pub fn run(repo: &Repository, args: &SubmitArgs) -> Result<()> {
@@ -244,12 +244,12 @@ fn build_batch(
             }
             Action::Reply { thread, body } => BatchAction::Reply {
                 key: i,
-                thread: bare_thread_id(thread).to_owned(),
+                thread: thread.as_str().to_owned(),
                 body: expand_refs(body, forge, &version.head_sha),
             },
             Action::Resolve { thread, resolved } => BatchAction::Resolve {
                 key: i,
-                thread: bare_thread_id(thread).to_owned(),
+                thread: thread.as_str().to_owned(),
                 resolved: *resolved,
             },
         })
@@ -356,10 +356,10 @@ fn preview(id: &str, local: &Local, noun: &str) {
             } => format!("comment on {f}:{l}"),
             Action::Comment { file: Some(f), .. } => format!("comment on file {f}"),
             Action::Comment { .. } => "conversation comment".to_owned(),
-            Action::Reply { thread, .. } => format!("reply to {}", bare_thread_id(thread)),
+            Action::Reply { thread, .. } => format!("reply to {thread}"),
             Action::Resolve { thread, resolved } => {
                 let verb = if *resolved { "resolve" } else { "unresolve" };
-                format!("{verb} {}", bare_thread_id(thread))
+                format!("{verb} {thread}")
             }
         };
         wits_log::dry_run(&format!("submit {noun} {id}: {line}"));

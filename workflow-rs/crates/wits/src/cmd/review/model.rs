@@ -12,11 +12,78 @@
 //! There are no authoring commands: to review, you edit `local.json`, then
 //! `submit` merges, posts, and clears it. Everything is versioned by [`SCHEMA`].
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use wits_util::forge::{
     Anchor, DiffVersion, LineRef, MrState, MrSummary, RemoteComment, RemoteThread, Side, Verdict,
 };
+
+/// The origin tag the read view / `show` / `local.json` print in front of a
+/// forge id (`remote:9987`). The identity is always the bare id; this prefix is
+/// only a display facet, and lives here so nothing else spells the literal.
+pub const REMOTE_PREFIX: &str = "remote:";
+
+/// Tag a bare forge id with the `remote:` origin, for the read/output view.
+pub fn remote_ref(id: &str) -> String {
+    format!("{REMOTE_PREFIX}{id}")
+}
+
+/// A discussion thread's identity: the *bare* forge id. The read view and a
+/// hand-edited `local.json` may spell it `remote:<id>`, but the identity is the
+/// bare id — this newtype is the single place that truth lives, so a `remote:`
+/// prefix can never leak into a forge URL or defeat an id match. Any `remote:`
+/// prefix is stripped on the way in (parse, deserialize, `From<&str>`); the wire
+/// and forge-facing forms are always bare, and [`ThreadId::remote_ref`] is the
+/// only way to get the display form back.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ThreadId(String);
+
+impl ThreadId {
+    /// The bare forge id — for a forge URL or an id comparison.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The `remote:<id>` display form used by the read view and `show`.
+    pub fn remote_ref(&self) -> String {
+        remote_ref(&self.0)
+    }
+}
+
+impl std::str::FromStr for ThreadId {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(ThreadId(
+            s.strip_prefix(REMOTE_PREFIX).unwrap_or(s).to_owned(),
+        ))
+    }
+}
+
+impl From<&str> for ThreadId {
+    fn from(s: &str) -> Self {
+        s.parse().expect("ThreadId parse is infallible")
+    }
+}
+
+impl std::fmt::Display for ThreadId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for ThreadId {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ThreadId {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(ThreadId::from(s.as_str()))
+    }
+}
 use wits_util::git::Repository;
 
 /// The store/JSON schema version. (Personal tooling — shapes change freely
@@ -176,7 +243,7 @@ pub struct Comment {
 impl Comment {
     fn from_remote(c: RemoteComment) -> Self {
         Comment {
-            id: format!("remote:{}", c.id),
+            id: remote_ref(&c.id),
             author: c.author,
             origin: "remote".into(),
             body: c.body,
@@ -206,7 +273,7 @@ pub struct Thread {
 impl From<RemoteThread> for Thread {
     fn from(t: RemoteThread) -> Self {
         Thread {
-            id: format!("remote:{}", t.id),
+            id: remote_ref(&t.id),
             origin: "remote".into(),
             resolved: t.resolved,
             outdated: t.outdated,
@@ -268,11 +335,11 @@ pub enum Action {
         commit: Option<String>,
     },
     Reply {
-        thread: String,
+        thread: ThreadId,
         body: String,
     },
     Resolve {
-        thread: String,
+        thread: ThreadId,
         resolved: bool,
     },
 }
@@ -329,17 +396,6 @@ pub struct Local {
     pub actions: Vec<Action>,
 }
 
-/// The canonical, forge-facing form of a thread id: the bare forge id, with any
-/// `remote:` prefix (`show`/`local.json` print ids in that form) stripped. The
-/// draft's `thread` field on `reply`/`resolve` accepts either the bare id or the
-/// `remote:` form and treats the two as the same thread, so the prefix must not
-/// survive into the forge URL or into the read-fold's id match — `remote:9987`
-/// stamped verbatim would become `remote:remote:9987` against a thread whose id
-/// is `remote:9987`, matching nothing (fold) or 404ing (submit).
-pub fn bare_thread_id(thread: &str) -> &str {
-    thread.strip_prefix("remote:").unwrap_or(thread)
-}
-
 /// Truncate a SHA to a display-friendly prefix (11 hex chars, like `git log`).
 pub fn short(sha: &str) -> &str {
     &sha[..sha.len().min(11)]
@@ -367,12 +423,11 @@ impl Local {
     ///
     /// Also stamps each `Comment` action's `commit` with `head` when it is not
     /// already set, so hand-edited or pre-commit drafts get anchored to the
-    /// current snapshot, and canonicalizes a `reply`/`resolve` `thread` to the
-    /// bare forge id so a `remote:<id>` written into the draft can't leak into a
-    /// forge URL (a 404) or the read-fold's id match (a miss).
+    /// current snapshot. Thread ids are already canonical (bare) — [`ThreadId`]
+    /// strips any `remote:` prefix at deserialize time — so no separate
+    /// canonicalization pass is needed before dedup.
     pub fn normalize(&mut self, head: &str) {
         self.stamp_comments(head);
-        self.canonicalize_threads();
         self.collapse();
     }
 
@@ -391,24 +446,12 @@ impl Local {
         }
     }
 
-    /// Rewrite every `reply`/`resolve` thread to the bare forge id, so a draft
-    /// written with a `remote:` prefix can't leak that prefix into a forge URL (a
-    /// 404) or the read-fold's id match (a miss). After this pass, thread ids are
-    /// canonical, so later passes can key on them directly.
-    fn canonicalize_threads(&mut self) {
-        for a in &mut self.actions {
-            if let Action::Reply { thread, .. } | Action::Resolve { thread, .. } = a {
-                *thread = bare_thread_id(thread).to_owned();
-            }
-        }
-    }
-
     /// Drop exact-duplicate actions and collapse repeated resolutions of one
-    /// thread to the last stated intent, preserving first-seen order. Assumes
-    /// thread ids are already canonical ([`canonicalize_threads`]).
+    /// thread to the last stated intent, preserving first-seen order. Thread ids
+    /// are canonical by construction ([`ThreadId`]), so they key directly.
     fn collapse(&mut self) {
         use std::collections::{HashMap, HashSet};
-        let last_resolve: HashMap<String, bool> = self
+        let last_resolve: HashMap<ThreadId, bool> = self
             .actions
             .iter()
             .filter_map(|a| match a {
@@ -418,7 +461,7 @@ impl Local {
             .collect();
 
         let mut out: Vec<Action> = Vec::new();
-        let mut resolved_emitted: HashSet<String> = HashSet::new();
+        let mut resolved_emitted: HashSet<ThreadId> = HashSet::new();
         for a in self.actions.drain(..) {
             match &a {
                 Action::Resolve { thread, .. } => {
@@ -532,7 +575,7 @@ mod tests {
         assert_eq!(local.actions.len(), 1);
         match &local.actions[0] {
             Action::Resolve { thread, resolved } => {
-                assert_eq!(thread, "42");
+                assert_eq!(thread.as_str(), "42");
                 assert!(*resolved, "last write wins");
             }
             _ => panic!("expected a resolve"),
@@ -574,7 +617,7 @@ mod tests {
         assert_eq!(resolves.len(), 1);
         match &resolves[0] {
             Action::Resolve { thread, resolved } => {
-                assert_eq!(thread, "42");
+                assert_eq!(thread.as_str(), "42");
                 assert!(*resolved, "last write wins");
             }
             _ => unreachable!(),
@@ -586,15 +629,23 @@ mod tests {
             .find(|a| matches!(a, Action::Reply { .. }))
             .unwrap()
         {
-            Action::Reply { thread, .. } => assert_eq!(thread, "42"),
+            Action::Reply { thread, .. } => assert_eq!(thread.as_str(), "42"),
             _ => unreachable!(),
         }
     }
 
     #[test]
-    fn bare_thread_id_strips_the_remote_prefix() {
-        assert_eq!(bare_thread_id("remote:9987"), "9987");
-        assert_eq!(bare_thread_id("9987"), "9987");
+    fn thread_id_strips_remote_prefix_on_every_ingress() {
+        use std::str::FromStr;
+        assert_eq!(ThreadId::from("remote:9987").as_str(), "9987");
+        assert_eq!(ThreadId::from("9987").as_str(), "9987");
+        assert_eq!(ThreadId::from_str("remote:1").unwrap().as_str(), "1");
+        // Deserialized from JSON, either spelling normalizes to bare.
+        let bare: ThreadId = serde_json::from_str("\"remote:42\"").unwrap();
+        assert_eq!(bare.as_str(), "42");
+        // And the wire form is always bare, with the display facet on demand.
+        assert_eq!(serde_json::to_string(&bare).unwrap(), "\"42\"");
+        assert_eq!(bare.remote_ref(), "remote:42");
     }
 
     #[test]
