@@ -132,6 +132,14 @@ stops (and never even probes one), and only ever asks for the children *of a
 source branch* — so completing a stack never drags in unrelated MRs. Progress is
 logged as members come in, so a multi-MR stack is not a silent wait.
 
+A bare `wits review fetch` (every feed) does one more thing: after the feeds, it
+re-checks any **still-open MR already in the store that no feed reported** this
+run. A feed only lists live work, so an MR that merged or closed since the last
+fetch just drops out of every feed and would otherwise sit `open` in your inbox
+forever; this second pass catches that transition. It is bounded to the
+non-terminal known MRs (a merged/closed one is already final) and light (one
+metadata call each), and `prune` keeps that set from growing without bound.
+
 ### Feeds — an RSS-style subscription
 
 A feed is a named, server-side filter. Feeds live in one global TOML file,
@@ -455,7 +463,7 @@ Bounded on purpose, and honest about it:
 | Editing/deleting a **published** comment | Not supported; you edit only your pending `local.json`. |
 | Cross-snapshot anchoring | Per-comment on GitLab (each comment anchors to its own snapshot version); review-level on GitHub (its API takes one commit per review, so the batch anchors to one snapshot). Comments without a `commit` use the current snapshot. |
 | Outdating | Computed **locally** and identically for both forges — a thread is outdated when its anchored line changed between the commit it was written on and the current head. Falls back to the forge's own flag only when that commit's objects aren't local. |
-| Feeds | Return real MRs (base/head) up to a hard `limit`, most-recently-updated first, then **complete each match's stack** (light) by walking base/source links so the inbox shows whole stacks; an incremental "since last sync" cursor is future work. |
+| Feeds | Return real MRs (base/head) up to a hard `limit`, most-recently-updated first, then **complete each match's stack** (light) by walking base/source links; a bare `fetch` also re-checks still-open known MRs no feed reported, so a merge/close is reflected even after the MR drops out of the feed. |
 | Notifications | Minimised, not promised: `submit` reports the true count. GitLab folds comments + replies + summary into one `bulk_publish` (the verdict is a separate quiet `approve`/`unapprove`). GitHub folds the verdict, summary, line/file comments, and replies into one review; only an MR-level conversation comment is a separate notification (resolves are separate but quiet). |
 
 ## Troubleshooting

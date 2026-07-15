@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use anyhow::{Context, Result};
 
-use wits_util::forge::{DiffVersion, MergeRequest, MrSummary};
+use wits_util::forge::{DiffVersion, MergeRequest, MrState, MrSummary};
 use wits_util::git::Repository;
 
 use super::config::{self, Config};
@@ -33,7 +33,9 @@ pub fn run(repo: &Repository, args: &super::FetchArgs) -> Result<()> {
     let cfg = Config::load()?;
     let key = config::repo_key(&ctx.local.target);
     match &args.feed {
-        Some(name) => fetch_feed(&ctx, &cfg, &key, name, args.stack),
+        // A single feed refreshes just its own MRs; the known-MR sweep is only
+        // for the bare "refresh everything" below, so a throwaway set suffices.
+        Some(name) => fetch_feed(&ctx, &cfg, &key, name, args.stack, &mut HashSet::new()),
         None => fetch_all_feeds(&ctx, &cfg, &key, args.stack),
     }
 }
@@ -235,6 +237,7 @@ fn fetch_feed(
     key: &str,
     name: &str,
     cli_mode: Option<StackMode>,
+    touched: &mut HashSet<String>,
 ) -> Result<()> {
     let query = cfg.feed(key, name).with_context(|| {
         let known = cfg.feed_names(key);
@@ -253,6 +256,7 @@ fn fetch_feed(
     let summaries = ctx.forge.list_mrs(&query)?;
     let store = &ctx.local.store;
     for summary in &summaries {
+        touched.insert(summary.id.clone());
         store_summary(store, summary.clone())?;
     }
 
@@ -282,6 +286,7 @@ fn fetch_feed(
             // A member's summary alone (no diff state / discussion) is enough for
             // the inbox and stack navigation; `mr_details` is one metadata call.
             store_summary(store, forge.mr_details(id)?.summary)?;
+            touched.insert(id.clone());
             added += 1;
             log::info!("  + stack member {} {id}", forge.noun());
         }
@@ -345,7 +350,8 @@ fn store_summary(store: &Store, summary: MrSummary) -> Result<()> {
     store.save_info(&info.mr.id, &info)
 }
 
-/// Refresh every configured feed for the repo.
+/// Refresh every configured feed for the repo, then re-check any still-open MR
+/// already in the store that no feed touched this run (see [`refresh_untouched`]).
 fn fetch_all_feeds(
     ctx: &Online,
     cfg: &Config,
@@ -358,15 +364,50 @@ fn fetch_all_feeds(
             "no feeds configured for {key}; give an MR number, or add a feed to review.toml"
         );
     }
+    // Phase 1: the feeds, by their limits. Every MR any feed writes is recorded.
+    let mut touched = HashSet::new();
     let mut failures = 0;
     for name in &names {
-        if let Err(e) = fetch_feed(ctx, cfg, key, name, cli_mode) {
+        if let Err(e) = fetch_feed(ctx, cfg, key, name, cli_mode, &mut touched) {
             failures += 1;
             log::warn!("feed '{name}': {e}");
         }
     }
+    // Phase 2: catch what the feeds no longer see.
+    refresh_untouched(ctx, &touched)?;
     if failures > 0 {
         anyhow::bail!("{failures} feed(s) failed to refresh");
+    }
+    Ok(())
+}
+
+/// Refresh the still-open MRs already in the store that no feed reported this
+/// run. A feed only lists live work, so an MR that merged/closed since the last
+/// fetch simply drops out of every feed and would otherwise sit `open` in the
+/// inbox forever. Re-checking each catches that transition — bounded to the
+/// non-terminal known MRs (a merged/closed one is already final, so it is
+/// skipped), and light (one `mr_details` metadata call each, no objects).
+fn refresh_untouched(ctx: &Online, touched: &HashSet<String>) -> Result<()> {
+    let stale: Vec<String> = ctx
+        .local
+        .store
+        .list_infos()
+        .into_iter()
+        .filter(|i| i.mr.state == MrState::Open && !touched.contains(&i.mr.id))
+        .map(|i| i.mr.id)
+        .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+
+    log::info!("refreshing {} known MR(s) no feed covered…", stale.len());
+    let store = &ctx.local.store;
+    for id in &stale {
+        match ctx.forge.mr_details(id) {
+            Ok(details) => store_summary(store, details.summary)?,
+            // A gone/unreachable MR stays as-is; `prune` can clear it later.
+            Err(e) => log::warn!("MR {id}: refresh failed ({e})"),
+        }
     }
     Ok(())
 }
