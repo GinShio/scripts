@@ -1,5 +1,5 @@
 #!/bin/sh
-# Remove a branch's build directory (via builder.py) when the branch is deleted.
+# Remove a branch's build directory when the branch is deleted.
 
 . "$HOOKS_DIR/core/lib.sh"
 

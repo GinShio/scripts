@@ -9,7 +9,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Get existing projects list (one per line)
-EXISTING_PROJECTS=$(python3 "$PROJECTS_SCRIPT_DIR/builder.py" list --no-submodule --simple)
+EXISTING_PROJECTS=$(wits-project)
 
 build_projects() {
     _extra_args="$1"
@@ -22,13 +22,12 @@ build_projects() {
         fi
 
         echo "=> Updating $proj..."
-        if python3 "$PROJECTS_SCRIPT_DIR/builder.py" update "$proj"; then
+        if wits-update "$proj"; then
             # Release build (word splitting on _extra_args is intended here)
-            # shellcheck disable=SC2086
-            python3 "$PROJECTS_SCRIPT_DIR/builder.py" build "$proj" --build-type Release $_extra_args
+            wits-build "$proj" --build-type release $_extra_args
 
             # Debug build
-            python3 "$PROJECTS_SCRIPT_DIR/builder.py" build "$proj" --build-type Debug
+            wits-build "$proj" --build-type debug
         fi
     done
 }

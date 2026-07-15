@@ -1,7 +1,6 @@
 #!/bin/sh
 # On branch switch, point ./compile_commands.json at the active branch's build
-# directory (resolved via `wits project build-dir`, falling back to builder.py)
-# so tooling picks up the right index.
+# directory, so tooling picks up the right index.
 
 . "$HOOKS_DIR/core/lib.sh"
 
