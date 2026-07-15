@@ -71,11 +71,31 @@ pub struct RawRepo {
     pub source_dir: Option<String>,
     #[serde(default)]
     pub remotes: RawRemotes,
-    /// Phase name (`pre_update`, `update`, `post_clone`, …) → command string.
     #[serde(default)]
-    pub hooks: BTreeMap<String, String>,
+    pub hooks: RawHooks,
     #[serde(default)]
     pub presets: BTreeMap<String, RawPreset>,
+}
+
+/// A repo's lifecycle hooks: an optional command string per phase. A typed
+/// struct rather than a free `phase -> command` map, so a mistyped phase like
+/// `pre_updat` is a hard parse error (via `deny_unknown_fields`) instead of a
+/// silently-ignored no-op. Each command is a template resolved against the
+/// per-repo context when the phase runs (see `wits update`).
+#[derive(Debug, Deserialize, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RawHooks {
+    /// Replaces the built-in clone (origin → checkout main → submodules); runs
+    /// before the checkout exists, so in the current working directory.
+    pub clone: Option<String>,
+    /// After a fresh clone (or the `clone` override), in the checkout.
+    pub post_clone: Option<String>,
+    /// Before the update proper.
+    pub pre_update: Option<String>,
+    /// Replaces the built-in update (fetch/rebase/submodules).
+    pub update: Option<String>,
+    /// After the update.
+    pub post_update: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -383,6 +403,31 @@ mod tests {
         assert_eq!(infer_kind("side", &standalone), Kind::Standalone);
         // main is always standalone even with a relative path
         assert_eq!(infer_kind("main", &subtree), Kind::Standalone);
+    }
+
+    #[test]
+    fn hooks_are_typed_and_reject_a_mistyped_phase() {
+        let repo: RawRepo = toml::from_str(
+            r#"
+            path = "~/src/x"
+            [hooks]
+            pre_update = "echo hi"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(repo.hooks.pre_update.as_deref(), Some("echo hi"));
+        assert!(repo.hooks.update.is_none());
+
+        // A mistyped phase is a hard parse error, not a silently-dropped no-op.
+        let err = toml::from_str::<RawRepo>(
+            r#"
+            path = "~/src/x"
+            [hooks]
+            pre_updat = "oops"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("pre_updat"));
     }
 
     #[test]

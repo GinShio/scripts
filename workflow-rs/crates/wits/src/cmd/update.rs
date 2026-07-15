@@ -83,7 +83,7 @@ fn clone_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Repositor
     // clone` creates the destination (and any leading dirs), so nothing is
     // pre-created; a `clone` override runs in the current working directory,
     // since the repo path does not exist yet.
-    if let Some(action) = repo.hooks.get("clone") {
+    if let Some(action) = repo.hooks.clone.as_ref() {
         run_hook(&engine, None, action, "clone")?;
     } else {
         // Clone from the sync source: `upstream` if declared, else `origin`. A
@@ -108,7 +108,7 @@ fn clone_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Repositor
     run_hook_opt(
         &engine,
         Some(git.path()),
-        repo.hooks.get("post_clone"),
+        repo.hooks.post_clone.as_ref(),
         "post_clone",
     )?;
     Ok(())
@@ -127,11 +127,11 @@ fn update_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Reposito
     run_hook_opt(
         &engine,
         Some(git.path()),
-        repo.hooks.get("pre_update"),
+        repo.hooks.pre_update.as_ref(),
         "pre_update",
     )?;
 
-    if let Some(action) = repo.hooks.get("update") {
+    if let Some(action) = repo.hooks.update.as_ref() {
         run_hook(&engine, Some(git.path()), action, "update")?;
     } else {
         default_update(project, name, git, repo)?;
@@ -140,7 +140,7 @@ fn update_repo(ws: &Workspace, project: &ProjectData, name: &str, git: &Reposito
     run_hook_opt(
         &engine,
         Some(git.path()),
-        repo.hooks.get("post_update"),
+        repo.hooks.post_update.as_ref(),
         "post_update",
     )?;
     Ok(())
