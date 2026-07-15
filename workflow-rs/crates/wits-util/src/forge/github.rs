@@ -420,9 +420,13 @@ mod gql {
     pub const FIND_QUERY: &str = "query($owner:String!,$repo:String!,$branch:String!){\
         repository(owner:$owner,name:$repo){pullRequests(headRefName:$branch,\
           states:[OPEN,MERGED,CLOSED],first:50,orderBy:{field:UPDATED_AT,direction:DESC}){\
-          nodes{number state url baseRefName body headRefOid headRepositoryOwner{login}}}}}";
+          nodes{number state url baseRefName headRefName body headRefOid headRepositoryOwner{login}}}}}";
+    pub const CHILDREN_QUERY: &str = "query($owner:String!,$repo:String!,$base:String!){\
+        repository(owner:$owner,name:$repo){pullRequests(baseRefName:$base,\
+          states:[OPEN],first:50,orderBy:{field:UPDATED_AT,direction:DESC}){\
+          nodes{number state url baseRefName headRefName body headRefOid headRepositoryOwner{login}}}}}";
     pub const CREATE_PR: &str = "mutation($input:CreatePullRequestInput!){\
-        createPullRequest(input:$input){pullRequest{number state url baseRefName body headRefOid}}}";
+        createPullRequest(input:$input){pullRequest{number state url baseRefName headRefName body headRefOid}}}";
     pub const UPDATE_PR: &str = "mutation($input:UpdatePullRequestInput!){\
         updatePullRequest(input:$input){pullRequest{number}}}";
     pub const ADD_LABELS: &str = "mutation($input:AddLabelsToLabelableInput!){\
@@ -475,6 +479,7 @@ fn parse_pr_mr(v: &Value) -> Option<MergeRequest> {
         display: format!("#{number}"),
         state,
         base: v["baseRefName"].as_str().unwrap_or_default().to_owned(),
+        source: v["headRefName"].as_str().unwrap_or_default().to_owned(),
         head_sha: v["headRefOid"].as_str().map(str::to_owned),
         body: v["body"].as_str().unwrap_or_default().to_owned(),
         web_url: v["url"].as_str().unwrap_or_default().to_owned(),
@@ -492,6 +497,17 @@ impl Forge for GitHub {
 
     fn find_any(&self, branch: &str) -> anyhow::Result<Option<MergeRequest>> {
         Ok(super::pick_any(&self.candidates(branch)?))
+    }
+
+    fn find_children(&self, base_branch: &str) -> anyhow::Result<Vec<MergeRequest>> {
+        let data = self.graphql(
+            gql::CHILDREN_QUERY,
+            json!({ "owner": self.owner, "repo": self.repo, "base": base_branch }),
+        )?;
+        Ok(data["repository"]["pullRequests"]["nodes"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(parse_pr_mr).collect())
+            .unwrap_or_default())
     }
 
     fn create(&self, req: &NewMr) -> anyhow::Result<MergeRequest> {

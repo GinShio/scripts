@@ -229,6 +229,7 @@ mod tests {
             display: "#1".into(),
             state,
             base: base.into(),
+            source: String::new(),
             head_sha: sha.map(Into::into),
             body: String::new(),
             web_url: String::new(),

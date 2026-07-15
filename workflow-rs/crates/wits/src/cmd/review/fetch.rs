@@ -7,9 +7,11 @@
 //! matching MR, leaving the expensive per-MR pull to `fetch <mr>`. With no
 //! argument, every configured feed is refreshed (the RSS "refresh all").
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result};
 
-use wits_util::forge::DiffVersion;
+use wits_util::forge::{DiffVersion, MergeRequest};
 use wits_util::git::Repository;
 
 use super::config::{self, Config};
@@ -22,7 +24,11 @@ pub fn run(repo: &Repository, args: &super::FetchArgs) -> Result<()> {
 
     if let Some(handle) = &args.mr {
         let id = parse_mr_handle(handle)?;
-        fetch_one(&ctx, &target_remote(&ctx), &id)?;
+        let remote = target_remote(&ctx);
+        if args.stack {
+            return fetch_stack(&ctx, &remote, &id);
+        }
+        fetch_one(&ctx, &remote, &id)?;
         log::info!("fetched {} {}", ctx.forge.noun(), id);
         return Ok(());
     }
@@ -103,6 +109,66 @@ fn fetch_one(ctx: &Online, remote: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Fetch an MR and every other MR in its stack. The stack is discovered on the
+/// forge by walking base/source links out from the seed — upward to the parent
+/// (the MR whose source is our base) and downward to the children (MRs whose
+/// base is our source) — so a label/limit-filtered feed can't leave it
+/// half-fetched. Each discovered member is then given a full [`fetch_one`].
+fn fetch_stack(ctx: &Online, remote: &str, seed_id: &str) -> Result<()> {
+    let forge = ctx.forge.as_ref();
+    let seed = forge.mr_details(seed_id)?.summary;
+    let ids = stack_member_ids(
+        (&seed.id, &seed.base, &seed.source),
+        |branch| forge.find_any(branch),
+        |branch| forge.find_children(branch),
+    )?;
+    for id in &ids {
+        fetch_one(ctx, remote, id)?;
+    }
+    log::info!(
+        "fetched {} {}(s) in the stack around {}",
+        ids.len(),
+        forge.noun(),
+        seed_id
+    );
+    Ok(())
+}
+
+/// The ids of every MR in the stack containing the seed `(id, base, source)`,
+/// discovered by a breadth-first walk of base/source links: `parent_of(base)`
+/// climbs toward the trunk, `children_of(source)` descends toward the leaves.
+/// Pure over the two link functions so the graph logic is testable without a
+/// forge; `BTreeSet` both dedupes (a diamond is visited once) and gives a
+/// stable, id-sorted result.
+fn stack_member_ids(
+    seed: (&str, &str, &str),
+    parent_of: impl Fn(&str) -> Result<Option<MergeRequest>>,
+    children_of: impl Fn(&str) -> Result<Vec<MergeRequest>>,
+) -> Result<Vec<String>> {
+    let (seed_id, seed_base, seed_source) = seed;
+    let mut ids: BTreeSet<String> = BTreeSet::from([seed_id.to_owned()]);
+    // Frontier of `(base, source)` links still to expand.
+    let mut frontier = vec![(seed_base.to_owned(), seed_source.to_owned())];
+
+    while let Some((base, source)) = frontier.pop() {
+        if !base.is_empty() {
+            if let Some(parent) = parent_of(&base)? {
+                if ids.insert(parent.id) {
+                    frontier.push((parent.base, parent.source));
+                }
+            }
+        }
+        if !source.is_empty() {
+            for child in children_of(&source)? {
+                if ids.insert(child.id) {
+                    frontier.push((child.base, child.source));
+                }
+            }
+        }
+    }
+    Ok(ids.into_iter().collect())
+}
+
 /// Refresh one feed's inbox summaries — cheap, `info.json` only. Where a full
 /// pull already exists, only the summary is refreshed; its diff state and
 /// discussion are left intact.
@@ -173,4 +239,82 @@ fn local_range(repo: &Repository, base: &str, head: &str) -> (Vec<StoredCommit>,
         return (Vec::new(), Vec::new());
     }
     range_artifacts(repo, &format!("{base}..{head}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wits_util::forge::MrState;
+
+    /// A tiny in-memory stack: `(id, base, source)` per MR. The link functions
+    /// stand in for the forge — `parent_of(branch)` = the MR whose source is
+    /// `branch`, `children_of(branch)` = the MRs whose base is `branch`.
+    #[allow(clippy::type_complexity)]
+    fn links(
+        stack: &'static [(&'static str, &'static str, &'static str)],
+    ) -> (
+        impl Fn(&str) -> Result<Option<MergeRequest>>,
+        impl Fn(&str) -> Result<Vec<MergeRequest>>,
+    ) {
+        let mk = |&(id, base, source): &(&str, &str, &str)| MergeRequest {
+            id: id.to_owned(),
+            display: format!("#{id}"),
+            state: MrState::Open,
+            base: base.to_owned(),
+            source: source.to_owned(),
+            head_sha: None,
+            body: String::new(),
+            web_url: String::new(),
+        };
+        let parent = move |branch: &str| {
+            Ok(stack
+                .iter()
+                .find(|(_, _, source)| *source == branch)
+                .map(mk))
+        };
+        let children = move |branch: &str| {
+            Ok(stack
+                .iter()
+                .filter(|(_, base, _)| *base == branch)
+                .map(mk)
+                .collect())
+        };
+        (parent, children)
+    }
+
+    #[test]
+    fn discovers_the_whole_stack_from_any_seed() {
+        // main <- a <- b <- c (a linear stack of three MRs).
+        let stack: &[(&str, &str, &str)] = &[("1", "main", "a"), ("2", "a", "b"), ("3", "b", "c")];
+        let (parent, children) = links(stack);
+        // Seeding from the middle still finds both ends.
+        let ids = stack_member_ids(("2", "a", "b"), &parent, &children).unwrap();
+        assert_eq!(ids, ["1", "2", "3"]);
+    }
+
+    #[test]
+    fn discovers_both_arms_of_a_fork() {
+        // main <- a, then a forks into b and c.
+        let stack: &[(&str, &str, &str)] = &[
+            ("1", "main", "a"),
+            ("2", "a", "b"),
+            ("3", "a", "c"),
+            ("4", "c", "d"),
+        ];
+        let (parent, children) = links(stack);
+        // From the base MR, every descendant on both arms is discovered.
+        let ids = stack_member_ids(("1", "main", "a"), &parent, &children).unwrap();
+        assert_eq!(ids, ["1", "2", "3", "4"]);
+        // And from a leaf, the whole tree is still reached via the shared trunk.
+        let ids = stack_member_ids(("4", "c", "d"), &parent, &children).unwrap();
+        assert_eq!(ids, ["1", "2", "3", "4"]);
+    }
+
+    #[test]
+    fn a_lone_mr_is_its_own_stack() {
+        let stack: &[(&str, &str, &str)] = &[("9", "main", "solo")];
+        let (parent, children) = links(stack);
+        let ids = stack_member_ids(("9", "main", "solo"), &parent, &children).unwrap();
+        assert_eq!(ids, ["9"]);
+    }
 }

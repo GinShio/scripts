@@ -78,6 +78,10 @@ pub struct MergeRequest {
     pub display: String,
     pub state: MrState,
     pub base: String,
+    /// The MR's source branch. Lets a stack be walked in both directions —
+    /// one MR's `base` links to its parent's `source` — without the richer
+    /// [`MrSummary`]. Empty when the platform withholds it.
+    pub source: String,
     pub head_sha: Option<String>,
     pub body: String,
     pub web_url: String,
@@ -147,6 +151,15 @@ pub trait Forge: Send + Sync {
     /// one round trip instead of the two a paired `find(Open)` + `find(NotOpen)`
     /// would cost — every backend's list query already returns all states at once.
     fn find_any(&self, branch: &str) -> anyhow::Result<Option<MergeRequest>>;
+
+    /// The open MRs whose *target* branch is `base_branch` — the children of a
+    /// stack node. Used by `review fetch --stack` to walk a stack downward toward
+    /// its leaves (the upward walk is [`find_any`](Forge::find_any) on the base).
+    /// Defaults to empty for a backend that can't enumerate them, so stack
+    /// completion degrades to the upward direction rather than failing.
+    fn find_children(&self, _base_branch: &str) -> anyhow::Result<Vec<MergeRequest>> {
+        Ok(Vec::new())
+    }
 
     fn create(&self, req: &NewMr) -> anyhow::Result<MergeRequest>;
     fn set_base(&self, id: &str, base: &str) -> anyhow::Result<()>;

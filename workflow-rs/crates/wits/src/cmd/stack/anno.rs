@@ -201,6 +201,7 @@ mod tests {
             display: display.into(),
             state: MrState::Open,
             base: "x".into(),
+            source: String::new(),
             head_sha: None,
             body: String::new(),
             web_url: String::new(),

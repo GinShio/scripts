@@ -417,6 +417,7 @@ fn parse_mr(v: &Value) -> Option<MergeRequest> {
         display: format!("!{iid}"),
         state,
         base: v["target_branch"].as_str().unwrap_or_default().to_owned(),
+        source: v["source_branch"].as_str().unwrap_or_default().to_owned(),
         head_sha: v["sha"].as_str().map(str::to_owned),
         body: v["description"].as_str().unwrap_or_default().to_owned(),
         web_url: v["web_url"].as_str().unwrap_or_default().to_owned(),
@@ -434,6 +435,18 @@ impl Forge for GitLab {
 
     fn find_any(&self, branch: &str) -> anyhow::Result<Option<MergeRequest>> {
         Ok(super::pick_any(&self.candidates(branch)?))
+    }
+
+    fn find_children(&self, base_branch: &str) -> anyhow::Result<Vec<MergeRequest>> {
+        let url = format!(
+            "{}?target_branch={}&state=opened",
+            self.mrs_url(),
+            encode(base_branch),
+        );
+        let v = request("GET", &url, &self.auth, None)?;
+        Ok(v.as_array()
+            .map(|arr| arr.iter().filter_map(parse_mr).collect())
+            .unwrap_or_default())
     }
 
     fn create(&self, req: &NewMr) -> anyhow::Result<MergeRequest> {

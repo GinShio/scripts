@@ -124,6 +124,7 @@ fn parse_pull(v: &Value) -> Option<MergeRequest> {
         display: format!("#{number}"),
         state,
         base: v["base"]["ref"].as_str().unwrap_or_default().to_owned(),
+        source: v["head"]["ref"].as_str().unwrap_or_default().to_owned(),
         head_sha: v["head"]["sha"].as_str().map(str::to_owned),
         body: v["body"].as_str().unwrap_or_default().to_owned(),
         web_url: v["html_url"].as_str().unwrap_or_default().to_owned(),

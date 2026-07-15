@@ -62,6 +62,11 @@ pub struct FetchArgs {
     /// Fetch a configured feed's MRs (a light, inbox-only refresh).
     #[arg(long, conflicts_with = "mr")]
     pub feed: Option<String>,
+    /// Also fetch every other MR in the same stack, discovered by walking the
+    /// MR's base/source links on the forge — so a label/limit-filtered feed
+    /// can't leave a stack half-fetched. Requires an MR argument.
+    #[arg(long, requires = "mr")]
+    pub stack: bool,
 }
 
 #[derive(Debug, Args)]
