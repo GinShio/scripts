@@ -203,36 +203,37 @@ pub fn run(args: &ReviewArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// The repo's target identity and its store — everything a *local* verb needs,
-/// without a forge token.
-pub(crate) struct Local {
+/// without a forge token. Named to stand apart from [`model::Local`], the draft
+/// JSON: this is the review *context*, that is the file you edit.
+pub(crate) struct ReviewCtx {
     pub repo: Repository,
     pub target: RemoteInfo,
     pub store: Store,
 }
 
-pub(crate) fn local(repo: &Repository) -> Result<Local> {
+pub(crate) fn local(repo: &Repository) -> Result<ReviewCtx> {
     let remotes = Remotes::resolve(repo);
     local_from_remotes(repo, &remotes)
 }
 
-fn local_from_remotes(repo: &Repository, remotes: &Remotes) -> Result<Local> {
+fn local_from_remotes(repo: &Repository, remotes: &Remotes) -> Result<ReviewCtx> {
     let target = remotes
         .target()
         .cloned()
         .context("no 'origin' or 'upstream' remote to derive the forge from")?;
     let store = Store::open(repo, &target)?;
-    Ok(Local {
+    Ok(ReviewCtx {
         repo: repo.clone(),
         target,
         store,
     })
 }
 
-/// A [`Local`] plus a live forge — what the network verbs (`fetch`, `submit`)
-/// need. Detecting the forge resolves the token, so a missing token is reported
-/// here.
+/// A [`ReviewCtx`] plus a live forge — what the network verbs (`fetch`,
+/// `submit`) need. Detecting the forge resolves the token, so a missing token is
+/// reported here.
 pub(crate) struct Online {
-    pub local: Local,
+    pub local: ReviewCtx,
     pub remotes: Remotes,
     pub forge: Box<dyn Forge>,
 }

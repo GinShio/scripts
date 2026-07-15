@@ -82,7 +82,7 @@ pub fn run(repo: &Repository, args: &ShowArgs) -> Result<()> {
     }
 }
 
-fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
+fn show_detail(ctx: &super::ReviewCtx, id: &str, args: &ShowArgs) -> Result<()> {
     let view = build_detail_view(ctx, id, args)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&view)?);
@@ -97,7 +97,7 @@ fn show_detail(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<()> {
 /// display filters, and stitch in stack neighbours. Pure data — no I/O to
 /// stdout — so it is the one place the read model is built (and the natural test
 /// seam), leaving `show_detail` to only choose JSON vs. human rendering.
-fn build_detail_view(ctx: &super::Local, id: &str, args: &ShowArgs) -> Result<DetailView> {
+fn build_detail_view(ctx: &super::ReviewCtx, id: &str, args: &ShowArgs) -> Result<DetailView> {
     let info = ctx.store.load_info(id).with_context(|| {
         format!("MR {id} isn't in the store yet — run `wits review fetch {id}` first")
     })?;
@@ -322,7 +322,7 @@ fn pending_count(draft: &Local) -> usize {
     draft.actions.len() + usize::from(draft.verdict.is_some() || draft.summary.is_some())
 }
 
-fn show_inbox(ctx: &super::Local, args: &ShowArgs) -> Result<()> {
+fn show_inbox(ctx: &super::ReviewCtx, args: &ShowArgs) -> Result<()> {
     let mut infos = ctx.store.list_infos();
     infos.sort_by(|a, b| b.mr.updated_at.cmp(&a.mr.updated_at));
 
@@ -461,7 +461,7 @@ fn first_line(s: &str) -> &str {
 /// and append its actions to the draft, setting the verdict/summary when the
 /// batch provides them. The tool owns the write; the editor only provides the
 /// content. Surgery on a queued action is done by editing `local.json`.
-fn ingest(ctx: &super::Local, id: &str, input: &std::path::Path) -> Result<()> {
+fn ingest(ctx: &super::ReviewCtx, id: &str, input: &std::path::Path) -> Result<()> {
     use std::io::Read;
     let text = if input.as_os_str() == "-" {
         let mut buf = String::new();

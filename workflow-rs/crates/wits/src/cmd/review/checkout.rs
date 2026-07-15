@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use wits_util::git::Repository;
 
 use super::model::short;
-use super::{local, CheckoutArgs, Local};
+use super::{local, CheckoutArgs, ReviewCtx};
 
 pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
     let ctx = local(repo)?;
@@ -59,7 +59,7 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
 }
 
 /// The MR to materialize: explicit, or the neighbour of the current checkout.
-fn resolve_target(ctx: &Local, args: &CheckoutArgs) -> Result<String> {
+fn resolve_target(ctx: &ReviewCtx, args: &CheckoutArgs) -> Result<String> {
     if let Some(handle) = &args.mr {
         return super::parse_mr_handle(handle);
     }
