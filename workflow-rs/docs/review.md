@@ -44,7 +44,7 @@ fetch  ─────────►  info.json + comments.json        ◄─�
 ```
 
 - `fetch` pulls an MR's metadata, objects (pinned so a later force-push can't
-  lose them), and discussion.
+  lose them), and discussion — and, by default, the rest of the MR's stack too.
 - You edit `local.json` to record your review — nothing reaches the forge.
 - `submit` merges and posts the draft as one batched review, clears it, and
   re-fetches, so your just-posted comments come back as ordinary remote threads.
@@ -78,7 +78,7 @@ Seven verbs; only `fetch` and `submit` touch the network.
 
 | Verb | Network | What it does |
 |---|---|---|
-| `fetch [mr] [--feed name]` | read | Pull one MR (full), a feed (light), or every feed (bare). |
+| `fetch [mr] [--no-stack] [--feed name]` | read | Pull an MR and its whole stack (full), a feed and its stacks (light), or every feed (bare). |
 | `show [mr] [filters] [--json]` | — | The inbox, or one MR's merged review view. |
 | `diff <mr> [--range r\|--snapshot sha] [--patch\|--json]` | — | A diff's commits/files/coordinates. |
 | `draft <mr> [FILE\|-] [--json]` | — | Show the pending draft, or append a batch of actions to it. |
@@ -89,16 +89,34 @@ Seven verbs; only `fetch` and `submit` touch the network.
 ### Fetching
 
 ```sh
-wits review fetch 123                       # one MR, by number — a full pull
+wits review fetch 123                       # MR 123 and its whole stack — a full pull
 wits review fetch https://github.com/o/r/pull/123   # …or by URL
-wits review fetch --feed mine               # one feed's MRs (light: metadata only)
+wits review fetch 123 --no-stack            # only MR 123, not the rest of its stack
+wits review fetch --feed mine               # a feed's MRs and their stacks (light)
 wits review fetch                           # every configured feed (light)
 ```
 
-Fetching one MR is a **full** pull (objects, discussion, derived commit/file
-lists). Fetching a feed is **light** — only the inbox metadata for each matching
-MR, leaving the per-MR pull to `fetch <mr>`. That is what lets a feed scale to a
-repo with thousands of open MRs.
+**Every fetch completes stacks.** A stack is the review unit, so the tool
+discovers the other MRs in a stack by walking each MR's base/source links on the
+forge — a *parent* is the MR whose source branch is your base; a *child* is an MR
+whose base is your source — out to the whole connected stack. This is why a
+label/limit feed can no longer leave a stack half-fetched, and why you never pass
+a flag to "also get the rest".
+
+Two depths, by intent:
+
+- **`fetch <mr>`** is a **full** pull — objects, discussion, derived commit/file
+  lists — for the MR *and* every member of its stack, since you are sitting down
+  to review that stack.
+- **A feed** is **light**: the matched MRs *and* any stack members the filter
+  missed get only their inbox metadata (`info.json`), leaving the per-MR object
+  pull to a later `fetch <mr>`. So a feed still scales to a repo with thousands
+  of open MRs, while the inbox always shows whole stacks.
+
+`--no-stack` opts out for the rare "just this one MR" case. The walk is **bounded
+to the real stack** — it climbs to a trunk branch and stops, and only ever asks
+for the children *of a source branch*, never of a trunk — so completing a stack
+never drags in unrelated MRs.
 
 ### Feeds — an RSS-style subscription
 
@@ -405,8 +423,8 @@ The store root is resolved on this ladder, first hit wins:
 - **`$XDG_STATE_HOME/wits/review`** — when `XDG_STATE_HOME` is set.
 - **`$GIT_DIR/wits/review`** — the default, per-clone (beside `.git/machete`).
 
-Per-run choices (`--range`, `--snapshot`, `--stack`, `--all`, `-n`) are flags,
-not config — they describe one invocation.
+Per-run choices (`--range`, `--snapshot`, `--no-stack`, `--stack`, `--all`, `-n`)
+are flags, not config — they describe one invocation.
 
 ## Version scope and limitations
 
@@ -420,7 +438,7 @@ Bounded on purpose, and honest about it:
 | Editing/deleting a **published** comment | Not supported; you edit only your pending `local.json`. |
 | Cross-snapshot anchoring | Per-comment on GitLab (each comment anchors to its own snapshot version); review-level on GitHub (its API takes one commit per review, so the batch anchors to one snapshot). Comments without a `commit` use the current snapshot. |
 | Outdating | Computed **locally** and identically for both forges — a thread is outdated when its anchored line changed between the commit it was written on and the current head. Falls back to the forge's own flag only when that commit's objects aren't local. |
-| Feeds | Return real MRs (base/head) up to a hard `limit`, most-recently-updated first; an incremental "since last sync" cursor is future work. |
+| Feeds | Return real MRs (base/head) up to a hard `limit`, most-recently-updated first, then **complete each match's stack** (light) by walking base/source links so the inbox shows whole stacks; an incremental "since last sync" cursor is future work. |
 | Notifications | Minimised, not promised: `submit` reports the true count. GitLab folds comments + replies + summary into one `bulk_publish` (the verdict is a separate quiet `approve`/`unapprove`). GitHub folds the verdict, summary, line/file comments, and replies into one review; only an MR-level conversation comment is a separate notification (resolves are separate but quiet). |
 
 ## Troubleshooting

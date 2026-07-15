@@ -73,7 +73,7 @@ preference. It is the `prr` model, generalized to threads, outdating, and stacks
 
 ```
 # Network — the only two verbs that talk to the forge.
-wits review fetch  [mr | --feed name]   # one MR (full), a feed (light), or every feed (bare)
+wits review fetch  [mr [--no-stack] | --feed name]   # an MR+stack (full), a feed+stacks (light), or every feed (bare)
 wits review submit [mr | --stack | --all]   # merge + flush the local.json draft, batched
 
 # Reading — from the local files, no network; each supports --json.
@@ -100,7 +100,9 @@ Notes on shape, each with its reason:
   private.
 - **`fetch` subsumes "pull" and "sync"** — one idempotent verb like `git fetch`.
   Bare `fetch` refreshes every configured feed (the RSS "refresh all"); `--feed`
-  one feed; a number/URL one MR in full.
+  one feed; a number/URL one MR in full. Any of them **completes stacks** (§13):
+  the members a feed's filter missed are pulled in so a stack is never left half
+  in the store.
 - **`show` with no MR is the inbox; with an MR it is the merged detail view.** No
   separate `list`; the human print is secondary to `--json` (§12).
 - **Navigation is a flag on `checkout`.** `--next`/`--prev` walk the stack from
@@ -652,12 +654,19 @@ without inventing anything the forge can't store.
   chain of MRs whose base branches link head-to-tail *is* a stack; we read it off
   the fetched MRs, so `review` is stack-aware for *anyone's* stack. The linking
   is by **branch** (`base` ↔ `source`), never by MR number, so non-contiguous or
-  non-increasing numbers are fine — the topology is correct regardless. Two
-  honest caveats: reconstruction spans only the **locally-cached** MRs, so a node
-  you haven't fetched (e.g. it carries a label outside your feed) leaves a gap and
-  the chain stops there; and re-deriving happens on `fetch`, so a rebase that
-  reshapes the stack is picked up explicitly, not guessed at. The fix for a gap is
-  to `fetch` the missing node by number.
+  non-increasing numbers are fine (a stack's MRs are opened in parallel, so their
+  numbers need not increase with position) — the topology is correct regardless.
+- **Every `fetch` completes the stack, so there is no gap to fix by hand.** A
+  label/limit feed can match only part of a stack, which would leave the
+  reconstruction stopping at the first unfetched node. So `fetch` closes that
+  itself: from each fetched MR it walks the same `base`↔`source` links *on the
+  forge* — `find_any(base)` climbs to the parent, `find_children(source)`
+  descends to the children — out to the whole connected stack, and pulls in any
+  member the filter missed (a feed does this **lightly**, summary-only; `fetch
+  <mr>` does it **fully**). The walk is bounded to the real stack — it stops at a
+  trunk and never enumerates a trunk's MRs — so it never drags in unrelated work,
+  and `--no-stack` opts out. Re-deriving happens on every `fetch`, so a rebase
+  that reshapes the stack is picked up on the next fetch, not guessed at.
 - **Navigation, not cross-MR comments.** `checkout --next/--prev` walks the chain
   (relative to a small per-repo pointer recording the last checkout, §14), and
   `show` hands the editor a `neighbors` block so it can do the same. But a
