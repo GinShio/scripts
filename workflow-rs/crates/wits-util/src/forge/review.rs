@@ -96,8 +96,6 @@ pub struct FeedQuery {
     pub reviewer: Option<String>,
     /// A raw platform search string, the escape hatch for the full-text case.
     pub search: Option<String>,
-    /// Only MRs updated at or after this ISO-8601 instant (incremental sync).
-    pub updated_after: Option<String>,
     /// A hard cap on how many MRs to pull, so a huge repo can't flood the inbox.
     pub limit: usize,
 }

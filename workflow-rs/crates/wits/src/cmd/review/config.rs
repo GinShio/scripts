@@ -61,7 +61,7 @@ impl FeedDef {
     /// Resolve this feed definition into a query. Borrows `self` (the fields are
     /// cloned into the owned [`FeedQuery`] regardless), so the lookup needs no
     /// hand-written clone of `FeedDef`.
-    fn to_query(&self, updated_after: Option<String>) -> FeedQuery {
+    fn to_query(&self) -> FeedQuery {
         FeedQuery {
             states: parse_states(self.state.as_deref()),
             labels: self.labels.clone(),
@@ -70,7 +70,6 @@ impl FeedDef {
             assignee: self.assignee.clone(),
             reviewer: self.reviewer.clone(),
             search: self.search.clone(),
-            updated_after,
             limit: self.limit.unwrap_or(DEFAULT_LIMIT),
         }
     }
@@ -123,10 +122,9 @@ impl Config {
     }
 
     /// The feed named `name` for the repo keyed by `key`, resolved into a query.
-    /// `updated_after` threads an incremental-sync cursor into the query.
-    pub fn feed(&self, key: &str, name: &str, updated_after: Option<String>) -> Option<FeedQuery> {
+    pub fn feed(&self, key: &str, name: &str) -> Option<FeedQuery> {
         let def = self.file.repo.get(key)?.feed.get(name)?;
-        Some(def.to_query(updated_after))
+        Some(def.to_query())
     }
 
     /// The feed's configured stack-completion mode, if it set one. `None` means
@@ -214,7 +212,7 @@ mod tests {
         };
         let key = "github.com/mesa/mesa";
 
-        let mine = cfg.feed(key, "mine", None).unwrap();
+        let mine = cfg.feed(key, "mine").unwrap();
         assert_eq!(mine.reviewer.as_deref(), Some("@me"));
         assert_eq!(
             mine.states,
@@ -225,14 +223,14 @@ mod tests {
         );
         assert_eq!(mine.limit, DEFAULT_LIMIT);
 
-        let vk = cfg.feed(key, "vk", None).unwrap();
+        let vk = cfg.feed(key, "vk").unwrap();
         assert_eq!(vk.labels, ["vulkan", "spirv"]);
         assert_eq!(vk.exclude_labels, ["wip"]);
         assert_eq!(vk.limit, 10);
 
         assert_eq!(cfg.feed_names(key), ["mine", "vk"]);
-        assert!(cfg.feed(key, "absent", None).is_none());
-        assert!(cfg.feed("other/repo/x", "mine", None).is_none());
+        assert!(cfg.feed(key, "absent").is_none());
+        assert!(cfg.feed("other/repo/x", "mine").is_none());
     }
 
     #[test]

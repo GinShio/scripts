@@ -236,7 +236,7 @@ fn fetch_feed(
     name: &str,
     cli_mode: Option<StackMode>,
 ) -> Result<()> {
-    let query = cfg.feed(key, name, None).with_context(|| {
+    let query = cfg.feed(key, name).with_context(|| {
         let known = cfg.feed_names(key);
         if known.is_empty() {
             format!("no feed '{name}' — no feeds configured for {key}")

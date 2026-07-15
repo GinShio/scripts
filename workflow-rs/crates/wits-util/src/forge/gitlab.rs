@@ -566,9 +566,6 @@ impl Forge for GitLab {
         if let Some(r) = &query.reviewer {
             url += &format!("&reviewer_username={}", encode(&self.filter_user(r)?));
         }
-        if let Some(u) = &query.updated_after {
-            url += &format!("&updated_after={}", encode(u));
-        }
         if let Some(s) = &query.search {
             url += &format!("&search={}", encode(s));
         }

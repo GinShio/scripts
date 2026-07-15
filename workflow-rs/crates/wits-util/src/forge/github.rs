@@ -234,9 +234,6 @@ impl GitHub {
         if let Some(r) = &q.reviewer {
             parts.push(format!("review-requested:{r}"));
         }
-        if let Some(u) = &q.updated_after {
-            parts.push(format!("updated:>={u}"));
-        }
         if let Some(s) = &q.search {
             parts.push(s.clone());
         }
