@@ -234,49 +234,42 @@ fn resolve_plan<'a>(
     Ok((project, plan))
 }
 
-/// The resolved build directory for a branch, one line to stdout — the query a
-/// checkout hook needs to point `compile_commands.json` at the active build.
-fn build_dir(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
-    let (project, plan) = resolve_plan(ws, args)?;
-    match plan.build_dir {
-        Some(dir) => {
-            println!("{}", dir.display());
+/// Generate a one-line path query over the resolved [`Plan`](resolve::Plan).
+/// The queries differ only in which field they print and whether it is optional
+/// (a declared template that may be absent) or always resolvable, so they are
+/// one macro rather than four near-identical functions.
+macro_rules! path_query {
+    // An optional path: print it, or bail with why it isn't there.
+    ($name:ident, $field:ident, optional: $absent:literal) => {
+        fn $name(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
+            let (project, plan) = resolve_plan(ws, args)?;
+            match plan.$field {
+                Some(dir) => {
+                    println!("{}", dir.display());
+                    Ok(())
+                }
+                None => bail!("project '{}' {}", project.key(), $absent),
+            }
+        }
+    };
+    // An always-resolvable path.
+    ($name:ident, $field:ident) => {
+        fn $name(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
+            let (_project, plan) = resolve_plan(ws, args)?;
+            println!("{}", plan.$field.display());
             Ok(())
         }
-        None => bail!(
-            "project '{}' has no build_dir template to resolve",
-            project.key()
-        ),
-    }
+    };
 }
 
-/// The resolved install prefix for a branch, one line to stdout.
-fn install_dir(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
-    let (project, plan) = resolve_plan(ws, args)?;
-    match plan.install_dir {
-        Some(dir) => {
-            println!("{}", dir.display());
-            Ok(())
-        }
-        None => bail!("project '{}' has no install_dir configured", project.key()),
-    }
-}
-
-/// The resolved source directory (where the backend configures from), one line.
-/// Always present — it defaults to `work.dir` when no `source_dir` is declared.
-fn source_dir(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
-    let (_project, plan) = resolve_plan(ws, args)?;
-    println!("{}", plan.source_dir.display());
-    Ok(())
-}
-
-/// The branch's checkout root (`work.dir`), one line — the checkout a caller
-/// `cd`s into, and the anchor every path template resolves against.
-fn work_dir(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
-    let (_project, plan) = resolve_plan(ws, args)?;
-    println!("{}", plan.work_dir.display());
-    Ok(())
-}
+// `build-dir`: where a checkout hook points `compile_commands.json`.
+path_query!(build_dir, build_dir, optional: "has no build_dir template to resolve");
+// `install-dir`: the resolved install prefix.
+path_query!(install_dir, install_dir, optional: "has no install_dir configured");
+// `source-dir`: where the backend configures from (defaults to `work.dir`).
+path_query!(source_dir, source_dir);
+// `work-dir`: the branch's checkout root, the anchor every path template uses.
+path_query!(work_dir, work_dir);
 
 fn run_context(ws: &Workspace, args: &ContextArgs) -> Result<()> {
     let item = match &args.action {
