@@ -54,7 +54,7 @@ pub fn run(repo: &Repository, base: Option<&str>) -> anyhow::Result<()> {
     // a branch already in the stack is pre-filled active (preserved in place), a
     // branch that merely points here is offered commented, and a commit with no
     // branch gets a commented slug.
-    let mut topology = resolution::load_topology(repo);
+    let mut topology = resolution::load_topology(repo)?;
     let branches_at = branches_by_commit(repo);
     let todo = build_todo(&commits, &prefix, &topology, &branches_at);
 

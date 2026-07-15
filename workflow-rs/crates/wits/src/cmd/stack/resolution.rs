@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
+use anyhow::Context;
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
 
@@ -41,24 +42,19 @@ fn machete_path(repo: &Repository) -> Option<PathBuf> {
     repo.git_dir().map(|dir| dir.join("machete"))
 }
 
-pub fn load_topology(repo: &Repository) -> Topology {
+/// Load the machete forest. An *absent* file is a legitimately empty stack
+/// (`Ok(default)`); a file that exists but can't be read (permissions, a
+/// transient I/O error) is *not* the same as "no stack" — silently scoping to
+/// empty would drop every branch from every stack verb, so that is a hard error
+/// the caller surfaces rather than a warning it might miss. Parsing itself never
+/// fails (indentation always yields a forest).
+pub fn load_topology(repo: &Repository) -> anyhow::Result<Topology> {
     let Some(path) = machete_path(repo).filter(|p| p.exists()) else {
-        return Topology::default();
+        return Ok(Topology::default());
     };
-    match fs::read_to_string(&path) {
-        Ok(text) => Topology::parse(&text),
-        // A machete that exists but can't be read (permissions, a transient I/O
-        // error) is *not* the same as "no stack" — silently treating it as empty
-        // would drop every branch from scope. Warn loudly and fall back to empty
-        // rather than pretend the file said nothing.
-        Err(e) => {
-            log::warn!(
-                "could not read {}: {e}; treating the stack as empty",
-                path.display()
-            );
-            Topology::default()
-        }
-    }
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("reading {} (the machete stack file)", path.display()))?;
+    Ok(Topology::parse(&text))
 }
 
 /// Persist the forest back to `.git/machete`. A local-state mutation, so it
@@ -96,7 +92,7 @@ pub fn base_branch(repo: &Repository) -> anyhow::Result<String> {
 /// (`None` on a detached HEAD); `all` widens the scope to every recorded stack.
 pub fn plan(repo: &Repository, current: Option<&str>, all: bool) -> anyhow::Result<StackPlan> {
     let base_branch = base_branch(repo)?;
-    let topology = load_topology(repo);
+    let topology = load_topology(repo)?;
     select(topology, base_branch, current, all)
 }
 
@@ -135,7 +131,7 @@ pub fn plan_scoped(repo: &Repository, scope: &super::ScopeArgs) -> anyhow::Resul
     match Scope::from_args(scope) {
         Scope::All => plan(repo, None, true),
         Scope::Branch(branch) => {
-            let known = repo.rev_parse(branch).is_some() || load_topology(repo).contains(branch);
+            let known = repo.rev_parse(branch).is_some() || load_topology(repo)?.contains(branch);
             if !known {
                 anyhow::bail!(
                     "no such branch '{branch}': not a local branch and not recorded in .git/machete"
@@ -264,5 +260,26 @@ mod tests {
     #[test]
     fn standing_on_base_is_an_error() {
         assert!(select(sample(), "main".into(), Some("main"), false).is_err());
+    }
+
+    #[test]
+    fn load_topology_defaults_when_absent_and_parses_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        wits_util::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .force_run()
+            .exec()
+            .unwrap();
+        let repo = Repository::new(dir.path());
+
+        // No machete file yet: a legitimately empty stack, never an error.
+        assert!(load_topology(&repo).unwrap().is_empty());
+
+        // A present file parses into the forest.
+        let git_dir = repo.git_dir().unwrap();
+        std::fs::write(git_dir.join("machete"), "main\n    feat\n").unwrap();
+        let topo = load_topology(&repo).unwrap();
+        assert_eq!(topo.parent("feat"), Some("main"));
     }
 }

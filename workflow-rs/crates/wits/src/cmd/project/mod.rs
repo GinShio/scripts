@@ -297,10 +297,16 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
     println!("  repos:");
     for name in project.repos.keys() {
         let kind = project.kind_of(name).map(|k| k.as_str()).unwrap_or("?");
-        let path = project
-            .repo_abs_path(name)
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
+        // A path template that fails to resolve is a real config error; surface
+        // it inline rather than letting `unwrap_or_default()` render an empty
+        // path that then masquerades as a plain "<not cloned>" repo.
+        let path = match project.repo_abs_path(name) {
+            Ok(path) => path,
+            Err(e) => {
+                println!("    {name:<10} {kind:<10} <path error: {e}>");
+                continue;
+            }
+        };
         let git = git::Repository::new(&path);
         let state = if git.is_repo() {
             let branch = git.current_branch().unwrap_or_else(|| "-".into());
@@ -309,9 +315,9 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
         } else {
             "<not cloned>".into()
         };
-        println!("    {name:<10} {kind:<10} {state:<24} {path}");
+        println!("    {name:<10} {kind:<10} {state:<24} {}", path.display());
         for wt in git.worktrees() {
-            if wt.path != std::path::Path::new(&path) {
+            if wt.path != path {
                 let b = wt.branch.as_deref().unwrap_or("-");
                 println!("      worktree {b:<16} {}", wt.path.display());
             }

@@ -29,7 +29,7 @@ pub fn run(repo: &Repository, action: &TreeAction) -> anyhow::Result<()> {
 /// sibling included) keeps its node; only genuinely deleted refs are pruned.
 fn prune(repo: &Repository) -> anyhow::Result<()> {
     let base = resolution::base_branch(repo)?;
-    let mut topology = resolution::load_topology(repo);
+    let mut topology = resolution::load_topology(repo)?;
     if topology.is_empty() {
         log::info!("no stack to prune");
         return Ok(());
@@ -59,7 +59,7 @@ fn prune(repo: &Repository) -> anyhow::Result<()> {
 
 fn rm(repo: &Repository, args: &RmArgs) -> anyhow::Result<()> {
     let base = resolution::base_branch(repo)?;
-    let mut topology = resolution::load_topology(repo);
+    let mut topology = resolution::load_topology(repo)?;
     let mut changed = false;
     let mut failures = 0usize;
 
@@ -120,7 +120,7 @@ fn mv(repo: &Repository, args: &MvArgs) -> anyhow::Result<()> {
         anyhow::bail!("parent '{onto}' is neither the base branch nor an existing branch");
     }
 
-    let mut topology = resolution::load_topology(repo);
+    let mut topology = resolution::load_topology(repo)?;
     topology.ensure(onto);
     topology.ensure(branch);
     if !topology.reparent(branch, onto) {
