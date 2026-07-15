@@ -10,6 +10,7 @@
 //! ([`apply_env_map`]/[`apply_def_map`]/…) live here too, since folding a config
 //! layer into `Ctx` + [`LogicalConfig`] is the same context concern.
 
+use std::cell::{Ref, RefCell};
 use std::collections::BTreeMap;
 
 use anyhow::Result;
@@ -22,25 +23,62 @@ use super::workspace::{ProjectData, Workspace};
 
 // --- the mutable pipeline context ---------------------------------------------
 
-/// A mutable template context plus rendering helpers. Cloning is cheap enough for
-/// this scale, and each render gets a fresh memoising [`Engine`].
-#[derive(Clone)]
+/// A mutable template context plus rendering helpers.
+///
+/// A [`Engine`] memoises the paths it resolves, so a run of renders against an
+/// unchanged context should share one. We hold it lazily and rebuild it only
+/// when the context actually changes: [`engine`](Ctx::engine) populates the slot
+/// on first use, and every mutation ([`set`](Ctx::set)/[`set_env`](Ctx::set_env))
+/// drops it so a stale snapshot (and its memo) can never answer against an
+/// out-of-date tree.
 pub(crate) struct Ctx {
     root: Value,
+    engine: RefCell<Option<Engine>>,
+}
+
+impl Clone for Ctx {
+    fn clone(&self) -> Self {
+        // A clone starts with a cold engine: the cache is a pure optimisation
+        // over `root`, so it is always safe to drop and rebuild on demand.
+        Ctx {
+            root: self.root.clone(),
+            engine: RefCell::new(None),
+        }
+    }
 }
 
 impl Ctx {
-    pub(crate) fn engine(&self) -> Engine {
-        Engine::new(self.root.clone())
+    pub(crate) fn new(root: Value) -> Self {
+        Ctx {
+            root,
+            engine: RefCell::new(None),
+        }
+    }
+
+    /// The memoising engine for the current context, built once and reused until
+    /// the next mutation invalidates it.
+    pub(crate) fn engine(&self) -> Ref<'_, Engine> {
+        if self.engine.borrow().is_none() {
+            *self.engine.borrow_mut() = Some(Engine::new(self.root.clone()));
+        }
+        Ref::map(self.engine.borrow(), |slot| {
+            slot.as_ref().expect("just populated")
+        })
+    }
+
+    fn invalidate(&mut self) {
+        *self.engine.get_mut() = None;
     }
 
     pub(crate) fn set(&mut self, path: &str, value: Value) {
         self.root.insert_path(path, value);
+        self.invalidate();
     }
 
     pub(crate) fn set_env(&mut self, key: &str, value: String) {
         self.root
             .insert_path(&format!("env.{key}"), Value::Str(value));
+        self.invalidate();
     }
 
     /// The accumulated context tree, consumed at the end of a plan so it can be
@@ -86,12 +124,20 @@ pub(crate) fn apply_env_map(
         ctx.set(&format!("{ns}.{k}"), val.clone());
         ctx.set_env(k, value_to_string(&val));
     }
-    let engine = ctx.engine();
-    let mut resolved = Vec::new();
-    for k in raw.keys() {
-        let value = engine.get(&format!("env.{k}"))?;
-        resolved.push((k.clone(), value_to_string(&value)));
-    }
+    // Resolve every entry against one engine, then release the borrow before
+    // writing back — the writes mutate `ctx`, which the engine borrow forbids
+    // (and which would in any case invalidate the snapshot it read from).
+    let resolved: Vec<(String, String)> = {
+        let engine = ctx.engine();
+        raw.keys()
+            .map(|k| {
+                Ok((
+                    k.clone(),
+                    value_to_string(&engine.get(&format!("env.{k}"))?),
+                ))
+            })
+            .collect::<Result<_>>()?
+    };
     for (k, v) in resolved {
         logical.set_env(&k, v.clone());
         ctx.set_env(&k, v);
@@ -243,7 +289,7 @@ fn base_context(ws: &Workspace, project: &ProjectData, focus: &str) -> Value {
 pub(crate) fn plan_base(ws: &Workspace, project: &ProjectData, focus: &str) -> Ctx {
     let mut root = base_context(ws, project, focus);
     root.insert_path("repo", repo_value(project, focus));
-    Ctx { root }
+    Ctx::new(root)
 }
 
 /// A context sufficient to resolve a repo-scoped template (a hook, a
