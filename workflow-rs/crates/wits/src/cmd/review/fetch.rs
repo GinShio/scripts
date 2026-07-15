@@ -109,15 +109,16 @@ fn fetch_one(ctx: &Online, remote: &str, id: &str) -> Result<()> {
 /// A stack is the review unit, so fetching an MR pulls its whole stack by
 /// default — no flag, no half-fetched stack left behind by a label/limit feed.
 /// The members are discovered on the forge by walking the seed's base/source
-/// links (see [`stack_member_ids`]); each gets its own full [`fetch_one`]. The
-/// walk is bounded to the actual stack — it never enumerates a trunk's MRs — so
-/// this is safe to do automatically.
+/// links (see [`discover_stack`]); each gets its own full [`fetch_one`]. The
+/// walk is bounded to the actual stack — it climbs no higher than a trunk (and
+/// never even probes one) — so this is safe to do automatically. Progress is
+/// logged as it goes, so a multi-MR stack isn't a silent wait.
 fn fetch_mr(ctx: &Online, remote: &str, seed_id: &str, complete_stack: bool) -> Result<()> {
     let noun = ctx.forge.noun();
     fetch_one(ctx, remote, seed_id)?;
+    log::info!("fetched {noun} {seed_id}");
 
     if !complete_stack {
-        log::info!("fetched {noun} {seed_id}");
         return Ok(());
     }
 
@@ -125,31 +126,41 @@ fn fetch_mr(ctx: &Online, remote: &str, seed_id: &str, complete_stack: bool) -> 
     // we reuse the fetch we just did rather than asking the forge for the seed
     // again.
     let Some(info) = ctx.local.store.load_info(seed_id) else {
-        log::info!("fetched {noun} {seed_id}");
         return Ok(());
     };
     let forge = ctx.forge.as_ref();
+    let trunk = ctx.local.repo.remote_default_branch(remote);
     let ids = discover_stack(
         [(
             seed_id.to_owned(),
             info.mr.base.clone(),
             info.mr.source.clone(),
         )],
-        |branch| forge.find_any(branch),
+        |branch| climb(forge, branch, trunk.as_deref()),
         |branch| forge.find_children(branch),
     )?;
 
-    let mut extra = 0;
     for id in ids.iter().filter(|id| id.as_str() != seed_id) {
         fetch_one(ctx, remote, id)?;
-        extra += 1;
-    }
-    if extra > 0 {
-        log::info!("fetched {noun} {seed_id} and {extra} more in its stack");
-    } else {
-        log::info!("fetched {noun} {seed_id}");
+        log::info!("  + stack member {noun} {id}");
     }
     Ok(())
+}
+
+/// The upward step of a stack walk: the parent MR whose source branch is
+/// `branch`, or `None` when `branch` is a trunk — a trunk has no parent MR, so
+/// this skips the forge call entirely rather than paying for a query that can
+/// only come back empty.
+fn climb(
+    forge: &dyn wits_util::forge::Forge,
+    branch: &str,
+    trunk: Option<&str>,
+) -> Result<Option<MergeRequest>> {
+    if is_trunk(branch, trunk) {
+        Ok(None)
+    } else {
+        forge.find_any(branch)
+    }
 }
 
 /// The ids of every MR in the stack(s) containing the given seeds, each a
@@ -202,6 +213,19 @@ fn discover_stack(
     Ok(ids.into_iter().collect())
 }
 
+/// Whether `base` is a trunk branch — the thing a stack roots on, which no MR is
+/// stacked *below*. Resolved from the locally-tracked remote HEAD (no network);
+/// on a fresh clone that lacks the symref we fall back to the conventional
+/// names so detection still works. Used to (a) tell a stacked MR (base is a
+/// feature branch) from a lone one and (b) skip the upward probe for a trunk,
+/// which can have no parent MR.
+fn is_trunk(base: &str, trunk: Option<&str>) -> bool {
+    match trunk {
+        Some(t) => base == t,
+        None => matches!(base, "main" | "master" | "trunk" | "develop"),
+    }
+}
+
 /// Refresh one feed's inbox summaries — cheap, `info.json` only. Where a full
 /// pull already exists, only the summary is refreshed; its diff state and
 /// discussion are left intact.
@@ -215,32 +239,42 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
         }
     })?;
 
+    log::info!("feed '{name}': fetching…");
     let summaries = ctx.forge.list_mrs(&query)?;
     let store = &ctx.local.store;
     for summary in &summaries {
         store_summary(store, summary.clone())?;
     }
 
-    // Complete each matched MR's stack: a label/limit filter can match only part
-    // of a stack, so we walk the base/source links and light-fetch (summary
-    // only, no objects or threads) any member the filter missed. The inbox then
-    // shows whole stacks; a full pull still waits for `fetch <mr>`.
+    // Complete stacks — but only for MRs that *are* stacked, so an inbox of
+    // unrelated MRs costs no extra forge calls (the source of the "long silent
+    // wait"). An MR is worth completing when it targets a feature branch (it has
+    // a parent) or another matched MR is stacked on it (it has a child in the
+    // feed); a lone MR — base is a trunk, nobody stacked on it — is skipped.
+    // Only these seeds are then walked outward; the missing members they pull in
+    // (light, summary-only) are exactly the ones the label/limit filter dropped.
     let forge = ctx.forge.as_ref();
-    let seeds = summaries
-        .iter()
-        .map(|s| (s.id.clone(), s.base.clone(), s.source.clone()));
-    let members = discover_stack(
-        seeds,
-        |branch| forge.find_any(branch),
-        |branch| forge.find_children(branch),
-    )?;
-    let matched: HashSet<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
+    let remote = target_remote(ctx);
+    let trunk = ctx.local.repo.remote_default_branch(&remote);
+
+    let seeds = stack_seeds(&summaries, trunk.as_deref());
+
     let mut added = 0;
-    for id in members.iter().filter(|id| !matched.contains(id.as_str())) {
-        // A member's summary alone (no diff state / discussion) is enough for the
-        // inbox and stack navigation; `mr_details` is one metadata call.
-        store_summary(store, forge.mr_details(id)?.summary)?;
-        added += 1;
+    if !seeds.is_empty() {
+        log::info!("feed '{name}': completing {} stacked MR(s)…", seeds.len());
+        let members = discover_stack(
+            seeds,
+            |branch| climb(forge, branch, trunk.as_deref()),
+            |branch| forge.find_children(branch),
+        )?;
+        let matched: HashSet<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
+        for id in members.iter().filter(|id| !matched.contains(id.as_str())) {
+            // A member's summary alone (no diff state / discussion) is enough for
+            // the inbox and stack navigation; `mr_details` is one metadata call.
+            store_summary(store, forge.mr_details(id)?.summary)?;
+            added += 1;
+            log::info!("  + stack member {} {id}", forge.noun());
+        }
     }
 
     let extra = if added > 0 {
@@ -248,11 +282,26 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
     } else {
         String::new()
     };
-    log::info!(
-        "feed '{name}': {} MR(s){extra} (run `wits review fetch <mr>` for full detail)",
-        summaries.len()
-    );
+    log::info!("feed '{name}': {} MR(s){extra}", summaries.len());
     Ok(())
+}
+
+/// From a feed's matched summaries, the ones worth completing a stack for. An MR
+/// qualifies when it targets a feature branch (so it has a parent somewhere) or
+/// when another matched MR is stacked on it (its source is some matched MR's
+/// base). A lone MR — trunk base, nobody stacked on it — is excluded, so an
+/// inbox of unrelated MRs triggers no stack walk and no extra forge calls. Pure,
+/// so the selection is testable without a forge.
+fn stack_seeds(summaries: &[MrSummary], trunk: Option<&str>) -> Vec<(String, String, String)> {
+    let matched_bases: HashSet<&str> = summaries.iter().map(|s| s.base.as_str()).collect();
+    summaries
+        .iter()
+        .filter(|s| {
+            !is_trunk(&s.base, trunk)
+                || (!s.source.is_empty() && matched_bases.contains(s.source.as_str()))
+        })
+        .map(|s| (s.id.clone(), s.base.clone(), s.source.clone()))
+        .collect()
 }
 
 /// Store an MR's summary as a light `info.json`: refresh `mr` and `fetched_at`,
@@ -404,6 +453,53 @@ mod tests {
         let stack: &[(&str, &str, &str)] = &[("9", "main", "solo")];
         let (parent, children) = links(stack);
         assert_eq!(from_seed(("9", "main", "solo"), &parent, &children), ["9"]);
+    }
+
+    fn summ(id: &str, base: &str, source: &str) -> MrSummary {
+        MrSummary {
+            id: id.into(),
+            display: format!("#{id}"),
+            state: MrState::Open,
+            draft: false,
+            title: String::new(),
+            author: String::new(),
+            base: base.into(),
+            source: source.into(),
+            head_sha: None,
+            updated_at: String::new(),
+            labels: Vec::new(),
+            web_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn lone_mrs_are_not_seeds_but_stacked_ones_are() {
+        // An inbox of three unrelated MRs (all targeting the trunk) plus a
+        // two-MR stack (top targets the stack's own branch).
+        let summaries = [
+            summ("1", "main", "fix-a"),
+            summ("2", "main", "fix-b"),
+            summ("3", "main", "feat"), // stack base: matched child #4 targets it
+            summ("4", "feat", "feat-2"), // stacked: base is a feature branch
+            summ("9", "main", "solo"),
+        ];
+        let seeds = stack_seeds(&summaries, Some("main"));
+        let ids: Vec<&str> = seeds.iter().map(|(id, ..)| id.as_str()).collect();
+        // Only the stack (3 has a matched child, 4 has a parent) is seeded; the
+        // three lone MRs are left alone — no probing, no extra forge calls.
+        assert_eq!(ids, ["3", "4"]);
+    }
+
+    #[test]
+    fn every_lone_mr_inbox_needs_no_completion() {
+        // The common case that used to wait silently: nothing is stacked, so no
+        // MR is a seed and the feed does zero completion probing.
+        let on_main = [summ("1", "main", "a"), summ("2", "main", "b")];
+        assert!(stack_seeds(&on_main, Some("main")).is_empty());
+
+        // With no trunk symref, the conventional names still count as trunks.
+        let conventional = [summ("1", "main", "a"), summ("2", "master", "b")];
+        assert!(stack_seeds(&conventional, None).is_empty());
     }
 
     #[test]
