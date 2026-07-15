@@ -255,23 +255,35 @@ fn make_plan(
     be: Option<&dyn Backend>,
 ) -> Result<Plan> {
     // Select-vs-inject (§5.3): in auto/build-only, an already-configured build
-    // dir with no explicit toolchain request is trusted — skip injection so a
-    // rerun does not reconfigure. Paths are unaffected, so we plan once to learn
-    // the build dir, then re-plan without injection if we decide to trust it.
-    let plan = plan_with(ws, project, profile, opts, branch, true, be)?;
+    // dir with no explicit toolchain request is *trusted* — we skip toolchain
+    // injection so a rerun does not reconfigure. Injection only shapes the L0
+    // env/definitions, never the paths, so the build dir is the same either way.
+    //
+    // Whether we're even *eligible* to trust is known without planning (mode +
+    // explicit-toolchain); only "is it already configured?" needs the build dir.
+    // So when eligible we plan the no-injection form first — the exact plan we
+    // keep if we do trust — and re-plan with injection only when the dir turns
+    // out to be unconfigured (a one-time first configure). Every subsequent
+    // rerun of a configured tree, the frequent path, plans just once.
     let explicit_toolchain =
         profile.toolchain.is_some() || std::env::var_os("WITS_PROJECT_TOOLCHAIN").is_some();
-    let trust = matches!(opts.mode, BuildMode::Auto | BuildMode::BuildOnly)
-        && !explicit_toolchain
-        && plan
-            .build_dir
-            .as_ref()
-            .zip(be)
-            .is_some_and(|(bd, be)| be.is_configured(bd));
-    if trust {
-        plan_with(ws, project, profile, opts, branch, false, be)
-    } else {
+    let trust_eligible =
+        matches!(opts.mode, BuildMode::Auto | BuildMode::BuildOnly) && !explicit_toolchain;
+
+    if !trust_eligible {
+        return plan_with(ws, project, profile, opts, branch, true, be);
+    }
+
+    let plan = plan_with(ws, project, profile, opts, branch, false, be)?;
+    let configured = plan
+        .build_dir
+        .as_ref()
+        .zip(be)
+        .is_some_and(|(bd, be)| be.is_configured(bd));
+    if configured {
         Ok(plan)
+    } else {
+        plan_with(ws, project, profile, opts, branch, true, be)
     }
 }
 
