@@ -212,15 +212,7 @@ fn build_dir(ws: &Workspace, args: &BuildDirArgs) -> Result<()> {
     let plan = resolve::plan(
         ws,
         project,
-        &resolve::PlanInput {
-            profile: &profile,
-            branch: profile.branch.as_deref().unwrap_or_default(),
-            inject_toolchain: false,
-            injector: None,
-            extra_config_args: &[],
-            extra_build_args: &[],
-            extra_install_args: &[],
-        },
+        &resolve::PlanInput::paths_only(&profile, profile.branch.as_deref().unwrap_or_default()),
     )?;
     match plan.build_dir {
         Some(dir) => {
@@ -336,15 +328,7 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
             let plan = resolve::plan(
                 ws,
                 project,
-                &resolve::PlanInput {
-                    profile: &profile.to_profile(),
-                    branch: &branch,
-                    inject_toolchain: false,
-                    injector: None,
-                    extra_config_args: &[],
-                    extra_build_args: &[],
-                    extra_install_args: &[],
-                },
+                &resolve::PlanInput::paths_only(&profile.to_profile(), &branch),
             )?;
             println!(
                 "  resolved (branch {}, {}):",
@@ -446,6 +430,8 @@ fn check_one(ws: &Workspace, project: &ProjectData) -> Vec<String> {
     }
 
     // A dry resolve catches template errors, preset cycles, unknown presets.
+    // Validation has no backend, so this is a path-only resolve — toolchain
+    // selection runs (and can fail), but there is nothing to inject.
     let profile = Profile {
         toolchain: p.toolchain.clone(),
         ..Default::default()
@@ -453,15 +439,7 @@ fn check_one(ws: &Workspace, project: &ProjectData) -> Vec<String> {
     if let Err(e) = resolve::plan(
         ws,
         project,
-        &resolve::PlanInput {
-            profile: &profile,
-            branch: "main",
-            inject_toolchain: true,
-            injector: None,
-            extra_config_args: &[],
-            extra_build_args: &[],
-            extra_install_args: &[],
-        },
+        &resolve::PlanInput::paths_only(&profile, "main"),
     ) {
         issues.push(format!("resolution: {e:#}"));
     }

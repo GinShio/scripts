@@ -108,19 +108,7 @@ fn plan_for(
     profile: &Profile,
     branch: &str,
 ) -> Result<Plan> {
-    resolve::plan(
-        ws,
-        project,
-        &PlanInput {
-            profile,
-            branch,
-            inject_toolchain: false,
-            injector: None,
-            extra_config_args: &[],
-            extra_build_args: &[],
-            extra_install_args: &[],
-        },
-    )
+    resolve::plan(ws, project, &PlanInput::paths_only(profile, branch))
 }
 
 /// Remove a directory, honouring dry-run (print instead of delete).

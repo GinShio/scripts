@@ -97,6 +97,26 @@ pub struct PlanInput<'a> {
     pub extra_install_args: &'a [String],
 }
 
+impl<'a> PlanInput<'a> {
+    /// A path-only resolve: select a toolchain but don't inject it, and apply no
+    /// L3 overrides. This is exactly what the read-only consumers want — `info`,
+    /// `project context`, and `--check` validation all resolve paths without a
+    /// backend — so they no longer spell out the four empty/false fields (and
+    /// can't drift on them). `build` still uses the full struct, since it alone
+    /// supplies an injector and real L3 args.
+    pub fn paths_only(profile: &'a Profile, branch: &'a str) -> Self {
+        PlanInput {
+            profile,
+            branch,
+            inject_toolchain: false,
+            injector: None,
+            extra_config_args: &[],
+            extra_build_args: &[],
+            extra_install_args: &[],
+        }
+    }
+}
+
 pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Result<Plan> {
     let profile = input.profile;
     let focus = project.focus_name(profile.focus.as_deref()).to_owned();
