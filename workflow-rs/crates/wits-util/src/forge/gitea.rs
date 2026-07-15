@@ -68,6 +68,23 @@ impl Gitea {
 
     /// Gitea attaches labels by numeric id, so names have to be looked up against
     /// the repo's label set first.
+    /// The branch's candidate PRs, one fetch, all states. Gitea's list doesn't
+    /// filter by head, so we narrow to our branch here; the head's owner lives in
+    /// a separate field, so matching `head.ref` against the bare branch name is
+    /// correct for both same-repo and forks.
+    fn candidates(&self, branch: &str) -> anyhow::Result<Vec<MergeRequest>> {
+        let url = format!("{}?state=all&limit=50", self.pulls_url());
+        let v = request("GET", &url, &self.auth, None)?;
+        Ok(v.as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter(|item| item["head"]["ref"].as_str() == Some(branch))
+                    .filter_map(parse_pull)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     fn label_ids(&self, names: &[String]) -> anyhow::Result<Vec<i64>> {
         let v = request(
             "GET",
@@ -119,21 +136,11 @@ impl Forge for Gitea {
     }
 
     fn find(&self, branch: &str, state: StateFilter) -> anyhow::Result<Option<MergeRequest>> {
-        let url = format!("{}?state=all&limit=50", self.pulls_url());
-        let v = request("GET", &url, &self.auth, None)?;
-        // Gitea's list doesn't filter by head, so we narrow to our branch here;
-        // the head's owner lives in a separate field, so matching `head.ref`
-        // against the bare branch name is correct for both same-repo and forks.
-        let candidates: Vec<MergeRequest> = v
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter(|item| item["head"]["ref"].as_str() == Some(branch))
-                    .filter_map(parse_pull)
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(pick(&candidates, state))
+        Ok(pick(&self.candidates(branch)?, state))
+    }
+
+    fn find_any(&self, branch: &str) -> anyhow::Result<Option<MergeRequest>> {
+        Ok(super::pick_any(&self.candidates(branch)?))
     }
 
     fn create(&self, req: &NewMr) -> anyhow::Result<MergeRequest> {

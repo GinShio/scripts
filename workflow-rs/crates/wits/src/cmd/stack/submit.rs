@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use wits_util::forge::{Forge, NewMr, StateFilter};
+use wits_util::forge::{Forge, MrState, NewMr};
 use wits_util::git::Repository;
 use wits_util::log as wits_log;
 
@@ -122,7 +122,14 @@ fn decide(
     tips: &HashMap<String, String>,
     force: bool,
 ) -> anyhow::Result<Decision> {
-    if let Some(mr) = forge.find(branch, StateFilter::Open)? {
+    // One fetch (open-preferring) rather than a paired find(Open)+find(NotOpen):
+    // the branch has at most one relevant MR, so we pull it once and branch on
+    // its state locally.
+    let Some(mr) = forge.find_any(branch)? else {
+        return Ok(Decision::Create);
+    };
+
+    if mr.state == MrState::Open {
         if mr.base == base {
             return Ok(Decision::AlreadyOpen(mr.display));
         }
@@ -132,20 +139,19 @@ fn decide(
         });
     }
 
-    if let Some(mr) = forge.find(branch, StateFilter::NotOpen)? {
-        let local_tip = tips.get(branch).map(String::as_str);
-        let moved_on = match (mr.head_sha.as_deref(), local_tip) {
-            (Some(remote), Some(local)) => remote != local,
-            // Can't compare — assume it moved rather than silently skip.
-            _ => true,
-        };
-        if force || moved_on {
-            return Ok(Decision::Create);
-        }
-        return Ok(Decision::SkipClosed(mr.display));
+    // A merged/closed leftover: recreate only when our local tip has moved past
+    // it (or `--force`), so reusing a merged branch doesn't spawn a duplicate.
+    let local_tip = tips.get(branch).map(String::as_str);
+    let moved_on = match (mr.head_sha.as_deref(), local_tip) {
+        (Some(remote), Some(local)) => remote != local,
+        // Can't compare — assume it moved rather than silently skip.
+        _ => true,
+    };
+    if force || moved_on {
+        Ok(Decision::Create)
+    } else {
+        Ok(Decision::SkipClosed(mr.display))
     }
-
-    Ok(Decision::Create)
 }
 
 /// Seed a new MR's title and body from one of the branch's commits — the latest
@@ -184,11 +190,20 @@ mod tests {
         fn noun(&self) -> &'static str {
             "PR"
         }
-        fn find(&self, _branch: &str, state: StateFilter) -> anyhow::Result<Option<MergeRequest>> {
+        fn find(
+            &self,
+            _branch: &str,
+            state: wits_util::forge::StateFilter,
+        ) -> anyhow::Result<Option<MergeRequest>> {
+            use wits_util::forge::StateFilter;
             Ok(match state {
                 StateFilter::Open => self.open.clone(),
                 StateFilter::NotOpen => self.closed.clone(),
             })
+        }
+        fn find_any(&self, _branch: &str) -> anyhow::Result<Option<MergeRequest>> {
+            // Open-preferring, mirroring the real backends' `pick_any`.
+            Ok(self.open.clone().or_else(|| self.closed.clone()))
         }
         fn create(&self, _req: &NewMr) -> anyhow::Result<MergeRequest> {
             unreachable!("decide never creates")

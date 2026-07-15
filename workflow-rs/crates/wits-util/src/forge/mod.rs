@@ -141,6 +141,13 @@ pub trait Forge: Send + Sync {
     /// matches, then compare and retarget it.
     fn find(&self, branch: &str, state: StateFilter) -> anyhow::Result<Option<MergeRequest>>;
 
+    /// The MR for `branch` in *any* state, preferring an open one. This is the
+    /// single-fetch form of [`find`](Forge::find): a caller that has to inspect
+    /// the state itself (stack `submit` deciding create-vs-retarget-vs-skip) does
+    /// one round trip instead of the two a paired `find(Open)` + `find(NotOpen)`
+    /// would cost — every backend's list query already returns all states at once.
+    fn find_any(&self, branch: &str) -> anyhow::Result<Option<MergeRequest>>;
+
     fn create(&self, req: &NewMr) -> anyhow::Result<MergeRequest>;
     fn set_base(&self, id: &str, base: &str) -> anyhow::Result<()>;
     fn set_body(&self, id: &str, body: &str) -> anyhow::Result<()>;
@@ -343,6 +350,22 @@ pub(crate) fn pick<'a>(
         .into_iter()
         .find(|mr| state.accepts(mr.state))
         .cloned()
+}
+
+/// Shared helper for [`Forge::find_any`]: from the branch's candidate MRs, return
+/// the open one if there is one, else the first non-open leftover. A branch has
+/// at most one relevant MR per state, so this is unambiguous.
+pub(crate) fn pick_any<'a>(
+    candidates: impl IntoIterator<Item = &'a MergeRequest>,
+) -> Option<MergeRequest> {
+    let mut leftover = None;
+    for mr in candidates {
+        if mr.state == MrState::Open {
+            return Some(mr.clone());
+        }
+        leftover.get_or_insert_with(|| mr.clone());
+    }
+    leftover
 }
 
 #[cfg(test)]

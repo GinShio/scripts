@@ -198,6 +198,25 @@ impl GitLab {
     fn draft_notes_url(&self, id: &str) -> String {
         format!("{}/{id}/draft_notes", self.mrs_url())
     }
+
+    /// The branch's candidate MRs, one fetch, all states. Match by source branch,
+    /// never target, so a drifted base is still found. For a fork, the same
+    /// branch name can exist in several source projects, so we pin to ours with
+    /// `source_project_id`.
+    fn candidates(&self, branch: &str) -> anyhow::Result<Vec<MergeRequest>> {
+        let mut url = format!(
+            "{}?source_branch={}&state=all",
+            self.mrs_url(),
+            encode(branch),
+        );
+        if let Some(fork) = &self.fork {
+            url += &format!("&source_project_id={}", fork.source_id);
+        }
+        let v = request("GET", &url, &self.auth, None)?;
+        Ok(v.as_array()
+            .map(|arr| arr.iter().filter_map(parse_mr).collect())
+            .unwrap_or_default())
+    }
 }
 
 /// Build the `position` object a GitLab diff note needs. The three version SHAs
@@ -410,23 +429,11 @@ impl Forge for GitLab {
     }
 
     fn find(&self, branch: &str, state: StateFilter) -> anyhow::Result<Option<MergeRequest>> {
-        // Match by source branch, never target, so a drifted base is still found.
-        // For a fork, the same branch name can exist in several source projects,
-        // so we pin it to ours with source_project_id.
-        let mut url = format!(
-            "{}?source_branch={}&state=all",
-            self.mrs_url(),
-            encode(branch),
-        );
-        if let Some(fork) = &self.fork {
-            url += &format!("&source_project_id={}", fork.source_id);
-        }
-        let v = request("GET", &url, &self.auth, None)?;
-        let candidates: Vec<MergeRequest> = v
-            .as_array()
-            .map(|arr| arr.iter().filter_map(parse_mr).collect())
-            .unwrap_or_default();
-        Ok(pick(&candidates, state))
+        Ok(pick(&self.candidates(branch)?, state))
+    }
+
+    fn find_any(&self, branch: &str) -> anyhow::Result<Option<MergeRequest>> {
+        Ok(super::pick_any(&self.candidates(branch)?))
     }
 
     fn create(&self, req: &NewMr) -> anyhow::Result<MergeRequest> {

@@ -242,6 +242,26 @@ impl GitHub {
         }
         parts.join(" ")
     }
+
+    /// The branch's candidate PRs, one fetch, all states. GraphQL has no
+    /// `head=owner:branch` filter, so we match on the head branch name and
+    /// disambiguate a fork client-side by `headRepositoryOwner.login`.
+    fn candidates(&self, branch: &str) -> anyhow::Result<Vec<MergeRequest>> {
+        let data = self.graphql(
+            gql::FIND_QUERY,
+            json!({ "owner": self.owner, "repo": self.repo, "branch": branch }),
+        )?;
+        let want = self.head_owner.as_deref().unwrap_or(&self.owner);
+        Ok(data["repository"]["pullRequests"]["nodes"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter(|n| n["headRepositoryOwner"]["login"].as_str() == Some(want))
+                    .filter_map(parse_pr_mr)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
 }
 
 /// Parse a GraphQL `PullRequest` node into an [`MrSummary`]. Shared by the feed
@@ -467,24 +487,11 @@ impl Forge for GitHub {
     }
 
     fn find(&self, branch: &str, state: StateFilter) -> anyhow::Result<Option<MergeRequest>> {
-        // GraphQL has no `head=owner:branch` filter, so we match on the head
-        // branch name and disambiguate a fork client-side by
-        // `headRepositoryOwner.login` (mirroring the old REST `owner:branch`).
-        let data = self.graphql(
-            gql::FIND_QUERY,
-            json!({ "owner": self.owner, "repo": self.repo, "branch": branch }),
-        )?;
-        let want = self.head_owner.as_deref().unwrap_or(&self.owner);
-        let candidates: Vec<MergeRequest> = data["repository"]["pullRequests"]["nodes"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter(|n| n["headRepositoryOwner"]["login"].as_str() == Some(want))
-                    .filter_map(parse_pr_mr)
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(pick(&candidates, state))
+        Ok(pick(&self.candidates(branch)?, state))
+    }
+
+    fn find_any(&self, branch: &str) -> anyhow::Result<Option<MergeRequest>> {
+        Ok(super::pick_any(&self.candidates(branch)?))
     }
 
     fn create(&self, req: &NewMr) -> anyhow::Result<MergeRequest> {
