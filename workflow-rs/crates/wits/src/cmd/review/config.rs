@@ -19,6 +19,8 @@ use serde::Deserialize;
 use wits_util::forge::RemoteInfo;
 use wits_util::forge::{FeedQuery, FeedStates};
 
+use super::StackMode;
+
 /// How many MRs a feed pulls when it doesn't say otherwise — a cap so a large
 /// repo can't flood the inbox.
 const DEFAULT_LIMIT: usize = 30;
@@ -50,6 +52,9 @@ struct FeedDef {
     reviewer: Option<String>,
     search: Option<String>,
     limit: Option<usize>,
+    /// How much of each matched MR's stack to complete (`none`/`auto`/`all`).
+    /// A per-feed default the `--stack` flag overrides; unset means `auto`.
+    stack: Option<StackMode>,
 }
 
 impl FeedDef {
@@ -122,6 +127,12 @@ impl Config {
     pub fn feed(&self, key: &str, name: &str, updated_after: Option<String>) -> Option<FeedQuery> {
         let def = self.file.repo.get(key)?.feed.get(name)?;
         Some(def.to_query(updated_after))
+    }
+
+    /// The feed's configured stack-completion mode, if it set one. `None` means
+    /// the feed didn't say, so the caller falls back to the default (`auto`).
+    pub fn feed_stack(&self, key: &str, name: &str) -> Option<StackMode> {
+        self.file.repo.get(key)?.feed.get(name)?.stack
     }
 
     /// The names of every feed configured for a repo, for listing/help.
@@ -222,5 +233,23 @@ mod tests {
         assert_eq!(cfg.feed_names(key), ["mine", "vk"]);
         assert!(cfg.feed(key, "absent", None).is_none());
         assert!(cfg.feed("other/repo/x", "mine", None).is_none());
+    }
+
+    #[test]
+    fn feed_stack_mode_is_optional_and_parses() {
+        let toml = r#"
+            [repo."github.com/o/r"]
+            feed.plain = { reviewer = "@me" }
+            feed.whole = { reviewer = "@me", stack = "all" }
+            feed.flat  = { reviewer = "@me", stack = "none" }
+        "#;
+        let cfg = Config {
+            file: toml::from_str(toml).unwrap(),
+        };
+        let key = "github.com/o/r";
+        // Unset means "no opinion" — the caller falls back to the default.
+        assert_eq!(cfg.feed_stack(key, "plain"), None);
+        assert_eq!(cfg.feed_stack(key, "whole"), Some(StackMode::All));
+        assert_eq!(cfg.feed_stack(key, "flat"), Some(StackMode::None));
     }
 }

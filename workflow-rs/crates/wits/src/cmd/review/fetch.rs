@@ -17,7 +17,7 @@ use wits_util::git::Repository;
 use super::config::{self, Config};
 use super::model::{range_artifacts, Comments, Info, StoredCommit, StoredFile, Thread, SCHEMA};
 use super::store::{refs, Store};
-use super::{now_secs, online, parse_mr_handle, Online};
+use super::{now_secs, online, parse_mr_handle, Online, StackMode};
 
 pub fn run(repo: &Repository, args: &super::FetchArgs) -> Result<()> {
     let ctx = online(repo)?;
@@ -25,14 +25,16 @@ pub fn run(repo: &Repository, args: &super::FetchArgs) -> Result<()> {
     if let Some(handle) = &args.mr {
         let id = parse_mr_handle(handle)?;
         let remote = target_remote(&ctx);
-        return fetch_mr(&ctx, &remote, &id, !args.no_stack);
+        // A single MR has no feed default, so the flag alone decides.
+        let mode = args.stack.unwrap_or(StackMode::Auto);
+        return fetch_mr(&ctx, &remote, &id, mode);
     }
 
     let cfg = Config::load()?;
     let key = config::repo_key(&ctx.local.target);
     match &args.feed {
-        Some(name) => fetch_feed(&ctx, &cfg, &key, name),
-        None => fetch_all_feeds(&ctx, &cfg, &key),
+        Some(name) => fetch_feed(&ctx, &cfg, &key, name, args.stack),
+        None => fetch_all_feeds(&ctx, &cfg, &key, args.stack),
     }
 }
 
@@ -104,38 +106,36 @@ fn fetch_one(ctx: &Online, remote: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Fetch one MR and, unless `only_seed`, every other MR in its stack.
+/// Fetch one MR (a full pull) and, per `mode`, the rest of its stack.
 ///
-/// A stack is the review unit, so fetching an MR pulls its whole stack by
-/// default — no flag, no half-fetched stack left behind by a label/limit feed.
-/// The members are discovered on the forge by walking the seed's base/source
-/// links (see [`discover_stack`]); each gets its own full [`fetch_one`]. The
-/// walk is bounded to the actual stack — it climbs no higher than a trunk (and
-/// never even probes one) — so this is safe to do automatically. Progress is
-/// logged as it goes, so a multi-MR stack isn't a silent wait.
-fn fetch_mr(ctx: &Online, remote: &str, seed_id: &str, complete_stack: bool) -> Result<()> {
+/// `none` fetches only this MR; `auto` completes the stack when this MR sits on
+/// another (its base is a feature branch); `all` completes even from a bottom
+/// MR. Members are discovered on the forge by walking the base/source links
+/// (see [`discover_stack`]) and each gets its own full [`fetch_one`]. The walk
+/// is bounded to the real stack — it climbs no higher than a trunk (and never
+/// probes one) — and progress is logged, so a multi-MR stack isn't a silent wait.
+fn fetch_mr(ctx: &Online, remote: &str, seed_id: &str, mode: StackMode) -> Result<()> {
     let noun = ctx.forge.noun();
     fetch_one(ctx, remote, seed_id)?;
     log::info!("fetched {noun} {seed_id}");
 
-    if !complete_stack {
+    if mode == StackMode::None {
         return Ok(());
     }
 
-    // Discover the rest of the stack from the seed's now-stored base/source, so
-    // we reuse the fetch we just did rather than asking the forge for the seed
-    // again.
+    // Reuse the fetch we just did: the seed's base/source are now in the store.
     let Some(info) = ctx.local.store.load_info(seed_id) else {
         return Ok(());
     };
     let forge = ctx.forge.as_ref();
     let trunk = ctx.local.repo.remote_default_branch(remote);
+    let seeds = stack_seeds(std::slice::from_ref(&info.mr), trunk.as_deref(), mode);
+    if seeds.is_empty() {
+        // `auto` on a lone/bottom MR: nothing sits below it to complete.
+        return Ok(());
+    }
     let ids = discover_stack(
-        [(
-            seed_id.to_owned(),
-            info.mr.base.clone(),
-            info.mr.source.clone(),
-        )],
+        seeds,
         |branch| climb(forge, branch, trunk.as_deref()),
         |branch| forge.find_children(branch),
     )?;
@@ -229,7 +229,13 @@ fn is_trunk(base: &str, trunk: Option<&str>) -> bool {
 /// Refresh one feed's inbox summaries — cheap, `info.json` only. Where a full
 /// pull already exists, only the summary is refreshed; its diff state and
 /// discussion are left intact.
-fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
+fn fetch_feed(
+    ctx: &Online,
+    cfg: &Config,
+    key: &str,
+    name: &str,
+    cli_mode: Option<StackMode>,
+) -> Result<()> {
     let query = cfg.feed(key, name, None).with_context(|| {
         let known = cfg.feed_names(key);
         if known.is_empty() {
@@ -238,6 +244,10 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
             format!("no feed '{name}'; configured feeds: {}", known.join(", "))
         }
     })?;
+    // The flag wins over the feed's own default, which wins over `auto`.
+    let mode = cli_mode
+        .or_else(|| cfg.feed_stack(key, name))
+        .unwrap_or(StackMode::Auto);
 
     log::info!("feed '{name}': fetching…");
     let summaries = ctx.forge.list_mrs(&query)?;
@@ -257,7 +267,7 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
     let remote = target_remote(ctx);
     let trunk = ctx.local.repo.remote_default_branch(&remote);
 
-    let seeds = stack_seeds(&summaries, trunk.as_deref());
+    let seeds = stack_seeds(&summaries, trunk.as_deref(), mode);
 
     let mut added = 0;
     if !seeds.is_empty() {
@@ -286,19 +296,27 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// From a feed's matched summaries, the ones worth completing a stack for. An MR
-/// qualifies when it targets a feature branch (so it has a parent somewhere) or
-/// when another matched MR is stacked on it (its source is some matched MR's
-/// base). A lone MR — trunk base, nobody stacked on it — is excluded, so an
-/// inbox of unrelated MRs triggers no stack walk and no extra forge calls. Pure,
-/// so the selection is testable without a forge.
-fn stack_seeds(summaries: &[MrSummary], trunk: Option<&str>) -> Vec<(String, String, String)> {
-    let matched_bases: HashSet<&str> = summaries.iter().map(|s| s.base.as_str()).collect();
+/// From the given MRs, the ones to seed stack completion from, per `mode`:
+///
+/// - `none` — nothing; completion is off.
+/// - `auto` — only MRs that sit on another (base is a feature branch, not the
+///   trunk). A lone/bottom MR is left out, so an inbox of unrelated MRs triggers
+///   no walk and no extra forge calls. A non-bottom seed's walk still reaches
+///   the bottom, so seeding only the non-bottoms loses no members.
+/// - `all` — every MR, so even a bottom one is walked (its children probed).
+///
+/// Pure, so the selection is testable without a forge.
+fn stack_seeds(
+    summaries: &[MrSummary],
+    trunk: Option<&str>,
+    mode: StackMode,
+) -> Vec<(String, String, String)> {
     summaries
         .iter()
-        .filter(|s| {
-            !is_trunk(&s.base, trunk)
-                || (!s.source.is_empty() && matched_bases.contains(s.source.as_str()))
+        .filter(|s| match mode {
+            StackMode::None => false,
+            StackMode::All => true,
+            StackMode::Auto => !is_trunk(&s.base, trunk),
         })
         .map(|s| (s.id.clone(), s.base.clone(), s.source.clone()))
         .collect()
@@ -328,7 +346,12 @@ fn store_summary(store: &Store, summary: MrSummary) -> Result<()> {
 }
 
 /// Refresh every configured feed for the repo.
-fn fetch_all_feeds(ctx: &Online, cfg: &Config, key: &str) -> Result<()> {
+fn fetch_all_feeds(
+    ctx: &Online,
+    cfg: &Config,
+    key: &str,
+    cli_mode: Option<StackMode>,
+) -> Result<()> {
     let names = cfg.feed_names(key);
     if names.is_empty() {
         anyhow::bail!(
@@ -337,7 +360,7 @@ fn fetch_all_feeds(ctx: &Online, cfg: &Config, key: &str) -> Result<()> {
     }
     let mut failures = 0;
     for name in &names {
-        if let Err(e) = fetch_feed(ctx, cfg, key, name) {
+        if let Err(e) = fetch_feed(ctx, cfg, key, name, cli_mode) {
             failures += 1;
             log::warn!("feed '{name}': {e}");
         }
@@ -472,34 +495,54 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lone_mrs_are_not_seeds_but_stacked_ones_are() {
-        // An inbox of three unrelated MRs (all targeting the trunk) plus a
-        // two-MR stack (top targets the stack's own branch).
-        let summaries = [
-            summ("1", "main", "fix-a"),
-            summ("2", "main", "fix-b"),
-            summ("3", "main", "feat"), // stack base: matched child #4 targets it
-            summ("4", "feat", "feat-2"), // stacked: base is a feature branch
-            summ("9", "main", "solo"),
-        ];
-        let seeds = stack_seeds(&summaries, Some("main"));
-        let ids: Vec<&str> = seeds.iter().map(|(id, ..)| id.as_str()).collect();
-        // Only the stack (3 has a matched child, 4 has a parent) is seeded; the
-        // three lone MRs are left alone — no probing, no extra forge calls.
-        assert_eq!(ids, ["3", "4"]);
+    fn seed_ids(summaries: &[MrSummary], trunk: Option<&str>, mode: StackMode) -> Vec<String> {
+        stack_seeds(summaries, trunk, mode)
+            .into_iter()
+            .map(|(id, ..)| id)
+            .collect()
     }
 
     #[test]
-    fn every_lone_mr_inbox_needs_no_completion() {
-        // The common case that used to wait silently: nothing is stacked, so no
-        // MR is a seed and the feed does zero completion probing.
+    fn auto_seeds_only_non_bottom_mrs() {
+        // Three unrelated MRs on the trunk, plus a two-MR stack (#4 sits on #3).
+        let summaries = [
+            summ("1", "main", "fix-a"),
+            summ("2", "main", "fix-b"),
+            summ("3", "main", "feat"),   // bottom of the stack
+            summ("4", "feat", "feat-2"), // sits on #3 (base is a feature branch)
+            summ("9", "main", "solo"),
+        ];
+        // `auto` seeds only #4 (the one sitting on another). The bottom #3 is not
+        // a seed, but #4's walk climbs to it, so it is not lost; and the three
+        // lone MRs are left alone, costing no forge calls.
+        assert_eq!(seed_ids(&summaries, Some("main"), StackMode::Auto), ["4"]);
+    }
+
+    #[test]
+    fn modes_none_and_all() {
+        let summaries = [
+            summ("1", "main", "a"),      // lone
+            summ("2", "feat", "feat-2"), // stacked
+        ];
+        // `none` never seeds anything.
+        assert!(seed_ids(&summaries, Some("main"), StackMode::None).is_empty());
+        // `all` seeds every MR, including the lone one — the zero-miss mode.
+        assert_eq!(
+            seed_ids(&summaries, Some("main"), StackMode::All),
+            ["1", "2"]
+        );
+    }
+
+    #[test]
+    fn auto_on_a_lone_inbox_needs_no_completion() {
+        // The common case that used to wait silently: nothing is stacked, so
+        // `auto` seeds nothing and the feed does zero completion probing.
         let on_main = [summ("1", "main", "a"), summ("2", "main", "b")];
-        assert!(stack_seeds(&on_main, Some("main")).is_empty());
+        assert!(seed_ids(&on_main, Some("main"), StackMode::Auto).is_empty());
 
         // With no trunk symref, the conventional names still count as trunks.
         let conventional = [summ("1", "main", "a"), summ("2", "master", "b")];
-        assert!(stack_seeds(&conventional, None).is_empty());
+        assert!(seed_ids(&conventional, None, StackMode::Auto).is_empty());
     }
 
     #[test]

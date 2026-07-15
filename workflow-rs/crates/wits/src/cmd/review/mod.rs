@@ -55,20 +55,37 @@ pub enum ReviewAction {
     Prune(PruneArgs),
 }
 
+/// How much of an MR's stack a fetch pulls in. The same three modes govern both
+/// a single `fetch <mr>` and a `fetch --feed`, so the rule is one thing to learn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum StackMode {
+    /// Never fetch the rest of the stack — only the named MR(s).
+    None,
+    /// Complete the stack for an MR that sits *on* another one (its base is a
+    /// feature branch, i.e. it is not at the bottom). This pulls in a stack you
+    /// are clearly inside, while a lone or bottom MR is left alone — so an inbox
+    /// of unrelated MRs costs no extra forge calls. The default.
+    #[default]
+    Auto,
+    /// Always try to complete the stack, even from its bottom-most MR — never
+    /// misses a member, at the cost of one children probe per bottom/lone MR.
+    All,
+}
+
 #[derive(Debug, Args)]
 pub struct FetchArgs {
-    /// The MR to fetch, by number or URL (a full pull). Its whole stack is
-    /// fetched too by default (see `--no-stack`).
+    /// The MR to fetch, by number or URL (a full pull, with its stack per `--stack`).
     pub mr: Option<String>,
     /// Fetch a configured feed's MRs (a light, inbox-only refresh).
     #[arg(long, conflicts_with = "mr")]
     pub feed: Option<String>,
-    /// Fetch only the named MR, not the rest of its stack. By default `fetch
-    /// <mr>` also pulls every other MR in the same stack — discovered by walking
-    /// the base/source links on the forge — so reviewing a stack needs one
-    /// command and no flags. This opts out when you want just the one.
-    #[arg(long, requires = "mr")]
-    pub no_stack: bool,
+    /// How much of the stack to pull: `auto` (default) completes a stack for an
+    /// MR sitting on another; `all` completes even from the bottom MR (never
+    /// misses, more API calls); `none` fetches only the named MR(s). A feed may
+    /// set its own default in `review.toml`; this flag overrides it.
+    #[arg(long)]
+    pub stack: Option<StackMode>,
 }
 
 #[derive(Debug, Args)]

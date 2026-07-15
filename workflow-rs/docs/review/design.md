@@ -73,7 +73,7 @@ preference. It is the `prr` model, generalized to threads, outdating, and stacks
 
 ```
 # Network — the only two verbs that talk to the forge.
-wits review fetch  [mr [--no-stack] | --feed name]   # an MR+stack (full), a feed+stacks (light), or every feed (bare)
+wits review fetch  [mr | --feed name] [--stack auto|all|none]   # an MR+stack (full), a feed+stacks (light), or every feed (bare)
 wits review submit [mr | --stack | --all]   # merge + flush the local.json draft, batched
 
 # Reading — from the local files, no network; each supports --json.
@@ -664,9 +664,14 @@ without inventing anything the forge can't store.
   descends to the children — out to the whole connected stack, and pulls in any
   member the filter missed (a feed does this **lightly**, summary-only; `fetch
   <mr>` does it **fully**). The walk is bounded to the real stack — it stops at a
-  trunk and never enumerates a trunk's MRs — so it never drags in unrelated work,
-  and `--no-stack` opts out. Re-deriving happens on every `fetch`, so a rebase
-  that reshapes the stack is picked up on the next fetch, not guessed at.
+  trunk and never enumerates a trunk's MRs — so it never drags in unrelated work.
+  How eagerly it completes is one `--stack` setting (also a per-feed default):
+  `auto` (the default) only seeds from an MR that sits on another — so a lone or
+  bottom MR costs no probing — which leaves one blind spot, a stack whose only
+  fetched member is its bottom; `all` completes even from the bottom (a children
+  probe per bottom MR) for the zero-miss guarantee; `none` fetches just the named
+  MR. Re-deriving happens on every `fetch`, so a rebase that reshapes the stack
+  is picked up on the next fetch, not guessed at.
 - **Navigation, not cross-MR comments.** `checkout --next/--prev` walks the chain
   (relative to a small per-repo pointer recording the last checkout, §14), and
   `show` hands the editor a `neighbors` block so it can do the same. But a

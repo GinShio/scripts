@@ -78,7 +78,7 @@ Seven verbs; only `fetch` and `submit` touch the network.
 
 | Verb | Network | What it does |
 |---|---|---|
-| `fetch [mr] [--no-stack] [--feed name]` | read | Pull an MR and its whole stack (full), a feed and its stacks (light), or every feed (bare). |
+| `fetch [mr] [--stack MODE] [--feed name]` | read | Pull an MR and its stack (full), a feed and its stacks (light), or every feed (bare). |
 | `show [mr] [filters] [--json]` | — | The inbox, or one MR's merged review view. |
 | `diff <mr> [--range r\|--snapshot sha] [--patch\|--json]` | — | A diff's commits/files/coordinates. |
 | `draft <mr> [FILE\|-] [--json]` | — | Show the pending draft, or append a batch of actions to it. |
@@ -89,34 +89,48 @@ Seven verbs; only `fetch` and `submit` touch the network.
 ### Fetching
 
 ```sh
-wits review fetch 123                       # MR 123 and its whole stack — a full pull
+wits review fetch 123                       # MR 123 and its stack — a full pull
 wits review fetch https://github.com/o/r/pull/123   # …or by URL
-wits review fetch 123 --no-stack            # only MR 123, not the rest of its stack
+wits review fetch 123 --stack none          # only MR 123, not the rest of its stack
+wits review fetch 123 --stack all           # 123 and its whole stack, even from the bottom
 wits review fetch --feed mine               # a feed's MRs and their stacks (light)
 wits review fetch                           # every configured feed (light)
 ```
 
-**Every fetch completes stacks.** A stack is the review unit, so the tool
-discovers the other MRs in a stack by walking each MR's base/source links on the
-forge — a *parent* is the MR whose source branch is your base; a *child* is an MR
-whose base is your source — out to the whole connected stack. This is why a
-label/limit feed can no longer leave a stack half-fetched, and why you never pass
-a flag to "also get the rest".
+**Fetch completes stacks.** A stack is the review unit, so the tool discovers
+the other MRs in a stack by walking each MR's base/source links on the forge — a
+*parent* is the MR whose source branch is your base; a *child* is an MR whose
+base is your source — out to the whole connected stack. This is why a
+label/limit feed can no longer leave a stack half-fetched.
+
+How much to pull is one setting, `--stack MODE`, shared by `fetch <mr>` and
+`fetch --feed`:
+
+| Mode | Completes the stack for… | Cost |
+|---|---|---|
+| `auto` *(default)* | an MR that **sits on another** (its base is a feature branch, so it is not at the bottom) | none for a lone/bottom MR — no probing |
+| `all` | **any** MR, even the bottom-most one | one children probe per bottom/lone MR |
+| `none` | nothing — just the named MR(s) | — |
+
+`auto` is the sweet spot: it completes a stack you are clearly inside without
+spending a forge call on unrelated MRs. Its one blind spot is a stack whose
+**only** fetched member is its bottom (a `base`-is-trunk MR with no fetched
+child): locally that is indistinguishable from a lone MR, so `auto` leaves it,
+and you use `all` when you want the guarantee. A feed can set its own default in
+`review.toml` (`stack = "all"`), which `--stack` on the command line overrides.
 
 Two depths, by intent:
 
 - **`fetch <mr>`** is a **full** pull — objects, discussion, derived commit/file
-  lists — for the MR *and* every member of its stack, since you are sitting down
-  to review that stack.
-- **A feed** is **light**: the matched MRs *and* any stack members the filter
-  missed get only their inbox metadata (`info.json`), leaving the per-MR object
-  pull to a later `fetch <mr>`. So a feed still scales to a repo with thousands
-  of open MRs, while the inbox always shows whole stacks.
+  lists — for the MR and every completed member of its stack.
+- **A feed** is **light**: the matched MRs and any completed stack members get
+  only their inbox metadata (`info.json`), leaving the per-MR object pull to a
+  later `fetch <mr>`. So a feed still scales to a repo with thousands of open MRs.
 
-`--no-stack` opts out for the rare "just this one MR" case. The walk is **bounded
-to the real stack** — it climbs to a trunk branch and stops, and only ever asks
-for the children *of a source branch*, never of a trunk — so completing a stack
-never drags in unrelated MRs.
+The walk is **bounded to the real stack** — it climbs to a trunk branch and
+stops (and never even probes one), and only ever asks for the children *of a
+source branch* — so completing a stack never drags in unrelated MRs. Progress is
+logged as members come in, so a multi-MR stack is not a silent wait.
 
 ### Feeds — an RSS-style subscription
 
@@ -411,6 +425,9 @@ inline table `feed.<name> = { … }`. The feed keys, each optional:
   for the full-text case the faceted keys can't express.
 - **`limit`** *(integer, default `30`)* — A cap on how many MRs the feed pulls,
   most-recently-updated first, so a large repo can't flood the inbox.
+- **`stack`** *(string, default `"auto"`)* — How much of each matched MR's stack
+  to complete: `"auto"`, `"all"`, or `"none"` (see [Fetching](#fetching)). This
+  is the feed's own default; a `--stack` on the command line overrides it.
 
 Different keys are combined with **AND**: a feed pulls only MRs matching all of
 them. `@me` works in `author`/`assignee`/`reviewer`.
@@ -423,8 +440,8 @@ The store root is resolved on this ladder, first hit wins:
 - **`$XDG_STATE_HOME/wits/review`** — when `XDG_STATE_HOME` is set.
 - **`$GIT_DIR/wits/review`** — the default, per-clone (beside `.git/machete`).
 
-Per-run choices (`--range`, `--snapshot`, `--no-stack`, `--stack`, `--all`, `-n`)
-are flags, not config — they describe one invocation.
+Per-run choices (`--range`, `--snapshot`, `--stack`, `--all`, `-n`) are flags,
+not config — they describe one invocation.
 
 ## Version scope and limitations
 
