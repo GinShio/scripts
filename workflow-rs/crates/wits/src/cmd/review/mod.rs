@@ -273,6 +273,12 @@ pub(crate) fn parse_mr_handle(handle: &str) -> Result<String> {
         .with_context(|| format!("could not read an MR number from '{handle}'"))
 }
 
+/// A sort key that orders MR ids numerically when they are numbers (so `2`
+/// precedes `10`), falling back to lexical order for anything non-numeric.
+fn mr_id_key(id: &str) -> (u64, &str) {
+    (id.parse::<u64>().unwrap_or(u64::MAX), id)
+}
+
 /// Reconstruct the stack chain containing `current`, bottom (base-most) to top,
 /// by linking one MR's `base` to another's `source` branch. Returns the ordered
 /// ids and `current`'s index. A lone MR yields just itself.
@@ -285,7 +291,7 @@ pub(crate) fn stack_chain(infos: &[model::Info], current: &str) -> (Vec<String>,
         .filter(|i| !i.mr.source.is_empty())
         .map(|i| (i.mr.source.as_str(), i.mr.id.as_str()))
         .collect();
-    let by_base: HashMap<&str, Vec<&str>> = infos.iter().fold(HashMap::new(), |mut map, i| {
+    let mut by_base: HashMap<&str, Vec<&str>> = infos.iter().fold(HashMap::new(), |mut map, i| {
         if !i.mr.base.is_empty() {
             map.entry(i.mr.base.as_str())
                 .or_default()
@@ -293,6 +299,13 @@ pub(crate) fn stack_chain(infos: &[model::Info], current: &str) -> (Vec<String>,
         }
         map
     });
+    // A fork (one base, several children) has no inherent "primary line", so we
+    // pick one deterministically — the lowest MR id, numeric-aware — rather than
+    // whatever order the infos happened to arrive in. Navigation is then stable
+    // across fetches instead of depending on HashMap iteration order.
+    for children in by_base.values_mut() {
+        children.sort_by(|a, b| mr_id_key(a).cmp(&mr_id_key(b)));
+    }
 
     let Some(cur) = by_id.get(current) else {
         return (vec![current.to_owned()], 0);
@@ -390,20 +403,23 @@ mod tests {
     }
 
     #[test]
-    fn follows_first_child_at_a_fork() {
-        // Two MRs branch off the same base (a fork in the stack).
-        // The chain follows the first child deterministically and warns.
-        let infos = vec![
-            stub_info("a", "main", "feat-a"),
-            stub_info("b", "feat-a", "feat-b"),
-            stub_info("c", "feat-a", "feat-c"),
+    fn fork_follows_the_lowest_id_child_regardless_of_order() {
+        // Two MRs branch off the same base (a fork). The chain follows a single
+        // primary line, chosen deterministically as the lowest MR id — and the
+        // choice must not depend on the order the infos arrive in.
+        let forward = vec![
+            stub_info("1", "main", "feat-a"),
+            stub_info("2", "feat-a", "feat-b"),
+            stub_info("3", "feat-a", "feat-c"),
         ];
-        let (chain, idx) = stack_chain(&infos, "a");
-        // a is at index 0, followed by one of b/c (insertion order → b first).
-        assert_eq!(idx, 0);
-        assert_eq!(chain[0], "a");
-        assert_eq!(chain.len(), 2);
-        assert!(chain[1] == "b" || chain[1] == "c");
+        let mut reversed = forward.clone();
+        reversed.reverse();
+
+        for infos in [&forward, &reversed] {
+            let (chain, idx) = stack_chain(infos, "1");
+            assert_eq!(idx, 0);
+            assert_eq!(chain, ["1", "2"], "fork must pick the lowest-id child");
+        }
     }
 
     #[test]
