@@ -38,7 +38,13 @@ pub enum ProjectSub {
     /// the machine-readable answer scripts and git hooks need.
     MainBranch(RepoQueryArgs),
     /// Print the resolved build directory for a branch, one line, for scripts.
-    BuildDir(BuildDirArgs),
+    BuildDir(PathQueryArgs),
+    /// Print the resolved install prefix for a branch, one line, for scripts.
+    InstallDir(PathQueryArgs),
+    /// Print the resolved source directory (where the build configures from).
+    SourceDir(PathQueryArgs),
+    /// Print the branch's checkout root (`work.dir`) — the path templates anchor on.
+    WorkDir(PathQueryArgs),
 }
 
 /// A repo-scoped query anchored by name or path (default: the current dir).
@@ -49,8 +55,11 @@ pub struct RepoQueryArgs {
     pub target: Option<String>,
 }
 
+/// A plan-path query: like [`RepoQueryArgs`], plus the branch whose resolved
+/// paths to report. Shared by `build-dir` / `install-dir` / `source-dir` /
+/// `work-dir`, which differ only in which resolved path they print.
 #[derive(Debug, Args)]
-pub struct BuildDirArgs {
+pub struct PathQueryArgs {
     /// Project name, or a path inside a checkout (default: the current dir).
     #[arg(value_name = "NAME|PATH")]
     pub target: Option<String>,
@@ -144,6 +153,9 @@ pub fn run(args: &ProjectArgs) -> Result<()> {
         Some(ProjectSub::Context(c)) => run_context(&ws, c),
         Some(ProjectSub::MainBranch(a)) => main_branch(&ws, a),
         Some(ProjectSub::BuildDir(a)) => build_dir(&ws, a),
+        Some(ProjectSub::InstallDir(a)) => install_dir(&ws, a),
+        Some(ProjectSub::SourceDir(a)) => source_dir(&ws, a),
+        Some(ProjectSub::WorkDir(a)) => work_dir(&ws, a),
         None => info(&ws, &args.info),
     }
 }
@@ -191,9 +203,14 @@ fn main_branch(ws: &Workspace, args: &RepoQueryArgs) -> Result<()> {
     Ok(())
 }
 
-/// The resolved build directory for a branch, one line to stdout — the query a
-/// checkout hook needs to point `compile_commands.json` at the active build.
-fn build_dir(ws: &Workspace, args: &BuildDirArgs) -> Result<()> {
+/// Resolve a branch's build [`Plan`](resolve::Plan) for a path query, anchored
+/// like [`resolve_repo`] with the branch defaulting to the anchored repo's
+/// current one. Shared by the `*-dir` queries below, which differ only in the
+/// resolved path they print.
+fn resolve_plan<'a>(
+    ws: &'a Workspace,
+    args: &PathQueryArgs,
+) -> Result<(&'a ProjectData, resolve::Plan)> {
     let (project, repo) = resolve_repo(ws, args.target.as_deref())?;
     let branch = args
         .branch
@@ -214,6 +231,13 @@ fn build_dir(ws: &Workspace, args: &BuildDirArgs) -> Result<()> {
         project,
         &resolve::PlanInput::paths_only(&profile, profile.branch.as_deref().unwrap_or_default()),
     )?;
+    Ok((project, plan))
+}
+
+/// The resolved build directory for a branch, one line to stdout — the query a
+/// checkout hook needs to point `compile_commands.json` at the active build.
+fn build_dir(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
+    let (project, plan) = resolve_plan(ws, args)?;
     match plan.build_dir {
         Some(dir) => {
             println!("{}", dir.display());
@@ -224,6 +248,34 @@ fn build_dir(ws: &Workspace, args: &BuildDirArgs) -> Result<()> {
             project.key()
         ),
     }
+}
+
+/// The resolved install prefix for a branch, one line to stdout.
+fn install_dir(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
+    let (project, plan) = resolve_plan(ws, args)?;
+    match plan.install_dir {
+        Some(dir) => {
+            println!("{}", dir.display());
+            Ok(())
+        }
+        None => bail!("project '{}' has no install_dir configured", project.key()),
+    }
+}
+
+/// The resolved source directory (where the backend configures from), one line.
+/// Always present — it defaults to `work.dir` when no `source_dir` is declared.
+fn source_dir(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
+    let (_project, plan) = resolve_plan(ws, args)?;
+    println!("{}", plan.source_dir.display());
+    Ok(())
+}
+
+/// The branch's checkout root (`work.dir`), one line — the checkout a caller
+/// `cd`s into, and the anchor every path template resolves against.
+fn work_dir(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
+    let (_project, plan) = resolve_plan(ws, args)?;
+    println!("{}", plan.work_dir.display());
+    Ok(())
 }
 
 fn run_context(ws: &Workspace, args: &ContextArgs) -> Result<()> {

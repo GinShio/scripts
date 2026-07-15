@@ -16,7 +16,22 @@ project context create [<name|path>] --branch <X> [--focus <repo>]
 project context prune  [<name|path>] --branch <X> [--force]
 build   [<name|path>] [--focus <repo>] [profile flags] [build options]
 update  [<name|path>]
+
+# Machine-readable queries — one value, one line, for scripts and git hooks.
+project main-branch [<name|path>]
+project build-dir   [<name|path>] [--branch <X>]
+project install-dir [<name|path>] [--branch <X>]
+project source-dir  [<name|path>] [--branch <X>]
+project work-dir    [<name|path>] [--branch <X>]
 ```
+
+The four `*-dir` queries resolve the same build [plan](#5-resolution-pipeline)
+as `build`/`info` and print one of its paths — `build_dir`, `install_dir`,
+`source_dir`, or `work.dir` respectively (`build-dir`/`install-dir` error when
+the project declares no such template; `source-dir`/`work-dir` are always
+resolvable). The branch defaults to the anchored repo's current one. This is how
+a checkout hook points `compile_commands.json` at the active build, or a script
+`cd`s into a branch's `work.dir`.
 
 Each verb's positional is a **name or a path**, mutually exclusive:
 
