@@ -17,6 +17,7 @@ mod config;
 mod diff;
 mod fetch;
 mod model;
+mod prune;
 mod show;
 mod store;
 mod submit;
@@ -193,7 +194,7 @@ pub fn run(args: &ReviewArgs) -> Result<()> {
         ReviewAction::Draft(a) => show::run_draft(&repo, a),
         ReviewAction::Submit(a) => submit::run(&repo, a),
         ReviewAction::Checkout(a) => checkout::run(&repo, a),
-        ReviewAction::Prune(a) => checkout::run_prune(&repo, a),
+        ReviewAction::Prune(a) => prune::run(&repo, a),
     }
 }
 
