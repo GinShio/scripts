@@ -36,7 +36,7 @@ pub struct RawFile {
 pub struct RawProject {
     pub org: Option<String>,
     pub focus: Option<String>,
-    pub build_system: Option<String>,
+    pub build_system: Option<BuildSystem>,
     pub toolchain: Option<String>,
     pub generator: Option<String>,
     pub build_dir: Option<String>,
@@ -214,6 +214,49 @@ pub fn is_nested(path: &str) -> bool {
     !(path.starts_with('/') || path.starts_with('~') || std::path::Path::new(path).is_absolute())
 }
 
+/// The build systems wits knows how to drive. Declared once per project as
+/// `build_system`; every variant maps to a backend in [`crate::build_system`],
+/// so unlike a free string the mapping is total and an unknown value fails at
+/// *parse* time (via the custom [`Deserialize`]) rather than deep inside a build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildSystem {
+    Cmake,
+    Meson,
+    Cargo,
+}
+
+impl BuildSystem {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BuildSystem::Cmake => "cmake",
+            BuildSystem::Meson => "meson",
+            BuildSystem::Cargo => "cargo",
+        }
+    }
+}
+
+impl std::str::FromStr for BuildSystem {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "cmake" => Ok(BuildSystem::Cmake),
+            "meson" => Ok(BuildSystem::Meson),
+            "cargo" => Ok(BuildSystem::Cargo),
+            other => Err(format!(
+                "unknown build_system '{other}' (use cmake|meson|cargo)"
+            )),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BuildSystem {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BranchStrategy {
     #[default]
@@ -343,6 +386,16 @@ mod tests {
     }
 
     #[test]
+    fn build_system_parses_known_and_rejects_unknown_at_parse_time() {
+        use std::str::FromStr;
+        assert_eq!(BuildSystem::from_str("meson").unwrap(), BuildSystem::Meson);
+        assert!(BuildSystem::from_str("bazel").is_err());
+        // An unknown value is a hard parse error, not a silently-ignored string.
+        let err = toml::from_str::<RawProject>(r#"build_system = "bazel""#).unwrap_err();
+        assert!(err.to_string().contains("bazel"));
+    }
+
+    #[test]
     fn extends_accepts_string_or_list() {
         let one: RawPreset = toml::from_str(r#"extends = "base""#).unwrap();
         assert_eq!(one.extends.0, vec!["base"]);
@@ -369,7 +422,7 @@ mod tests {
         )
         .unwrap();
         let project = file.project.unwrap();
-        assert_eq!(project.build_system.as_deref(), Some("cmake"));
+        assert_eq!(project.build_system, Some(BuildSystem::Cmake));
         assert_eq!(file.repos["main"].path, "~/src/hello");
         assert_eq!(
             file.repos["main"].remotes.origin.as_deref(),

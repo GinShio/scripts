@@ -11,7 +11,8 @@
 //! `cmd::build` hands the selected backend to `resolve::plan` as the injector.
 //!
 //! A new build system is a new [`Backend`] impl (plus a `ToolchainInjector`
-//! impl) and a line in [`for_system`]. A backend does exactly three things
+//! impl), a variant on [`crate::project::model::BuildSystem`], and a line in
+//! [`backend_for`]. A backend does exactly three things
 //! (§7): translate the *canonical* toolchain vocabulary into its native form,
 //! emit the ordered command steps for a build mode, and detect prior
 //! configuration. The definition→argv *spelling* (`-DK:TYPE=V` vs `-Dk=v`) is
@@ -25,7 +26,7 @@ use std::path::{Path, PathBuf};
 
 use crate::template::Value;
 
-use crate::project::model::{LogicalConfig, Toolchain};
+use crate::project::model::{BuildSystem, LogicalConfig, Toolchain};
 use crate::project::resolve::ToolchainInjector;
 
 /// Which phase(s) of a build to run. Every backend's `steps()` branches on it;
@@ -93,13 +94,14 @@ pub trait Backend: ToolchainInjector {
     fn is_configured(&self, build_dir: &Path) -> bool;
 }
 
-/// The backend for a `build_system` name, or `None` if unsupported.
-pub fn for_system(name: &str) -> Option<Box<dyn Backend>> {
-    match name {
-        "cmake" => Some(Box::new(cmake::Cmake)),
-        "meson" => Some(Box::new(meson::Meson)),
-        "cargo" => Some(Box::new(cargo::Cargo)),
-        _ => None,
+/// The backend for a [`BuildSystem`]. Total: the enum only exists for values
+/// that have a backend, so there is no "unsupported" case to handle here — an
+/// unknown name was already rejected when the project file was parsed.
+pub fn backend_for(bs: BuildSystem) -> Box<dyn Backend> {
+    match bs {
+        BuildSystem::Cmake => Box::new(cmake::Cmake),
+        BuildSystem::Meson => Box::new(meson::Meson),
+        BuildSystem::Cargo => Box::new(cargo::Cargo),
     }
 }
 

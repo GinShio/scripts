@@ -26,7 +26,7 @@ use clap::Args;
 use wits_util::process::Command;
 
 use crate::cmd::project::ProfileArgs;
-use wits_util::build_system::{for_system, Backend, BuildMode, EmitContext};
+use wits_util::build_system::{backend_for, Backend, BuildMode, EmitContext};
 use wits_util::git::{Repository, RestoreGuard};
 use wits_util::project::model::{BranchStrategy, Profile};
 use wits_util::project::resolve::{self, Plan, PlanInput, ToolchainInjector};
@@ -167,13 +167,10 @@ fn execute(
 
     // Resolve the backend once, from the project's declared build_system — it is
     // both the L0 toolchain injector for planning and the step emitter below.
-    // (`build_system` is not profile-overridable, so this matches `plan`.)
-    let backend = match project.project.build_system.as_deref() {
-        Some(bs) => {
-            Some(for_system(bs).with_context(|| format!("unsupported build system '{bs}'"))?)
-        }
-        None => None,
-    };
+    // (`build_system` is not profile-overridable, so this matches `plan`.) The
+    // enum is total, so there is no "unsupported" error path here; an unknown
+    // name was rejected when the project file was parsed.
+    let backend = project.project.build_system.map(backend_for);
 
     let mut plan = make_plan(ws, project, profile, opts, &branch, backend.as_deref())?;
 

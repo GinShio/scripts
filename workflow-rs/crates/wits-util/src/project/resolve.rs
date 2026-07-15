@@ -18,7 +18,7 @@ use anyhow::{bail, Context, Result};
 use crate::template::Value;
 
 use super::context::{self, apply_def_map, apply_env_map, fold_env, resolve_args, Ctx};
-use super::model::{infer_kind, BranchStrategy, LogicalConfig, Profile, Toolchain};
+use super::model::{infer_kind, BranchStrategy, BuildSystem, LogicalConfig, Profile, Toolchain};
 use super::presets::{applied_presets, resolve_preset_into};
 use super::toolchain::{resolve_toolchain, select_toolchain};
 use super::workspace::{ProjectData, Workspace};
@@ -46,7 +46,7 @@ pub struct Plan {
     /// `build` reads it from project config pre-planning (to pick a backend
     /// before it has a plan), so this copy is currently for consumers/`info`.
     #[allow(dead_code)]
-    pub build_system: Option<String>,
+    pub build_system: Option<BuildSystem>,
     pub toolchain: Option<Toolchain>,
     pub work_dir: PathBuf,
     /// Where the backend configures from: the build repo's `source_dir` template,
@@ -123,7 +123,7 @@ pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Res
         .generator
         .clone()
         .or_else(|| project.project.generator.clone());
-    let build_system = project.project.build_system.clone();
+    let build_system = project.project.build_system;
 
     // Toolchain *selection* always happens (path templates depend on the name).
     let toolchain = select_toolchain(ws, project, profile)?;

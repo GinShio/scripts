@@ -271,7 +271,11 @@ fn info(ws: &Workspace, args: &InfoArgs) -> Result<()> {
 }
 
 fn summary_line(project: &ProjectData) -> String {
-    let bs = project.project.build_system.as_deref().unwrap_or("-");
+    let bs = project
+        .project
+        .build_system
+        .map(|b| b.as_str())
+        .unwrap_or("-");
     let focus = project.focus_name(None);
     format!("{:<24} focus={:<8} build={}", project.key(), focus, bs)
 }
@@ -283,8 +287,8 @@ fn describe(ws: &Workspace, project: &ProjectData, profile: &ProfileArgs) -> Res
         println!("  org:   {org}");
     }
     println!("  focus: {}", project.focus_name(profile.focus.as_deref()));
-    if let Some(bs) = &project.project.build_system {
-        println!("  build: {bs}");
+    if let Some(bs) = project.project.build_system {
+        println!("  build: {}", bs.as_str());
     }
     if let Some(tc) = &project.project.toolchain {
         println!("  toolchain: {tc}");
@@ -417,11 +421,14 @@ fn check_one(ws: &Workspace, project: &ProjectData) -> Vec<String> {
     // concern (it errors at run time); the core neither knows nor validates the
     // set of supported build systems (§1.4). Here we only cross-check the
     // *declared* facts: a toolchain's own `supports` list against `build_system`.
-    if let Some(bs) = &p.build_system {
+    if let Some(bs) = p.build_system {
         if let Some(tc) = &p.toolchain {
             if let Some(def) = ws.toolchains().get(tc) {
-                if !def.supports.is_empty() && !def.supports.iter().any(|s| s == bs) {
-                    issues.push(format!("toolchain '{tc}' does not support '{bs}'"));
+                if !def.supports.is_empty() && !def.supports.iter().any(|s| s == bs.as_str()) {
+                    issues.push(format!(
+                        "toolchain '{tc}' does not support '{}'",
+                        bs.as_str()
+                    ));
                 }
             }
         }
