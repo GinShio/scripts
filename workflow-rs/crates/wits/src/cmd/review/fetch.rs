@@ -7,16 +7,16 @@
 //! matching MR, leaving the expensive per-MR pull to `fetch <mr>`. With no
 //! argument, every configured feed is refreshed (the RSS "refresh all").
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 use anyhow::{Context, Result};
 
-use wits_util::forge::{DiffVersion, MergeRequest};
+use wits_util::forge::{DiffVersion, MergeRequest, MrSummary};
 use wits_util::git::Repository;
 
 use super::config::{self, Config};
 use super::model::{range_artifacts, Comments, Info, StoredCommit, StoredFile, Thread, SCHEMA};
-use super::store::refs;
+use super::store::{refs, Store};
 use super::{now_secs, online, parse_mr_handle, Online};
 
 pub fn run(repo: &Repository, args: &super::FetchArgs) -> Result<()> {
@@ -129,8 +129,12 @@ fn fetch_mr(ctx: &Online, remote: &str, seed_id: &str, complete_stack: bool) -> 
         return Ok(());
     };
     let forge = ctx.forge.as_ref();
-    let ids = stack_member_ids(
-        (seed_id, &info.mr.base, &info.mr.source),
+    let ids = discover_stack(
+        [(
+            seed_id.to_owned(),
+            info.mr.base.clone(),
+            info.mr.source.clone(),
+        )],
         |branch| forge.find_any(branch),
         |branch| forge.find_children(branch),
     )?;
@@ -148,31 +152,46 @@ fn fetch_mr(ctx: &Online, remote: &str, seed_id: &str, complete_stack: bool) -> 
     Ok(())
 }
 
-/// The ids of every MR in the stack containing the seed `(id, base, source)`,
-/// discovered by a breadth-first walk of base/source links: `parent_of(base)`
-/// climbs toward the trunk, `children_of(source)` descends toward the leaves.
-/// Pure over the two link functions so the graph logic is testable without a
-/// forge; `BTreeSet` both dedupes (a diamond is visited once) and gives a
-/// stable, id-sorted result.
-fn stack_member_ids(
-    seed: (&str, &str, &str),
+/// The ids of every MR in the stack(s) containing the given seeds, each a
+/// `(id, base, source)` triple. Discovered by a breadth-first walk of the
+/// base/source links: `parent_of(base)` climbs toward the trunk, and
+/// `children_of(source)` descends toward the leaves. The walk is bounded to the
+/// real stack — a trunk is nobody's source (so the upward climb stops) and we
+/// only ever ask for the children *of a source branch*, never of a trunk.
+///
+/// Seeding from many MRs at once (a whole feed) shares one visited set, so a
+/// stack several of them belong to is walked exactly once. Each branch is
+/// probed at most once in each direction, and `BTreeSet` gives a stable,
+/// id-sorted result. Pure over the two link functions, so the graph logic is
+/// testable without a forge.
+fn discover_stack(
+    seeds: impl IntoIterator<Item = (String, String, String)>,
     parent_of: impl Fn(&str) -> Result<Option<MergeRequest>>,
     children_of: impl Fn(&str) -> Result<Vec<MergeRequest>>,
 ) -> Result<Vec<String>> {
-    let (seed_id, seed_base, seed_source) = seed;
-    let mut ids: BTreeSet<String> = BTreeSet::from([seed_id.to_owned()]);
+    let mut ids: BTreeSet<String> = BTreeSet::new();
     // Frontier of `(base, source)` links still to expand.
-    let mut frontier = vec![(seed_base.to_owned(), seed_source.to_owned())];
+    let mut frontier = Vec::new();
+    for (id, base, source) in seeds {
+        if ids.insert(id) {
+            frontier.push((base, source));
+        }
+    }
+
+    // A branch need only be probed once per direction, even when several seeds
+    // share the same stack.
+    let mut climbed: HashSet<String> = HashSet::new();
+    let mut descended: HashSet<String> = HashSet::new();
 
     while let Some((base, source)) = frontier.pop() {
-        if !base.is_empty() {
+        if !base.is_empty() && climbed.insert(base.clone()) {
             if let Some(parent) = parent_of(&base)? {
                 if ids.insert(parent.id) {
                     frontier.push((parent.base, parent.source));
                 }
             }
         }
-        if !source.is_empty() {
+        if !source.is_empty() && descended.insert(source.clone()) {
             for child in children_of(&source)? {
                 if ids.insert(child.id) {
                     frontier.push((child.base, child.source));
@@ -198,30 +217,65 @@ fn fetch_feed(ctx: &Online, cfg: &Config, key: &str, name: &str) -> Result<()> {
 
     let summaries = ctx.forge.list_mrs(&query)?;
     let store = &ctx.local.store;
-    for summary in summaries.iter() {
-        let mr = summary.clone();
-        let mut info = match store.load_info(&mr.id) {
-            Some(mut existing) => {
-                existing.mr = mr;
-                existing
-            }
-            None => Info {
-                schema: SCHEMA,
-                mr,
-                snapshots: Vec::new(),
-                fetched_at: 0,
-                commits: Vec::new(),
-                files: Vec::new(),
-            },
-        };
-        info.fetched_at = now_secs();
-        store.save_info(&info.mr.id, &info)?;
+    for summary in &summaries {
+        store_summary(store, summary.clone())?;
     }
+
+    // Complete each matched MR's stack: a label/limit filter can match only part
+    // of a stack, so we walk the base/source links and light-fetch (summary
+    // only, no objects or threads) any member the filter missed. The inbox then
+    // shows whole stacks; a full pull still waits for `fetch <mr>`.
+    let forge = ctx.forge.as_ref();
+    let seeds = summaries
+        .iter()
+        .map(|s| (s.id.clone(), s.base.clone(), s.source.clone()));
+    let members = discover_stack(
+        seeds,
+        |branch| forge.find_any(branch),
+        |branch| forge.find_children(branch),
+    )?;
+    let matched: HashSet<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
+    let mut added = 0;
+    for id in members.iter().filter(|id| !matched.contains(id.as_str())) {
+        // A member's summary alone (no diff state / discussion) is enough for the
+        // inbox and stack navigation; `mr_details` is one metadata call.
+        store_summary(store, forge.mr_details(id)?.summary)?;
+        added += 1;
+    }
+
+    let extra = if added > 0 {
+        format!(" (+{added} stack member(s))")
+    } else {
+        String::new()
+    };
     log::info!(
-        "feed '{name}': {} MR(s) (run `wits review fetch <mr>` for full detail)",
+        "feed '{name}': {} MR(s){extra} (run `wits review fetch <mr>` for full detail)",
         summaries.len()
     );
     Ok(())
+}
+
+/// Store an MR's summary as a light `info.json`: refresh `mr` and `fetched_at`,
+/// preserving any snapshot history a prior full fetch recorded. Shared by a feed
+/// refresh and stack completion, so the light-touch shape can't drift between
+/// them.
+fn store_summary(store: &Store, summary: MrSummary) -> Result<()> {
+    let mut info = match store.load_info(&summary.id) {
+        Some(mut existing) => {
+            existing.mr = summary;
+            existing
+        }
+        None => Info {
+            schema: SCHEMA,
+            mr: summary,
+            snapshots: Vec::new(),
+            fetched_at: 0,
+            commits: Vec::new(),
+            files: Vec::new(),
+        },
+    };
+    info.fetched_at = now_secs();
+    store.save_info(&info.mr.id, &info)
 }
 
 /// Refresh every configured feed for the repo.
@@ -296,14 +350,31 @@ mod tests {
         (parent, children)
     }
 
+    /// Discover from a single `(id, base, source)` seed — the `fetch <mr>` shape.
+    fn from_seed(
+        seed: (&str, &str, &str),
+        parent: impl Fn(&str) -> Result<Option<MergeRequest>>,
+        children: impl Fn(&str) -> Result<Vec<MergeRequest>>,
+    ) -> Vec<String> {
+        let (id, base, source) = seed;
+        discover_stack(
+            [(id.to_owned(), base.to_owned(), source.to_owned())],
+            parent,
+            children,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn discovers_the_whole_stack_from_any_seed() {
         // main <- a <- b <- c (a linear stack of three MRs).
         let stack: &[(&str, &str, &str)] = &[("1", "main", "a"), ("2", "a", "b"), ("3", "b", "c")];
         let (parent, children) = links(stack);
         // Seeding from the middle still finds both ends.
-        let ids = stack_member_ids(("2", "a", "b"), &parent, &children).unwrap();
-        assert_eq!(ids, ["1", "2", "3"]);
+        assert_eq!(
+            from_seed(("2", "a", "b"), &parent, &children),
+            ["1", "2", "3"]
+        );
     }
 
     #[test]
@@ -317,18 +388,48 @@ mod tests {
         ];
         let (parent, children) = links(stack);
         // From the base MR, every descendant on both arms is discovered.
-        let ids = stack_member_ids(("1", "main", "a"), &parent, &children).unwrap();
-        assert_eq!(ids, ["1", "2", "3", "4"]);
+        assert_eq!(
+            from_seed(("1", "main", "a"), &parent, &children),
+            ["1", "2", "3", "4"]
+        );
         // And from a leaf, the whole tree is still reached via the shared trunk.
-        let ids = stack_member_ids(("4", "c", "d"), &parent, &children).unwrap();
-        assert_eq!(ids, ["1", "2", "3", "4"]);
+        assert_eq!(
+            from_seed(("4", "c", "d"), &parent, &children),
+            ["1", "2", "3", "4"]
+        );
     }
 
     #[test]
     fn a_lone_mr_is_its_own_stack() {
         let stack: &[(&str, &str, &str)] = &[("9", "main", "solo")];
         let (parent, children) = links(stack);
-        let ids = stack_member_ids(("9", "main", "solo"), &parent, &children).unwrap();
-        assert_eq!(ids, ["9"]);
+        assert_eq!(from_seed(("9", "main", "solo"), &parent, &children), ["9"]);
+    }
+
+    #[test]
+    fn many_seeds_in_one_stack_are_walked_once() {
+        // A feed matched two MRs of the same three-MR stack. Seeding both must
+        // yield the whole stack (the third member included) while probing each
+        // branch only once — the shared visited set, not one walk per seed.
+        let stack: &[(&str, &str, &str)] = &[("1", "main", "a"), ("2", "a", "b"), ("3", "b", "c")];
+        let (parent, children) = links(stack);
+        let probes = std::cell::Cell::new(0u32);
+        let counted_children = |branch: &str| {
+            probes.set(probes.get() + 1);
+            children(branch)
+        };
+        let ids = discover_stack(
+            [
+                ("1".into(), "main".into(), "a".into()),
+                ("2".into(), "a".into(), "b".into()),
+            ],
+            parent,
+            counted_children,
+        )
+        .unwrap();
+        assert_eq!(ids, ["1", "2", "3"]);
+        // Three distinct source branches (a, b, c) => three children probes,
+        // never one per seed.
+        assert_eq!(probes.get(), 3, "each source branch probed exactly once");
     }
 }
