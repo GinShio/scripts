@@ -15,6 +15,7 @@ contains what is actually finished. Today that is:
 | [`wits project`](docs/project.md) | Describe/validate source projects from one declarative registry (also manages build contexts via `project context`) |
 | [`wits build`](docs/project.md) | Configure and build a project on top of that registry (cmake/meson/cargo) |
 | [`wits update`](docs/project.md) | Refresh git for every repo of a project |
+| `wits system` | Print detected host facts (the `system.*` template tree), one value per line for shell |
 
 Built-in commands live in the `wits` binary (a module under
 `crates/wits/src/cmd/` plus a match arm). Anything else is a **plugin**: `wits

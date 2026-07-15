@@ -278,7 +278,7 @@ detection.
 
 ### 6.2 `[[ expr ]]` expressions
 
-A minimal numeric expression, e.g. `LINK_JOBS = "[[ max(1, system.memory.total_gb // 4) ]]"`.
+A minimal numeric expression, e.g. `LINK_JOBS = "[[ max(1, system.mem.gb // 4) ]]"`.
 
 - Operators: `+ - * / // %` over int/float; comparisons `== != < <= > >=`.
 - Functions: `min`, `max`, `int`, `float`, `str`, `bool`.
@@ -301,7 +301,7 @@ build_type
 toolchain.{ name, cc, cxx, rustc, ar, nm, ranlib, strip,
             linker, launcher, c_flags, cxx_flags, link_flags }
 generator
-system.{ os, arch, memory.total_gb, cpu.count }
+system.{ os, arch, memory.gb, cpu.count }
 env.*                      # process environment
 ```
 

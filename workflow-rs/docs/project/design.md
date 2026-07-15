@@ -537,7 +537,7 @@ reusable and unit-testable in isolation:
   entry referencing another simply resolves on demand — no separate dependency-map
   or topological-sort pass is needed.
 - **`[[ … ]]`** — a *minimal* numeric expression, kept for real needs like
-  `LINK_JOBS = "[[ max(1, system.memory.total_gb // 4) ]]"`. Scope: `+ - * / // %`
+  `LINK_JOBS = "[[ max(1, system.mem.gb // 4) ]]"`. Scope: `+ - * / // %`
   over int/float, comparisons, and the functions `min max int float str bool`.
   It is **not** a general expression language — no `**`/bitops, no `and`/`or`, no
   ternary, no arbitrary names, no list/dict literals. Arbitrary conditions are
@@ -562,7 +562,7 @@ build_type
 toolchain.{ name, cc, cxx, rustc, ar, nm, ranlib, strip, linker, launcher,
             c_flags, cxx_flags, link_flags }
 generator
-system.{ os, arch, memory.total_gb, cpu.count }
+system.{ os, arch, memory.gb, cpu.count }
 env.*                      # process environment
 ```
 

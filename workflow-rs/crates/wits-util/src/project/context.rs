@@ -18,7 +18,6 @@ use anyhow::Result;
 use crate::template::{Engine, Value};
 
 use super::model::{infer_kind, LogicalConfig};
-use super::sys;
 use super::workspace::{ProjectData, Workspace};
 
 // --- the mutable pipeline context ---------------------------------------------
@@ -187,21 +186,11 @@ pub(crate) fn resolve_replace(ctx: &Ctx, raw: &[String], out: &mut Vec<String>) 
 
 // --- context builders ---------------------------------------------------------
 
-/// System facts for `system.*` — best-effort; missing pieces resolve to 0.
+/// The `system.*` template namespace: the shared host-facts tree from
+/// [`crate::system`], so a fact means the same thing in a template as it does
+/// on `wits system`'s command line.
 pub fn system_facts() -> Value {
-    let mut memory = BTreeMap::new();
-    memory.insert(
-        "total_gb".into(),
-        Value::Int(sys::total_memory_gb().unwrap_or(0)),
-    );
-    let mut cpu_map = BTreeMap::new();
-    cpu_map.insert("count".into(), Value::Int(sys::cpu_count()));
-    Value::map([
-        ("os", Value::str(std::env::consts::OS)),
-        ("arch", Value::str(std::env::consts::ARCH)),
-        ("memory", Value::Map(memory)),
-        ("cpu", Value::Map(cpu_map)),
-    ])
+    crate::system::facts()
 }
 
 /// The process environment as an `env.*` map — the base every context layers on.

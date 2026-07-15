@@ -73,7 +73,7 @@ wits = custom_target(
 # implicit), and the authoritative set of built-ins is the Commands enum in
 # crates/wits/src/main.rs, not the cmd/ directory. Keep the two in step; a
 # runtime cross-check is `wits __applets`.
-builtins = ['transcrypt', 'stack', 'project', 'review', 'build', 'update']
+builtins = ['transcrypt', 'stack', 'project', 'review', 'build', 'update', 'system']
 foreach sub : builtins
   install_symlink(
     'wits-' + sub,

@@ -4,8 +4,8 @@
 //! The collection grows one subcommand at a time. Keeping everything in one
 //! binary (rather than a pile of scripts) buys a shared library ([`wits_util`]),
 //! consistent flags, and a single thing to build and put on `$PATH`. The
-//! built-ins are `transcrypt`, `stack`, `project`, `build`, and `update`; adding
-//! one is a module under `cmd/` and a match arm below.
+//! built-ins are `transcrypt`, `stack`, `review`, `project`, `build`, `update`,
+//! and `system`; adding one is a module under `cmd/` and a match arm below.
 //!
 //! There are two ways to invoke a built-in, the way `mount` accepts either
 //! `mount -t xfs` or `mount.xfs`: the umbrella form `wits foo` and the direct
@@ -71,6 +71,8 @@ enum Commands {
     Build(cmd::build::BuildArgs),
     /// Refresh git for every repo of a project.
     Update(cmd::update::UpdateArgs),
+    /// Print detected host facts (the `system.*` template tree), for shell.
+    System(cmd::system::SystemArgs),
 
     /// Print the built-in subcommand names, one per line — a runtime cross-check
     /// of the applet set.
@@ -100,6 +102,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Project(args) => cmd::project::run(args),
         Commands::Build(args) => cmd::build::run(args),
         Commands::Update(args) => cmd::update::run(args),
+        Commands::System(args) => cmd::system::run(args),
         Commands::Applets => {
             for name in builtin_names() {
                 println!("{name}");
