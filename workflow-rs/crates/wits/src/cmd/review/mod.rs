@@ -57,16 +57,18 @@ pub enum ReviewAction {
 
 #[derive(Debug, Args)]
 pub struct FetchArgs {
-    /// The MR to fetch, by number or URL (a full pull).
+    /// The MR to fetch, by number or URL (a full pull). Its whole stack is
+    /// fetched too by default (see `--no-stack`).
     pub mr: Option<String>,
     /// Fetch a configured feed's MRs (a light, inbox-only refresh).
     #[arg(long, conflicts_with = "mr")]
     pub feed: Option<String>,
-    /// Also fetch every other MR in the same stack, discovered by walking the
-    /// MR's base/source links on the forge — so a label/limit-filtered feed
-    /// can't leave a stack half-fetched. Requires an MR argument.
+    /// Fetch only the named MR, not the rest of its stack. By default `fetch
+    /// <mr>` also pulls every other MR in the same stack — discovered by walking
+    /// the base/source links on the forge — so reviewing a stack needs one
+    /// command and no flags. This opts out when you want just the one.
     #[arg(long, requires = "mr")]
-    pub stack: bool,
+    pub no_stack: bool,
 }
 
 #[derive(Debug, Args)]
@@ -397,6 +399,24 @@ mod tests {
         assert_eq!(
             stack_chain(&infos, "a"),
             (vec!["a".into(), "b".into(), "c".into()], 0)
+        );
+    }
+
+    #[test]
+    fn chain_order_follows_links_not_mr_numbers() {
+        // MRs in a stack are opened in parallel, so their numbers need not
+        // increase with stack position. Reconstruction must follow the
+        // base/source links, not the ids: here the base-most MR has the highest
+        // number and the tip the middle one.
+        let infos = vec![
+            stub_info("10", "main", "feat-a"),
+            stub_info("3", "feat-a", "feat-b"),
+            stub_info("7", "feat-b", "feat-c"),
+        ];
+        assert_eq!(
+            stack_chain(&infos, "3"),
+            (vec!["10".into(), "3".into(), "7".into()], 1),
+            "chain is base->tip by links, independent of id magnitude"
         );
     }
 

@@ -25,12 +25,7 @@ pub fn run(repo: &Repository, args: &super::FetchArgs) -> Result<()> {
     if let Some(handle) = &args.mr {
         let id = parse_mr_handle(handle)?;
         let remote = target_remote(&ctx);
-        if args.stack {
-            return fetch_stack(&ctx, &remote, &id);
-        }
-        fetch_one(&ctx, &remote, &id)?;
-        log::info!("fetched {} {}", ctx.forge.noun(), id);
-        return Ok(());
+        return fetch_mr(&ctx, &remote, &id, !args.no_stack);
     }
 
     let cfg = Config::load()?;
@@ -109,28 +104,47 @@ fn fetch_one(ctx: &Online, remote: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Fetch an MR and every other MR in its stack. The stack is discovered on the
-/// forge by walking base/source links out from the seed — upward to the parent
-/// (the MR whose source is our base) and downward to the children (MRs whose
-/// base is our source) — so a label/limit-filtered feed can't leave it
-/// half-fetched. Each discovered member is then given a full [`fetch_one`].
-fn fetch_stack(ctx: &Online, remote: &str, seed_id: &str) -> Result<()> {
+/// Fetch one MR and, unless `only_seed`, every other MR in its stack.
+///
+/// A stack is the review unit, so fetching an MR pulls its whole stack by
+/// default — no flag, no half-fetched stack left behind by a label/limit feed.
+/// The members are discovered on the forge by walking the seed's base/source
+/// links (see [`stack_member_ids`]); each gets its own full [`fetch_one`]. The
+/// walk is bounded to the actual stack — it never enumerates a trunk's MRs — so
+/// this is safe to do automatically.
+fn fetch_mr(ctx: &Online, remote: &str, seed_id: &str, complete_stack: bool) -> Result<()> {
+    let noun = ctx.forge.noun();
+    fetch_one(ctx, remote, seed_id)?;
+
+    if !complete_stack {
+        log::info!("fetched {noun} {seed_id}");
+        return Ok(());
+    }
+
+    // Discover the rest of the stack from the seed's now-stored base/source, so
+    // we reuse the fetch we just did rather than asking the forge for the seed
+    // again.
+    let Some(info) = ctx.local.store.load_info(seed_id) else {
+        log::info!("fetched {noun} {seed_id}");
+        return Ok(());
+    };
     let forge = ctx.forge.as_ref();
-    let seed = forge.mr_details(seed_id)?.summary;
     let ids = stack_member_ids(
-        (&seed.id, &seed.base, &seed.source),
+        (seed_id, &info.mr.base, &info.mr.source),
         |branch| forge.find_any(branch),
         |branch| forge.find_children(branch),
     )?;
-    for id in &ids {
+
+    let mut extra = 0;
+    for id in ids.iter().filter(|id| id.as_str() != seed_id) {
         fetch_one(ctx, remote, id)?;
+        extra += 1;
     }
-    log::info!(
-        "fetched {} {}(s) in the stack around {}",
-        ids.len(),
-        forge.noun(),
-        seed_id
-    );
+    if extra > 0 {
+        log::info!("fetched {noun} {seed_id} and {extra} more in its stack");
+    } else {
+        log::info!("fetched {noun} {seed_id}");
+    }
     Ok(())
 }
 
