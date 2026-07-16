@@ -28,6 +28,15 @@ pub struct ProjectArgs {
     pub command: Option<ProjectSub>,
     #[command(flatten)]
     pub info: InfoArgs,
+    /// The profile axes (branch / build-type / toolchain / …) that shape
+    /// resolution. Declared once here as **global** flags, so every `project`
+    /// subcommand accepts them uniformly — the way `-v`/`-n` are inherited from
+    /// the process layer (§1.3) — and so a machine-readable path query resolves
+    /// the *same* dir a build would (the one shared `Profile`, §6.3). Being
+    /// global, they are exempt from `args_conflicts_with_subcommands` and may be
+    /// written on either side of the subcommand.
+    #[command(flatten)]
+    pub profile: ProfileArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -36,58 +45,50 @@ pub enum ProjectSub {
     Context(ContextArgs),
     /// Print the main branch of the repo you are in (or a named project) —
     /// the machine-readable answer scripts and git hooks need.
-    MainBranch(RepoQueryArgs),
+    MainBranch(TargetArgs),
     /// Print the resolved build directory for a branch, one line, for scripts.
-    BuildDir(PathQueryArgs),
+    BuildDir(TargetArgs),
     /// Print the resolved install prefix for a branch, one line, for scripts.
-    InstallDir(PathQueryArgs),
+    InstallDir(TargetArgs),
     /// Print the resolved source directory (where the build configures from).
-    SourceDir(PathQueryArgs),
+    SourceDir(TargetArgs),
     /// Print the branch's checkout root (`work.dir`) — the path templates anchor on.
-    WorkDir(PathQueryArgs),
+    WorkDir(TargetArgs),
 }
 
-/// A repo-scoped query anchored by name or path (default: the current dir).
+/// A target anchored by name or path (default: the current dir). The branch and
+/// the rest of the resolution profile arrive via the global [`ProfileArgs`] on
+/// the parent, so every query shares one shape.
 #[derive(Debug, Args)]
-pub struct RepoQueryArgs {
+pub struct TargetArgs {
     /// Project name, or a path inside a checkout (default: the current dir).
     #[arg(value_name = "NAME|PATH")]
     pub target: Option<String>,
 }
 
-/// A plan-path query: like [`RepoQueryArgs`], plus the branch whose resolved
-/// paths to report. Shared by `build-dir` / `install-dir` / `source-dir` /
-/// `work-dir`, which differ only in which resolved path they print.
-#[derive(Debug, Args)]
-pub struct PathQueryArgs {
-    /// Project name, or a path inside a checkout (default: the current dir).
-    #[arg(value_name = "NAME|PATH")]
-    pub target: Option<String>,
-    /// The branch to resolve for (default: the anchored repo's current branch).
-    #[arg(short = 'b', long)]
-    pub branch: Option<String>,
-}
-
-/// The profile axes shared by `info` and `build` (they affect resolution).
+/// The profile axes shared by `project` (all subcommands, via global flags) and
+/// `build`. Each field is `global` so it propagates to every `project`
+/// subcommand; positionals cannot be global, which is why the `NAME|PATH`
+/// target stays per-subcommand on [`TargetArgs`]/[`InfoArgs`].
 #[derive(Debug, Args, Default)]
 pub struct ProfileArgs {
     /// Target branch (the build identity). Default: the focus repo's current branch.
-    #[arg(short = 'b', long)]
+    #[arg(short = 'b', long, global = true)]
     pub branch: Option<String>,
     /// Build type — lowercase, meson-aligned (debug, release, …).
-    #[arg(short = 'B', long = "build-type")]
+    #[arg(short = 'B', long = "build-type", global = true)]
     pub build_type: Option<String>,
     /// Select a declared toolchain.
-    #[arg(short = 'T', long)]
+    #[arg(short = 'T', long, global = true)]
     pub toolchain: Option<String>,
     /// Build-system generator (e.g. Ninja).
-    #[arg(short = 'G', long)]
+    #[arg(short = 'G', long, global = true)]
     pub generator: Option<String>,
     /// Apply a preset (repeatable; accepts org/preset).
-    #[arg(short = 'p', long = "preset")]
+    #[arg(short = 'p', long = "preset", global = true)]
     pub presets: Vec<String>,
     /// Override which repo is the focus.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub focus: Option<String>,
 }
 
@@ -112,8 +113,6 @@ pub struct InfoArgs {
     /// Validate configuration legality instead of describing.
     #[arg(long)]
     pub check: bool,
-    #[command(flatten)]
-    pub profile: ProfileArgs,
 }
 
 #[derive(Debug, Args)]
@@ -135,12 +134,6 @@ pub struct ContextItemArgs {
     /// Project name or path (default: the project owning the current directory).
     #[arg(value_name = "NAME|PATH")]
     pub target: Option<String>,
-    /// The branch whose context to create/prune.
-    #[arg(short = 'b', long)]
-    pub branch: String,
-    /// Override which repo is the focus.
-    #[arg(long)]
-    pub focus: Option<String>,
     /// Remove even a dirty worktree (prune only).
     #[arg(long)]
     pub force: bool,
@@ -149,14 +142,18 @@ pub struct ContextItemArgs {
 /// `wits project` (and `wits project context`).
 pub fn run(args: &ProjectArgs) -> Result<()> {
     let ws = Workspace::load()?;
+    // The profile axes live on the parent as global flags, so they are read here
+    // once and handed to whichever subcommand ran — the value lands on the parent
+    // regardless of which side of the subcommand it was written on.
+    let profile = &args.profile;
     match &args.command {
-        Some(ProjectSub::Context(c)) => run_context(&ws, c),
-        Some(ProjectSub::MainBranch(a)) => main_branch(&ws, a),
-        Some(ProjectSub::BuildDir(a)) => build_dir(&ws, a),
-        Some(ProjectSub::InstallDir(a)) => install_dir(&ws, a),
-        Some(ProjectSub::SourceDir(a)) => source_dir(&ws, a),
-        Some(ProjectSub::WorkDir(a)) => work_dir(&ws, a),
-        None => info(&ws, &args.info),
+        Some(ProjectSub::Context(c)) => run_context(&ws, c, profile),
+        Some(ProjectSub::MainBranch(a)) => main_branch(&ws, a, profile),
+        Some(ProjectSub::BuildDir(a)) => build_dir(&ws, a, profile),
+        Some(ProjectSub::InstallDir(a)) => install_dir(&ws, a, profile),
+        Some(ProjectSub::SourceDir(a)) => source_dir(&ws, a, profile),
+        Some(ProjectSub::WorkDir(a)) => work_dir(&ws, a, profile),
+        None => info(&ws, &args.info, profile),
     }
 }
 
@@ -164,7 +161,11 @@ pub fn run(args: &ProjectArgs) -> Result<()> {
 
 /// Resolve a target to `(project, anchor-repo)`: a path (or the current dir)
 /// resolves to the *containing* repo, a name to the project's focus repo.
-fn resolve_repo<'a>(ws: &'a Workspace, target: Option<&str>) -> Result<(&'a ProjectData, String)> {
+fn resolve_repo<'a>(
+    ws: &'a Workspace,
+    target: Option<&str>,
+    focus: Option<&str>,
+) -> Result<(&'a ProjectData, String)> {
     match target {
         None => {
             let cwd = std::env::current_dir()?;
@@ -177,17 +178,19 @@ fn resolve_repo<'a>(ws: &'a Workspace, target: Option<&str>) -> Result<(&'a Proj
             ws.repo_for_path(&path)
                 .with_context(|| format!("no project owns the path {}", path.display()))
         }
+        // A name resolves to the project's focus repo; `--focus` overrides which
+        // repo that is (a path already names the repo, so the override is moot).
         Some(name) => {
             let project = ws.project(name)?;
-            Ok((project, project.focus_name(None).to_owned()))
+            Ok((project, project.focus_name(focus).to_owned()))
         }
     }
 }
 
 /// The main branch that governs the anchored repo: its identity repo's
 /// `main_branch` (a subtree inherits its anchor's). One line to stdout.
-fn main_branch(ws: &Workspace, args: &RepoQueryArgs) -> Result<()> {
-    let (project, repo) = resolve_repo(ws, args.target.as_deref())?;
+fn main_branch(ws: &Workspace, args: &TargetArgs, profile: &ProfileArgs) -> Result<()> {
+    let (project, repo) = resolve_repo(ws, args.target.as_deref(), profile.focus.as_deref())?;
     let identity = resolve::identity_repo(project, &repo).unwrap_or(repo);
     let mb = project
         .repos
@@ -209,29 +212,37 @@ fn main_branch(ws: &Workspace, args: &RepoQueryArgs) -> Result<()> {
 /// resolved path they print.
 fn resolve_plan<'a>(
     ws: &'a Workspace,
-    args: &PathQueryArgs,
+    args: &TargetArgs,
+    profile: &ProfileArgs,
 ) -> Result<(&'a ProjectData, resolve::Plan)> {
-    let (project, repo) = resolve_repo(ws, args.target.as_deref())?;
-    let branch = args
-        .branch
-        .clone()
-        .or_else(|| {
-            resolve::identity_repo(project, &repo)
-                .and_then(|n| project.repo_abs_path(&n).ok())
-                .and_then(|p| git::Repository::new(&p).current_branch())
-        })
-        .context("could not determine a branch; pass --branch")?;
-    let profile = Profile {
-        focus: Some(repo),
-        branch: Some(branch),
-        ..Default::default()
-    };
+    let (project, repo) = resolve_repo(ws, args.target.as_deref(), profile.focus.as_deref())?;
+    let branch = branch_or_current(project, &repo, profile.branch.as_deref())?;
+    // Carry the *whole* profile (build_type / toolchain / generator / presets),
+    // not just focus+branch: a `build_dir`/`install_dir` template may embed any
+    // of them (§6.2), so dropping them would print a dir that no build ever uses.
+    let mut resolved = profile.to_profile();
+    resolved.focus = Some(repo);
+    resolved.branch = Some(branch.clone());
     let plan = resolve::plan(
         ws,
         project,
-        &resolve::PlanInput::paths_only(&profile, profile.branch.as_deref().unwrap_or_default()),
+        &resolve::PlanInput::paths_only(&resolved, &branch),
     )?;
     Ok((project, plan))
+}
+
+/// The branch to resolve for: the explicit `--branch`, else the identity repo's
+/// current branch. Shared by the path queries and `context` so both default the
+/// same way `build` does (§6.4).
+fn branch_or_current(project: &ProjectData, repo: &str, explicit: Option<&str>) -> Result<String> {
+    explicit
+        .map(str::to_owned)
+        .or_else(|| {
+            resolve::identity_repo(project, repo)
+                .and_then(|n| project.repo_abs_path(&n).ok())
+                .and_then(|p| git::Repository::new(&p).current_branch())
+        })
+        .context("could not determine a branch; pass --branch")
 }
 
 /// Generate a one-line path query over the resolved [`Plan`](resolve::Plan).
@@ -241,8 +252,8 @@ fn resolve_plan<'a>(
 macro_rules! path_query {
     // An optional path: print it, or bail with why it isn't there.
     ($name:ident, $field:ident, optional: $absent:literal) => {
-        fn $name(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
-            let (project, plan) = resolve_plan(ws, args)?;
+        fn $name(ws: &Workspace, args: &TargetArgs, profile: &ProfileArgs) -> Result<()> {
+            let (project, plan) = resolve_plan(ws, args, profile)?;
             match plan.$field {
                 Some(dir) => {
                     println!("{}", dir.display());
@@ -254,8 +265,8 @@ macro_rules! path_query {
     };
     // An always-resolvable path.
     ($name:ident, $field:ident) => {
-        fn $name(ws: &Workspace, args: &PathQueryArgs) -> Result<()> {
-            let (_project, plan) = resolve_plan(ws, args)?;
+        fn $name(ws: &Workspace, args: &TargetArgs, profile: &ProfileArgs) -> Result<()> {
+            let (_project, plan) = resolve_plan(ws, args, profile)?;
             println!("{}", plan.$field.display());
             Ok(())
         }
@@ -271,25 +282,28 @@ path_query!(source_dir, source_dir);
 // `work-dir`: the branch's checkout root, the anchor every path template uses.
 path_query!(work_dir, work_dir);
 
-fn run_context(ws: &Workspace, args: &ContextArgs) -> Result<()> {
+fn run_context(ws: &Workspace, args: &ContextArgs, profile: &ProfileArgs) -> Result<()> {
     let item = match &args.action {
         ContextAction::Create(i) | ContextAction::Prune(i) => i,
     };
     let project = resolve_target(ws, item.target.as_deref())?;
-    let profile = Profile {
-        focus: item.focus.clone(),
-        branch: Some(item.branch.clone()),
-        ..Default::default()
-    };
+    let focus = project.focus_name(profile.focus.as_deref()).to_owned();
+    // Default to the current branch (like the path queries and `build`), so a
+    // bare `context create` acts on the branch you are standing on.
+    let branch = branch_or_current(project, &focus, profile.branch.as_deref())?;
+    // Full profile: `prune` must resolve (and delete) the *same* build_dir the
+    // matching `build` produced, which a build_type/toolchain template needs.
+    let mut resolved = profile.to_profile();
+    resolved.branch = Some(branch.clone());
     match &args.action {
-        ContextAction::Create(_) => context::create(ws, project, &profile, &item.branch),
-        ContextAction::Prune(_) => context::prune(ws, project, &profile, &item.branch, item.force),
+        ContextAction::Create(_) => context::create(ws, project, &resolved, &branch),
+        ContextAction::Prune(_) => context::prune(ws, project, &resolved, &branch, item.force),
     }
 }
 
 // --- info ---------------------------------------------------------------------
 
-fn info(ws: &Workspace, args: &InfoArgs) -> Result<()> {
+fn info(ws: &Workspace, args: &InfoArgs, profile: &ProfileArgs) -> Result<()> {
     if args.check {
         return check(ws, args.target.as_deref());
     }
@@ -302,7 +316,7 @@ fn info(ws: &Workspace, args: &InfoArgs) -> Result<()> {
         }
         Some(_) => {
             let project = resolve_target(ws, args.target.as_deref())?;
-            describe(ws, project, &args.profile)
+            describe(ws, project, profile)
         }
     }
 }
