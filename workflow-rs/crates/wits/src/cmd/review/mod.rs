@@ -177,6 +177,10 @@ pub struct CheckoutArgs {
 
 #[derive(Debug, Args)]
 pub struct PruneArgs {
+    /// Drop one MR by number or URL, whatever its state — for reclaiming a
+    /// review worktree and store of an MR you're done with before it merges.
+    #[arg(conflicts_with = "older_than")]
+    pub mr: Option<String>,
     /// Also drop MRs untouched for at least this long: a number of days, or an
     /// ISO-8601 date (`2026-06-01`) — anything last updated before it.
     #[arg(long, value_name = "DAYS|DATE")]
@@ -272,6 +276,16 @@ where
         });
     }
     out
+}
+
+/// A review worktree's default location: a sibling `../<repo>.review/mr-<id>`,
+/// so review worktrees don't clutter the checkout. `checkout` creates it here
+/// (unless `--worktree` overrides) and `prune` reclaims it here.
+pub(crate) fn default_worktree_dir(toplevel: &std::path::Path, repo: &str, id: &str) -> PathBuf {
+    let parent = toplevel.parent().unwrap_or(toplevel);
+    parent
+        .join(format!("{repo}.review"))
+        .join(format!("mr-{id}"))
 }
 
 /// The current Unix time in whole seconds — the one clock the review store uses

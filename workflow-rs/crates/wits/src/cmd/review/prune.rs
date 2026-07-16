@@ -12,18 +12,24 @@ use wits_util::git::Repository;
 
 use super::model::state_word;
 use super::store::refs;
-use super::{local, PruneArgs};
+use super::{default_worktree_dir, local, parse_mr_handle, PruneArgs, ReviewCtx};
 
 pub fn run(repo: &Repository, args: &PruneArgs) -> Result<()> {
     let ctx = local(repo)?;
-    // The dormancy cutoff, as a Unix instant: an MR last fetched before it is
-    // stale. `--older-than` is a day count or an ISO-8601 date.
-    let cutoff = args.older_than.as_deref().map(parse_cutoff).transpose()?;
     let current = ctx.store.current();
 
+    // A named MR is dropped whatever its state — the "I'm done with this one,
+    // reclaim its worktree and store even though it hasn't merged" path.
+    if let Some(handle) = &args.mr {
+        let id = parse_mr_handle(handle)?;
+        return prune_one(&ctx, &id, "requested", &current);
+    }
+
+    // Otherwise sweep: terminal MRs always, plus dormant ones under a cutoff.
+    // `--older-than` is a day count or an ISO-8601 date, as a Unix instant.
+    let cutoff = args.older_than.as_deref().map(parse_cutoff).transpose()?;
     let mut pruned = 0;
     for info in ctx.store.list_infos() {
-        let id = &info.mr.id;
         let terminal = matches!(info.mr.state, MrState::Merged | MrState::Closed);
         // Dormant iff we have a real last-sync time (a full fetch, `fetched_at`
         // > 0) that predates the cutoff. A feed-only entry (`0`) is never dormant.
@@ -31,26 +37,12 @@ pub fn run(repo: &Repository, args: &PruneArgs) -> Result<()> {
         if !terminal && !stale {
             continue;
         }
-
-        // Drop the snapshot pins so git can GC the objects, then the whole
-        // per-MR directory.
-        for (name, _) in ctx.repo.refs_under(&refs::mr_prefix(id)) {
-            if let Err(e) = ctx.repo.delete_ref(&name) {
-                log::warn!("MR {id}: could not delete {name}: {e}");
-            }
-        }
-        ctx.store.delete_mr(id)?;
-        // If we just pruned the checked-out MR, drop the dangling pointer so a
-        // later `--next`/`--prev` doesn't navigate from a store that's gone.
-        if current.as_deref() == Some(id.as_str()) {
-            ctx.store.clear_current()?;
-        }
         let why = if terminal {
             state_word(info.mr.state, info.mr.draft)
         } else {
             "dormant"
         };
-        log::info!("pruned MR {id} ({why})");
+        prune_one(&ctx, &info.mr.id, why, &current)?;
         pruned += 1;
     }
 
@@ -60,6 +52,43 @@ pub fn run(repo: &Repository, args: &PruneArgs) -> Result<()> {
         log::info!("pruned {pruned} MR(s)");
     }
     Ok(())
+}
+
+/// Drop one MR's whole local footprint: its review worktree (if the default one
+/// is present), its snapshot pins (so git can GC the objects), and its store
+/// directory — clearing the current-checkout pointer when it named this MR.
+fn prune_one(ctx: &ReviewCtx, id: &str, why: &str, current: &Option<String>) -> Result<()> {
+    remove_review_worktree(ctx, id);
+    for (name, _) in ctx.repo.refs_under(&refs::mr_prefix(id)) {
+        if let Err(e) = ctx.repo.delete_ref(&name) {
+            log::warn!("MR {id}: could not delete {name}: {e}");
+        }
+    }
+    ctx.store.delete_mr(id)?;
+    // If we just pruned the checked-out MR, drop the dangling pointer so a
+    // later `--next`/`--prev` doesn't navigate from a store that's gone.
+    if current.as_deref() == Some(id) {
+        ctx.store.clear_current()?;
+    }
+    log::info!("pruned MR {id} ({why})");
+    Ok(())
+}
+
+/// Remove the MR's default review worktree if present — best-effort. A
+/// `--worktree <custom>` checkout isn't tracked, so only the default sibling
+/// path (`../<repo>.review/mr-<id>`) is reclaimed automatically.
+fn remove_review_worktree(ctx: &ReviewCtx, id: &str) {
+    let Some(toplevel) = ctx.repo.toplevel() else {
+        return;
+    };
+    let dir = default_worktree_dir(&toplevel, &ctx.target.repo, id);
+    if !dir.exists() {
+        return;
+    }
+    match ctx.repo.worktree_remove(&dir, true) {
+        Ok(()) => log::info!("removed worktree {}", dir.display()),
+        Err(e) => log::warn!("MR {id}: could not remove worktree {}: {e}", dir.display()),
+    }
 }
 
 /// Interpret `--older-than` and return the Unix instant before which an MR

@@ -44,7 +44,7 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
         let dir = args
             .worktree
             .clone()
-            .unwrap_or_else(|| default_worktree_dir(&toplevel, &ctx.target.repo, &id));
+            .unwrap_or_else(|| super::default_worktree_dir(&toplevel, &ctx.target.repo, &id));
         if let Some(parent) = dir.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
@@ -58,7 +58,7 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
     Ok(())
 }
 
-/// The MR to materialize: explicit, or the neighbour of the current checkout.
+/// The MR to materialise: explicit, or the neighbour of the current checkout.
 fn resolve_target(ctx: &ReviewCtx, args: &CheckoutArgs) -> Result<String> {
     if let Some(handle) = &args.mr {
         return super::parse_mr_handle(handle);
@@ -82,13 +82,4 @@ fn resolve_target(ctx: &ReviewCtx, args: &CheckoutArgs) -> Result<String> {
         let edge = if args.next { "top" } else { "bottom" };
         format!("already at the {edge} of the stack (current MR {current})")
     })
-}
-
-/// A sibling directory, so review worktrees don't clutter the checkout: e.g.
-/// `../<repo>.review/mr-123`.
-fn default_worktree_dir(toplevel: &std::path::Path, repo: &str, id: &str) -> PathBuf {
-    let parent = toplevel.parent().unwrap_or(toplevel);
-    parent
-        .join(format!("{repo}.review"))
-        .join(format!("mr-{id}"))
 }

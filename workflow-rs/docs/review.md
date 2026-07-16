@@ -84,7 +84,7 @@ Seven verbs; only `fetch` and `submit` touch the network.
 | `draft <mr> [FILE\|-] [--json]` | — | Show the pending draft, or append a batch of actions to it. |
 | `submit [mr] [--stack\|--all]` | write | Flush the draft(s) as batched reviews. |
 | `checkout [mr] [--next\|--prev] [--in-place\|--worktree DIR]` | — | Materialize the code to build/test. |
-| `prune [--older-than DAYS\|DATE]` | — | Drop terminal/dormant MRs. |
+| `prune [mr] [--older-than DAYS\|DATE]` | — | Drop one MR, or sweep terminal/dormant ones. |
 
 ### Fetching
 
@@ -352,12 +352,19 @@ anyone's stack.
 wits review prune                    # merged/closed MRs
 wits review prune --older-than 30    # …and any not refreshed in 30 days
 wits review prune --older-than 2026-06-01   # …or last refreshed before a date
+wits review prune 123                # just MR 123, whatever its state
 ```
 
 `prune` drops the store directory and snapshot pins (`refs/wits/review/*`) of
-terminal MRs, letting git collect the objects. `--older-than` also catches
-dormant MRs, given a **day count** or an **ISO-8601 date**. It is idempotent and
-a no-op when nothing is stale.
+terminal MRs — and their **review worktree** if it sits at the default sibling
+path — letting git collect the objects. `--older-than` also catches dormant
+MRs, given a **day count** or an **ISO-8601 date**. It is idempotent and a no-op
+when nothing is stale.
+
+Naming an MR prunes **just that one, whatever its state** — the way to reclaim a
+review worktree and store for an MR you're finished reviewing before it merges.
+(A `--worktree <custom>` checkout isn't tracked, so only the default worktree
+path is removed automatically.)
 
 ## Outdating
 
