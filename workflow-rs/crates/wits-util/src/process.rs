@@ -53,6 +53,7 @@ pub struct Command {
     argv: Vec<String>,
     cwd: Option<PathBuf>,
     env: Vec<(String, String)>,
+    env_remove: Vec<String>,
     force_run: bool,
 }
 
@@ -64,6 +65,7 @@ impl Command {
             program,
             cwd: None,
             env: Vec::new(),
+            env_remove: Vec::new(),
             force_run: false,
         }
     }
@@ -87,6 +89,15 @@ impl Command {
     /// command line, so configuring them at all requires this.
     pub fn env(&mut self, key: impl Into<String>, value: impl Into<String>) -> &mut Self {
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// Remove an environment variable from the child, so an inherited value can
+    /// never leak in. The tool pins location by `current_dir`/flags, so a
+    /// context-pinning var the caller's shell exported (e.g. `GIT_DIR`) must be
+    /// scrubbed or it would silently override that.
+    pub fn env_remove(&mut self, key: impl Into<String>) -> &mut Self {
+        self.env_remove.push(key.into());
         self
     }
 
@@ -129,6 +140,9 @@ impl Command {
         }
         for (key, value) in &self.env {
             cmd.env(key, value);
+        }
+        for key in &self.env_remove {
+            cmd.env_remove(key);
         }
         cmd
     }

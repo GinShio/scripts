@@ -37,6 +37,20 @@ use crate::process::{Command, ProcessError};
 pub use floor::{Commit, FileChange};
 pub use worktree::{clone, RestoreGuard, Worktree};
 
+/// The environment variables git uses to *pin* a repository/worktree location.
+/// We always run against an explicit `current_dir`, so any of these inherited
+/// from the caller (git exports them for aliases and hooks) would silently
+/// override that — scrubbed on every invocation in [`Repository::git`].
+const GIT_LOCATION_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+];
+
 #[derive(Debug, Error)]
 pub enum GitError {
     #[error("git command failed: {0}")]
@@ -65,6 +79,16 @@ impl Repository {
     fn git(&self) -> Command {
         let mut cmd = Command::new("git");
         cmd.current_dir(&self.path);
+        // Discover the repository from `current_dir`, never from an inherited
+        // location env var. When `wits` is spawned by git itself — a `git`
+        // alias, or a hook — git exports `GIT_DIR`/`GIT_WORK_TREE` (etc.) pinned
+        // to *that* invocation's repo/worktree; left in place they override our
+        // cwd and make a `git` we run against another worktree operate on the
+        // wrong one (notably `git submodule`, which then dies with "cannot be
+        // used without a working tree"). Scrubbing them is a no-op when unset.
+        for var in GIT_LOCATION_ENV {
+            cmd.env_remove(*var);
+        }
         cmd
     }
 
