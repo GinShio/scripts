@@ -10,13 +10,16 @@
 
 pub mod context;
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
 use anyhow::{bail, Result};
 use clap::{Args, Subcommand, ValueEnum};
 
 use anyhow::Context;
 
 use wits_util::git;
-use wits_util::project::model::Profile;
+use wits_util::project::model::{Kind, Profile};
 use wits_util::project::workspace::{expand_tilde, looks_like_path, ProjectData, Workspace};
 use wits_util::project::{resolve, resolve_target};
 
@@ -81,6 +84,14 @@ pub struct HashArgs {
     /// from the tree (never a checkout or branch switch).
     #[arg(long, default_value = "none")]
     pub submodules: SubmoduleScope,
+    /// Declared submodule repos whose **live HEAD** overrides the pinned gitlink
+    /// in the output (and drives recursion): the components you are actually
+    /// working on, which a build takes at their checked-out commit rather than
+    /// the stale commit the superproject records. Repeatable and/or
+    /// comma-separated. Each name must be a submodule repo of the project, and
+    /// this needs `--submodules direct|recursive` (there is a walk to override).
+    #[arg(long, value_delimiter = ',', value_name = "NAME")]
+    pub repos: Vec<String>,
 }
 
 /// How far `hash` walks the submodule tree. This is really one axis — *depth* —
@@ -336,6 +347,12 @@ path_query!(work_dir, work_dir);
 /// **relative to that repo**, one `<sha>\t<path>` per line for scripts.
 /// Submodules that aren't checked out (sparse-omitted or uninitialised) are
 /// skipped — see [`walk_submodules`].
+///
+/// `--repos` overlays *live* HEADs onto the otherwise-pinned manifest: a
+/// superproject records a submodule at whatever commit was last committed, but a
+/// component you are actively working on sits at a different commit in your
+/// checkout — the one a build uses. Naming it in `--repos` prints (and recurses
+/// from) that live commit instead of the stale pin.
 fn hash(ws: &Workspace, args: &HashArgs, profile: &ProfileArgs) -> Result<()> {
     let (project, repo) = resolve_repo(ws, args.target.as_deref(), profile.focus.as_deref())?;
     // Hash the identity repo: a subtree has no own git and borrows its anchor's.
@@ -354,6 +371,14 @@ fn hash(ws: &Workspace, args: &HashArgs, profile: &ProfileArgs) -> Result<()> {
         .rev_parse(&branch)
         .with_context(|| format!("branch '{branch}' does not exist in repo '{identity}'"))?;
 
+    // Resolve `--repos` before the scope check so a bad name errors either way.
+    let overrides = live_overrides(project, &args.repos)?;
+    if !overrides.is_empty() && args.submodules == SubmoduleScope::None {
+        bail!(
+            "--repos needs --submodules direct|recursive — there is no submodule walk to override"
+        );
+    }
+
     if args.submodules == SubmoduleScope::None {
         println!("{sha}");
         return Ok(());
@@ -361,8 +386,44 @@ fn hash(ws: &Workspace, args: &HashArgs, profile: &ProfileArgs) -> Result<()> {
     // The repo identifies itself by its absolute path; submodules hang off it by
     // relative path.
     println!("{sha}\t{}", path.display());
-    walk_submodules(&git, &sha, "", args.submodules.levels());
+    walk_submodules(&git, &sha, "", args.submodules.levels(), &overrides);
     Ok(())
+}
+
+/// Resolve `--repos` names to `canonical-abs-path -> live HEAD`, the map
+/// [`walk_submodules`] consults to swap a pinned gitlink for the commit the
+/// component is actually on. Each name must be a declared **submodule** repo:
+/// only a submodule has a pinned gitlink to override (a standalone sibling is
+/// not in any superproject's tree; a subtree has no own git). The live HEAD is
+/// read from its checkout — an error if it isn't checked out, since there is
+/// then no live commit to stand in for the pin.
+fn live_overrides(project: &ProjectData, names: &[String]) -> Result<HashMap<PathBuf, String>> {
+    let mut map = HashMap::new();
+    for name in names {
+        match project.kind_of(name) {
+            None => bail!("--repos '{name}': no such repo in project '{}'", project.key()),
+            Some(Kind::Submodule) => {}
+            Some(k) => bail!(
+                "--repos '{name}': a {} repo has no pinned gitlink to override (only submodules do)",
+                k.as_str()
+            ),
+        }
+        let path = project
+            .repo_abs_path(name)
+            .with_context(|| format!("cannot resolve path of repo '{name}'"))?;
+        let head = git::Repository::new(&path)
+            .rev_parse("HEAD")
+            .with_context(|| format!("repo '{name}' has no HEAD to read (is it checked out?)"))?;
+        map.insert(canonical(&path), head);
+    }
+    Ok(map)
+}
+
+/// Best-effort canonical path for keying/looking up overrides: both the map keys
+/// and the walk's on-disk paths pass through this, so `..`/symlink spellings
+/// still compare equal. Falls back to the path as-is when it can't be resolved.
+fn canonical(p: &Path) -> PathBuf {
+    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// Print a repo's submodule gitlinks at `rev`, then descend into each while
@@ -378,7 +439,18 @@ fn hash(ws: &Workspace, args: &HashArgs, profile: &ProfileArgs) -> Result<()> {
 /// its pinned sha. A checked-out submodule has a `.git` (a gitlink file, or a
 /// dir on older git); its absence is the reliable "not materialised" signal, and
 /// it also bounds the recursion (there is nothing to descend into).
-fn walk_submodules(repo: &git::Repository, rev: &str, prefix: &str, levels: Option<usize>) {
+///
+/// `overrides` maps a submodule's checkout path to its live HEAD (from
+/// `--repos`): when a gitlink's path is in it, that live commit is printed and
+/// recursed from instead of the pinned one, so a component you are working on
+/// shows its actual state while everything else stays the recorded manifest.
+fn walk_submodules(
+    repo: &git::Repository,
+    rev: &str,
+    prefix: &str,
+    levels: Option<usize>,
+    overrides: &HashMap<PathBuf, String>,
+) {
     if levels == Some(0) {
         return;
     }
@@ -392,12 +464,15 @@ fn walk_submodules(repo: &git::Repository, rev: &str, prefix: &str, levels: Opti
         } else {
             format!("{prefix}/{sub_path}")
         };
-        println!("{sub_sha}\t{rel}");
+        // A named component shows the commit its checkout is on, not the pin.
+        let effective = overrides.get(&canonical(&work)).cloned().unwrap_or(sub_sha);
+        println!("{effective}\t{rel}");
         walk_submodules(
             &git::Repository::new(work),
-            &sub_sha,
+            &effective,
             &rel,
             levels.map(|n| n - 1),
+            overrides,
         );
     }
 }
