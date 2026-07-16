@@ -83,9 +83,17 @@ impl Repository {
         self.query(&["rev-parse", "--short", "HEAD"])
     }
 
-    /// Whether the working tree has uncommitted changes (tracked or untracked).
+    /// Whether the working tree has uncommitted changes (tracked or untracked),
+    /// **ignoring submodules**. This is the "would a branch switch or checkout
+    /// disturb my work?" question — and a superproject `switch`/`checkout` never
+    /// touches a submodule's working tree, so a submodule merely sitting at a
+    /// different commit is not work at risk. Counting it would stash (or block a
+    /// checkout) on every switch in a repo whose submodules have drifted, for
+    /// nothing — the `project`/`build` flow realigns submodules explicitly right
+    /// after the switch regardless.
     pub fn is_dirty(&self) -> bool {
-        self.query(&["status", "--porcelain"]).is_some()
+        self.query(&["status", "--porcelain", "--ignore-submodules=all"])
+            .is_some()
     }
 
     /// The absolute path of the `.git` directory, the natural home for a tool's
@@ -405,5 +413,15 @@ mod tests {
         assert_eq!(commits[0].body, "first body line");
         assert_eq!(commits[1].subject, "second subject");
         assert_eq!(commits[1].body, "");
+    }
+
+    #[test]
+    fn dirty_tracks_superproject_changes() {
+        let _guard = crate::log::test_flag_guard();
+        let dir = init_repo();
+        let repo = Repository::new(dir.path());
+        assert!(!repo.is_dirty(), "a fresh committed tree is clean");
+        std::fs::write(dir.path().join("scratch.txt"), "x").unwrap();
+        assert!(repo.is_dirty(), "an untracked file makes it dirty");
     }
 }
