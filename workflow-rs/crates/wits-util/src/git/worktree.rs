@@ -31,6 +31,46 @@ impl Repository {
             .collect()
     }
 
+    /// The main worktree's *working tree* — the directory `review checkout`
+    /// anchors its sibling `.review/` dir to, stable no matter which worktree we
+    /// are invoked from.
+    ///
+    /// `git worktree list` is no help here: for a repository that is itself a
+    /// **submodule**, it reports that repo's main worktree as its *git-dir*
+    /// (`<super>/.git/modules/<name>`), not its working tree — anchoring there
+    /// would bury the review worktree inside `.git/modules`. Instead:
+    ///
+    /// - in the **main** worktree (`--git-dir` == `--git-common-dir`) the working
+    ///   tree is exactly `--show-toplevel`, correct for a normal repo *and* a
+    ///   submodule (whose working tree lives outside its git-dir);
+    /// - in a **linked** worktree the main worktree's working tree is derived
+    ///   from the common git-dir: a submodule records it as `core.worktree`
+    ///   (relative to the common dir), and a normal repo leaves it unset, where
+    ///   the working tree is the parent of `<main>/.git`.
+    pub fn main_worktree(&self) -> Option<std::path::PathBuf> {
+        let common = self.git_common_dir()?;
+        if self.git_dir().as_ref() == Some(&common) {
+            return self.toplevel();
+        }
+        // A linked worktree: never anchor off the *current* toplevel (that is
+        // what makes review worktrees nest under one another), nor off git
+        // worktree list (a git-dir for a submodule). The common config's
+        // `core.worktree` points at the main working tree for a submodule; a
+        // normal repo has none, so `<main>/.git` → `<main>`.
+        match self.config_file_get(&common.join("config"), "core.worktree") {
+            Some(worktree) => Some(normalize_path(common.join(worktree))),
+            None => common.parent().map(std::path::Path::to_path_buf),
+        }
+    }
+
+    /// Read a single value from an *explicit* config file rather than the repo's
+    /// resolved config — the way to reach the **common** config from inside a
+    /// linked worktree (whose own resolved config may shadow it).
+    fn config_file_get(&self, file: &std::path::Path, key: &str) -> Option<String> {
+        let file = file.to_string_lossy();
+        self.query(&["config", "--file", &file, "--get", key])
+    }
+
     pub fn worktrees(&self) -> Vec<Worktree> {
         let Some(out) = self.query(&["worktree", "list", "--porcelain"]) else {
             return Vec::new();
@@ -399,6 +439,24 @@ mod tests {
             leaf_store.display()
         );
     }
+}
+
+/// Logically normalize a path, collapsing `.` and `..` without touching the
+/// filesystem — so a relative `core.worktree` joined onto the git-dir resolves
+/// the same way git resolves it, regardless of symlinks or missing intermediates.
+fn normalize_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Clone `url` into `dir`, naming the fetched remote `remote`. A free function

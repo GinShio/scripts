@@ -689,9 +689,13 @@ without clobbering your current work. `checkout` reuses the unified git module's
 worktree/checkout operations (`wits_util::git::Repository`) and supports both modes,
 chosen per invocation so neither is forced on the user:
 
-- **Worktree mode (default):** add a worktree for the MR at a sibling path,
-  leaving your main tree untouched — this is what lets you review several MRs at
-  once. `--worktree DIR` overrides the location.
+- **Worktree mode (default):** add a worktree for the MR at a sibling of the
+  **main** worktree, `../<main-worktree-name>.review/mr-<id>`, leaving your main
+  tree untouched — this is what lets you review several MRs at once. The location
+  is anchored to the main worktree, not whichever worktree the command runs from,
+  so the store (shared across worktrees) and the checkout resolve to the same
+  place whether you invoke it from the main clone or another review worktree.
+  `--worktree DIR` overrides the location.
 - **In-place mode (`--in-place`):** check the snapshot out in the single working
   tree. *Supported on purpose* (not everyone uses worktrees), but it moves HEAD
   and hosts one review at a time, so it **hard-guards a dirty tree** — reviewing

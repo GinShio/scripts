@@ -75,13 +75,14 @@ fn prune_one(ctx: &ReviewCtx, id: &str, why: &str, current: &Option<String>) -> 
 }
 
 /// Remove the MR's default review worktree if present — best-effort. A
-/// `--worktree <custom>` checkout isn't tracked, so only the default sibling
-/// path (`../<repo>.review/mr-<id>`) is reclaimed automatically.
+/// `--worktree <custom>` checkout isn't tracked, so only the default sibling of
+/// the main worktree (`../<main-worktree-name>.review/mr-<id>`) is reclaimed
+/// automatically.
 fn remove_review_worktree(ctx: &ReviewCtx, id: &str) {
-    let Some(toplevel) = ctx.repo.toplevel() else {
+    let Some(main) = ctx.repo.main_worktree().or_else(|| ctx.repo.toplevel()) else {
         return;
     };
-    let dir = default_worktree_dir(&toplevel, &ctx.target.repo, id);
+    let dir = default_worktree_dir(&main, id);
     if !dir.exists() {
         return;
     }

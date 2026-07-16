@@ -34,12 +34,14 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
         bail!("MR {id} has no fetched snapshot — run `wits review fetch {id}` for full detail");
     };
 
-    let toplevel = ctx.repo.toplevel().unwrap_or_else(|| PathBuf::from("."));
-    let git = Repository::new(&toplevel);
-
     // Materialise the checkout, idempotently — so a second run (e.g. to add
     // `--submodules`) reuses what the first made rather than erroring.
     let checkout = if args.in_place {
+        // In-place operates on the *current* working tree — whichever worktree
+        // the command was invoked from — since that is precisely what "check out
+        // here" means.
+        let current = ctx.repo.toplevel().unwrap_or_else(|| PathBuf::from("."));
+        let git = Repository::new(&current);
         if git.is_dirty() {
             bail!(
                 "working tree has uncommitted changes; commit or stash them first \
@@ -49,12 +51,23 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
         git.checkout(&head)
             .with_context(|| format!("checking out MR {id} in place"))?;
         log::info!("checked out MR {id} at {} (detached HEAD)", short(&head));
-        toplevel.clone()
+        current
     } else {
-        let dir = args
-            .worktree
-            .clone()
-            .unwrap_or_else(|| super::default_worktree_dir(&toplevel, &ctx.target.repo, &id));
+        // The default location is anchored to the *main* worktree, so an MR
+        // lands in the same `../<main>.review/mr-<id>` no matter which worktree
+        // we run from — the store is shared, so reviewing from a review worktree
+        // must not spawn a nested one beside itself.
+        let dir = match &args.worktree {
+            Some(dir) => dir.clone(),
+            None => {
+                let main = ctx
+                    .repo
+                    .main_worktree()
+                    .or_else(|| ctx.repo.toplevel())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                super::default_worktree_dir(&main, &id)
+            }
+        };
         if dir.exists() {
             log::info!("MR {id}: reusing worktree {}", dir.display());
         } else {
@@ -62,7 +75,10 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("creating {}", parent.display()))?;
             }
-            git.worktree_add(&dir, &head, false)
+            // `git worktree add` targets the absolute `dir` regardless of which
+            // worktree drives it, so the current checkout is a fine handle.
+            ctx.repo
+                .worktree_add(&dir, &head, false)
                 .with_context(|| format!("adding worktree for MR {id}"))?;
             log::info!("MR {id} checked out into worktree {}", dir.display());
         }
@@ -103,12 +119,27 @@ fn init_submodules(checkout: &Path, id: &str) -> Result<()> {
     // just not free.
     let modules = wt.git_common_dir().map(|c| c.join("modules"));
     for sub in &subs {
-        let reference = modules.as_ref().map(|m| m.join(sub)).filter(|r| r.is_dir());
+        // Borrow only from a *real* object store. `modules/<name>` for a nested
+        // submodule path can be a bare intermediate directory (the parent of the
+        // actual store), and handing that to `--reference` makes git abort with
+        // "not a repository"; an `is_dir()` guard alone can't tell the two apart.
+        let reference = modules
+            .as_ref()
+            .map(|m| m.join(sub))
+            .filter(|r| is_object_store(r));
         wt.submodule_init_borrow(sub, reference.as_deref())
             .with_context(|| format!("initialising submodule '{sub}' for MR {id}"))?;
     }
     log::info!("MR {id}: initialised {} submodule(s)", subs.len());
     Ok(())
+}
+
+/// Whether `dir` is a git object store we can borrow from with `--reference` —
+/// a submodule's git dir under `<common>/modules/<name>`, which carries an
+/// `objects` directory. A plain intermediate directory (a nested submodule
+/// path's parent) is not, and must never reach `--reference`.
+fn is_object_store(dir: &Path) -> bool {
+    dir.join("objects").is_dir()
 }
 
 /// The MR to materialise: explicit, or the neighbour of the current checkout.
