@@ -97,18 +97,24 @@ impl Command {
     }
 
     fn format_cmd(&self) -> String {
-        let rendered = self
-            .argv
+        let quote = |s: &str| {
+            if s.contains(' ') {
+                format!("\"{s}\"")
+            } else {
+                s.to_owned()
+            }
+        };
+        // Env assignments lead, shell-style (`KEY=val program args …`), so a
+        // verbose or dry-run line is a command you could paste — and so the
+        // environment a child actually sees is visible when debugging (some
+        // behaviour is only reachable through the environment, with no flag).
+        let mut parts: Vec<String> = self
+            .env
             .iter()
-            .map(|a| {
-                if a.contains(' ') {
-                    format!("\"{a}\"")
-                } else {
-                    a.clone()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+            .map(|(key, value)| format!("{key}={}", quote(value)))
+            .collect();
+        parts.extend(self.argv.iter().map(|a| quote(a)));
+        let rendered = parts.join(" ");
         match &self.cwd {
             Some(cwd) => format!("{rendered} (cwd={})", cwd.display()),
             None => rendered,
@@ -191,6 +197,17 @@ impl Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_cmd_leads_with_env_and_quotes_spaces() {
+        let mut cmd = Command::new("git");
+        cmd.args(["commit", "-m", "a message"])
+            .env("GIT_AUTHOR_NAME", "A B");
+        assert_eq!(
+            cmd.format_cmd(),
+            "GIT_AUTHOR_NAME=\"A B\" git commit -m \"a message\""
+        );
+    }
 
     #[test]
     fn captures_stdout() {
