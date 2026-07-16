@@ -17,6 +17,10 @@ project context prune  [<name|path>] --branch <X> [--force]
 build   [<name|path>] [--focus <repo>] [profile flags] [build options]
 update  [<name|path>]
 
+# Profile flags include --work-dir <DIR> and --spec K=V (see §1.2); build adds
+# --build-dir <DIR> (§1.3). Together they let a checkout materialised elsewhere
+# (e.g. a `review checkout` worktree) be built through the project machinery.
+
 # Machine-readable queries — one value, one line, for scripts and git hooks.
 project main-branch [<name|path>]
 project build-dir   [<name|path>] [--branch <X>]
@@ -63,6 +67,12 @@ These set the `Profile` axes and therefore change how paths (`work.dir`,
 | `--generator <G>` | `-G` | Build-system generator (e.g. `Ninja`). | the project's `generator` |
 | `--preset <P>` | `-p` | Apply a preset; repeatable; accepts `org/preset`. | — |
 | `--focus <repo>` | | Override which repo is the build focus. | `project.focus` |
+| `--work-dir <DIR>` | | Use this checkout verbatim as `work.dir`, bypassing the branch strategy's `worktree_dir`/in-place resolution. Everything (`build_dir`/`source_dir`/…) still anchors on it. The seam for building a checkout materialised elsewhere (a `review checkout` worktree). | strategy-resolved |
+| `--spec <K=V>` | | Register a template variable, exposed as `{{spec.K}}`; repeatable. A template that references `{{spec.K}}` **requires** it (hard error otherwise) — how an out-of-band value (an MR number, a variant tag) enters resolution without living in the file. | — |
+
+`--work-dir` and `--spec` are `Profile` axes, so they work on the `project` read
+queries (`build-dir`, …) as well as `build` — a script can resolve the effective
+path for a materialised checkout without building.
 
 ### 1.3 Build options (affect command steps only)
 
@@ -73,6 +83,7 @@ These set the `Profile` axes and therefore change how paths (`work.dir`,
 | `--reconfig` | | Delete the build dir and configure fresh. |
 | `--install` | | Add an install step after building. |
 | `--install-dir <DIR>` | | Override the resolved `install_dir` prefix (the backend's install-prefix, e.g. cmake's `CMAKE_INSTALL_PREFIX`). Affects configure as well as install. |
+| `--build-dir <DIR>` | | Override the resolved `build_dir`, ignoring the project's template — e.g. to build a `review checkout` in an isolated dir. The symmetric partner of `--install-dir`; verbatim, highest priority. |
 | `--uninstall` | | Reverse an install (backend-driven; see §7.3). Mutually exclusive with a build. |
 | `--target <T>` | `-t` | Build a specific target (where the backend supports it). |
 | `--extra-config-args <A>…` | `-Xconfig,<arg>` | Raw args appended to the configure command, verbatim. |
@@ -303,12 +314,16 @@ toolchain.{ name, cc, cxx, rustc, ar, nm, ranlib, strip,
 generator
 system.{ os, arch, memory.gb, cpu.count }
 env.*                      # process environment
+spec.*                     # CLI-registered vars (--spec K=V); required if referenced
 ```
 
 - `repo` is a **relative** alias for the repo being resolved; use `repos.<name>`
   to reference any other repo.
 - There is no bare `{{branch}}`; use `{{branch.raw}}` or `{{branch.slug}}`.
 - `repo.upstream` falls back to `repo.origin` when no upstream is declared.
+- `spec.*` holds only what `--spec K=V` supplied on the command line, so a
+  template referencing `{{spec.mr}}` fails loudly unless the caller passes it —
+  a referenceable namespace like the org palette, never guessed or defaulted.
 - `org.environment.*` / `org.definitions.*` are available in project scope and in
   repo-scoped fields (hooks, `worktree_dir`). Only accessible when `project.org`
   is set and the org declares the key; references to undeclared keys are hard errors.

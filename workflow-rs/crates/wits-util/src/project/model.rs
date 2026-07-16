@@ -13,6 +13,7 @@
 //! it would just be a fourth thing to keep consistent with the other three.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::Deserialize;
@@ -310,6 +311,18 @@ pub struct Profile {
     pub presets: Vec<String>,
     /// `--focus` override; falls back to `project.focus`, then `"main"`.
     pub focus: Option<String>,
+    /// `--work-dir` override: use this checkout verbatim as the build base,
+    /// bypassing the branch strategy's `worktree_dir`/in-place resolution. This
+    /// is the seam that lets a checkout materialised *elsewhere* — a `review`
+    /// worktree of an MR, say — be built through the project machinery without
+    /// the two commands touching in code. `None` resolves `work.dir` as usual.
+    pub work_dir: Option<PathBuf>,
+    /// CLI-registered template variables, exposed as `{{spec.*}}` (from
+    /// `--spec K=V`). A referenceable namespace like the org palette (§5.6): a
+    /// template that mentions `{{spec.mr}}` *requires* the caller to supply it,
+    /// so an out-of-band value (an MR number, a variant tag) enters resolution
+    /// without being baked into the file model or guessed.
+    pub specs: BTreeMap<String, String>,
 }
 
 /// A toolchain after selection: canonical fields plus verbatim pass-through

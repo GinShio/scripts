@@ -159,6 +159,13 @@ pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Res
     if let Some(gen) = &generator {
         ctx.set("generator", Value::str(gen));
     }
+    // CLI-registered `--spec K=V` values, as the `spec.*` namespace. Only what
+    // was passed is bound, so a template that references an unsupplied
+    // `{{spec.X}}` fails loudly (the engine errors on an unknown path, §6.1) —
+    // the "must be specified to be used" contract, enforced rather than guessed.
+    for (key, value) in &profile.specs {
+        ctx.set(&format!("spec.{key}"), Value::str(value));
+    }
 
     // Resolve the toolchain against the base context and expose it as toolchain.*.
     let toolchain = match toolchain {
@@ -167,7 +174,15 @@ pub fn plan(ws: &Workspace, project: &ProjectData, input: &PlanInput<'_>) -> Res
     };
 
     // --- Paths -------------------------------------------------------------
-    let work_dir = resolve_work_dir(project, &ctx, &build_repo, strategy)?;
+    // A `--work-dir` override wins over the strategy (§5.5, highest priority,
+    // verbatim): the caller has a checkout in hand and wants the build sourced
+    // from it, so we neither resolve `worktree_dir` nor assume the in-place
+    // clone. Everything downstream still anchors on `work.dir`, so the override
+    // flows into `build_dir`/`source_dir`/`install_dir` unchanged.
+    let work_dir = match &profile.work_dir {
+        Some(dir) => dir.clone(),
+        None => resolve_work_dir(project, &ctx, &build_repo, strategy)?,
+    };
     ctx.set("work.dir", Value::str(work_dir.display().to_string()));
 
     // The configure source: the build repo's `source_dir` template, or the
@@ -392,6 +407,62 @@ mod tests {
         // The injector ran at L0: the selected toolchain's `cc` was translated
         // into the backend-shaped definition the mock emits.
         assert!(plan.logical.definitions.iter().any(|(k, _)| k == "MOCK_CC"));
+    }
+
+    #[test]
+    fn spec_vars_and_work_dir_override_resolve() {
+        let body = r#"
+            [project]
+            build_system = "cmake"
+            build_dir = "{{work.dir}}/_build/mr-{{spec.mr}}"
+
+            [repos.main]
+            path = "/src/hello"
+            main_branch = "main"
+        "#;
+        let (_d, ws) = ws_with(body, "hello");
+        let project = ws.project("hello").unwrap();
+        let profile = Profile {
+            // A checkout materialised elsewhere (e.g. a review worktree).
+            work_dir: Some(PathBuf::from("/tmp/hello.review/mr-42")),
+            specs: [("mr".to_owned(), "42".to_owned())].into_iter().collect(),
+            ..Default::default()
+        };
+        let plan = plan(&ws, project, &PlanInput::paths_only(&profile, "feature")).unwrap();
+        // work.dir is the verbatim override, not the strategy's path…
+        assert_eq!(plan.work_dir, PathBuf::from("/tmp/hello.review/mr-42"));
+        // …and the build_dir template anchored on it and consumed `{{spec.mr}}`.
+        assert_eq!(
+            plan.build_dir.unwrap(),
+            PathBuf::from("/tmp/hello.review/mr-42/_build/mr-42")
+        );
+    }
+
+    #[test]
+    fn a_referenced_but_unsupplied_spec_is_a_hard_error() {
+        let body = r#"
+            [project]
+            build_dir = "{{work.dir}}/_build/{{spec.mr}}"
+
+            [repos.main]
+            path = "/src/hello"
+            main_branch = "main"
+        "#;
+        let (_d, ws) = ws_with(body, "hello");
+        let project = ws.project("hello").unwrap();
+        // No `spec.mr` supplied — resolving the template must fail loudly.
+        let err = match plan(
+            &ws,
+            project,
+            &PlanInput::paths_only(&Profile::default(), "main"),
+        ) {
+            Ok(_) => panic!("expected a hard error for the unsupplied spec"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("spec"),
+            "error names the missing path: {err}"
+        );
     }
 
     #[test]

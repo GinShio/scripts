@@ -564,6 +564,9 @@ toolchain.{ name, cc, cxx, rustc, ar, nm, ranlib, strip, linker, launcher,
 generator
 system.{ os, arch, memory.gb, cpu.count }
 env.*                      # process environment
+spec.*                     # CLI-registered vars (--spec K=V); a referenceable
+                           #   namespace like the org palette (§5.6) — supplied
+                           #   on the command line, required if a template names it
 ```
 
 `repo` is a **relative** alias for *the repo currently being resolved*, never a
@@ -578,16 +581,21 @@ The axes that affect *resolution* are separated from the options that affect onl
 
 ```rust
 pub struct Profile {          // affects identity / build_dir / work.dir resolution
-    build_type: String,
+    build_type: Option<String>,   // None → the config default ("debug")
     toolchain:  Option<String>,   // None → selection chain (§5.5)
     generator:  Option<String>,
     branch:     Option<String>,   // None → the focus repo's current branch
     presets:    Vec<String>,
+    focus:      Option<String>,   // --focus override (§4.1)
+    work_dir:   Option<PathBuf>,  // --work-dir: use this checkout verbatim (§6.5)
+    specs:      Map<String,String>,  // --spec K=V → the spec.* namespace (§6.5)
 }
 
 pub struct BuildOptions {     // affects command steps only
     mode:    BuildMode,           // auto | config-only | build-only | reconfig | uninstall
     install: bool,
+    install_dir: Option<PathBuf>, // --install-dir: override the resolved prefix
+    build_dir:   Option<PathBuf>, // --build-dir: override the resolved build dir
     target:  Option<String>,
     extra_config_args:  Vec<String>,
     extra_build_args:   Vec<String>,
@@ -598,6 +606,42 @@ pub struct BuildOptions {     // affects command steps only
 `info --branch X`, a hook resolving a dir for a deleted branch, and `build` all
 share the same `Profile` to resolve paths; `BuildOptions` appears only when a
 build actually executes.
+
+### 6.5 The CLI override layer and the `review` interaction
+
+Three command-line overrides sit **above** the config's declared paths, at the
+highest priority (§5.5), and exist so a checkout materialised *outside* the
+project's own strategy can be built through the project machinery:
+
+- **`--work-dir <DIR>`** (a `Profile` axis) uses that directory verbatim as
+  `work.dir`, skipping the `worktree_dir`/in-place resolution of §3.4. Because
+  everything downstream anchors on `work.dir`, `build_dir`/`source_dir`/
+  `install_dir` follow the override with no other change. `build` also reads it
+  as "the caller owns the checkout": it neither requires a `context`-created
+  worktree nor runs the in-place branch dance.
+- **`--build-dir` / `--install-dir`** (`BuildOptions`) override the two resolved
+  output paths directly, ignoring their templates.
+- **`--spec K=V`** (a `Profile` axis) registers `spec.*` template variables
+  (§6.2). A project that opts in by writing `{{spec.mr}}` *requires* the caller
+  to supply it — a hard error otherwise — so an out-of-band identity (an MR
+  number, a variant tag) enters resolution without being baked into the file or
+  guessed. It is the CLI sibling of the org palette (§5.6): referenceable, never
+  auto-applied.
+
+This is deliberately how **`project` and `review` interact — at the workflow
+level, with no code dependency either way** (consistent with `review` never
+owning code/branches, and with `project`'s core being a thing other tools
+*consume*, §1.4). A reviewer runs `review checkout <mr>` to materialise an MR's
+snapshot into a worktree, then `build <proj> --work-dir <that worktree> --spec
+mr=<n>` to build it — the two commands meet only at a path and a spec value the
+user passes, never in code. For a submodule-of-a-monorepo MR the same seam
+serves both shapes: an independently-built component (`anchor = self`) points
+`--work-dir` at the review worktree, while one that must build via its root is
+checked out in place and disambiguated by a `spec.*`-keyed `build_dir`. Moving
+`build_dir`/`install_dir` onto the repo (so the build base owns
+`work`/`source`/`build`/`install` together) is a coherent future shape but was
+**not** taken: `review` needs an *override*, not a per-repo *default*, and the
+override layer is the smaller, one-directional change (§1.2).
 
 ### 6.4 Branch identity
 

@@ -61,6 +61,12 @@ pub struct BuildArgs {
     /// `CMAKE_INSTALL_PREFIX`). Affects configure as well as install.
     #[arg(long = "install-dir", value_name = "DIR")]
     pub install_dir: Option<PathBuf>,
+    /// Override the resolved build directory, ignoring the project's `build_dir`
+    /// template — e.g. to build a `review checkout` in an isolated dir without
+    /// touching config. The symmetric partner of `--install-dir`; highest
+    /// priority, verbatim (§5.5).
+    #[arg(long = "build-dir", value_name = "DIR")]
+    pub build_dir: Option<PathBuf>,
     /// Build a specific target.
     #[arg(short = 't', long = "target")]
     pub build_target: Option<String>,
@@ -91,6 +97,9 @@ pub struct BuildOptions {
     /// A command-line override of the resolved install prefix (§5.5); `None`
     /// leaves the project's configured `install_dir` in force.
     pub install_dir: Option<PathBuf>,
+    /// A command-line override of the resolved build dir (§5.5); `None` leaves
+    /// the project's `build_dir` template in force.
+    pub build_dir: Option<PathBuf>,
     pub target: Option<String>,
     pub extra_config_args: Vec<String>,
     pub extra_build_args: Vec<String>,
@@ -143,6 +152,7 @@ fn build_options(a: &BuildArgs) -> Result<BuildOptions> {
         mode,
         install: a.install,
         install_dir: a.install_dir.clone(),
+        build_dir: a.build_dir.clone(),
         target: a.build_target.clone(),
         extra_config_args: cfg,
         extra_build_args: build,
@@ -174,11 +184,15 @@ fn execute(
 
     let mut plan = make_plan(ws, project, profile, opts, &branch, backend.as_deref())?;
 
-    // A `--install-dir` on the command line overrides the project's resolved
-    // prefix (§5.5, highest priority). `install_dir` only feeds the backend's
-    // install-prefix step, so overriding the final plan value is sufficient.
+    // A `--install-dir`/`--build-dir` on the command line overrides the
+    // project's resolved value (§5.5, highest priority). Each only feeds a
+    // backend step (install prefix / build dir), so patching the final plan
+    // value is sufficient — no re-plan needed.
     if let Some(dir) = &opts.install_dir {
         plan.install_dir = Some(dir.clone());
+    }
+    if let Some(dir) = &opts.build_dir {
+        plan.build_dir = Some(dir.clone());
     }
 
     let Some(build_dir) = plan.build_dir.clone() else {
@@ -202,21 +216,33 @@ fn execute(
         _ => None,
     };
 
-    let _guard = match plan.strategy {
-        BranchStrategy::Worktree => {
-            if !plan.work_dir.exists() {
-                bail!(
-                    "worktree for branch '{}' does not exist at {} — run `project context create` first",
-                    plan.branch_raw,
-                    plan.work_dir.display()
-                );
-            }
-            None
+    // An explicit `--work-dir` means the caller already materialised the
+    // checkout (e.g. a `review checkout` worktree of an MR); build sources from
+    // it as-is and manages no branch or worktree of its own — so neither the
+    // worktree-exists gate nor the in-place branch dance applies. This is the
+    // whole point of the override: the two commands meet only at the path.
+    let _guard = if profile.work_dir.is_some() {
+        if !plan.work_dir.exists() {
+            bail!("--work-dir {} does not exist", plan.work_dir.display());
         }
-        BranchStrategy::InPlace => match &identity_git {
-            Some(git) => prepare_in_place(git, &plan)?,
-            None => None,
-        },
+        None
+    } else {
+        match plan.strategy {
+            BranchStrategy::Worktree => {
+                if !plan.work_dir.exists() {
+                    bail!(
+                        "worktree for branch '{}' does not exist at {} — run `project context create` first",
+                        plan.branch_raw,
+                        plan.work_dir.display()
+                    );
+                }
+                None
+            }
+            BranchStrategy::InPlace => match &identity_git {
+                Some(git) => prepare_in_place(git, &plan)?,
+                None => None,
+            },
+        }
     };
 
     let steps = be.steps(&EmitContext {

@@ -146,6 +146,29 @@ pub struct ProfileArgs {
     /// Override which repo is the focus.
     #[arg(long, global = true)]
     pub focus: Option<String>,
+    /// Build the base from this checkout verbatim, bypassing the branch
+    /// strategy's `worktree_dir`/in-place resolution — e.g. a `wits review
+    /// checkout` worktree. Everything else (`build_dir`/`source_dir`/…) still
+    /// anchors on it.
+    #[arg(long = "work-dir", value_name = "DIR", global = true)]
+    pub work_dir: Option<PathBuf>,
+    /// Register a template variable, exposed as `{{spec.KEY}}` (repeatable;
+    /// `KEY=VALUE`). A project template that references `{{spec.KEY}}` requires
+    /// it — this is how an out-of-band value (an MR number, a variant tag)
+    /// enters resolution without being baked into the project file.
+    #[arg(long = "spec", value_name = "KEY=VALUE", global = true, value_parser = parse_spec)]
+    pub specs: Vec<(String, String)>,
+}
+
+/// Parse a `--spec KEY=VALUE` pair. Split on the *first* `=` so a value may
+/// itself contain `=`; the key must be non-empty. Validated at parse time so a
+/// malformed pair errors on the command line, not mid-resolve.
+fn parse_spec(s: &str) -> Result<(String, String), String> {
+    match s.split_once('=') {
+        Some((k, _)) if k.trim().is_empty() => Err(format!("empty key in spec '{s}'")),
+        Some((k, v)) => Ok((k.trim().to_owned(), v.to_owned())),
+        None => Err(format!("expected KEY=VALUE, got '{s}'")),
+    }
 }
 
 impl ProfileArgs {
@@ -157,6 +180,8 @@ impl ProfileArgs {
             branch: self.branch.clone(),
             presets: self.presets.clone(),
             focus: self.focus.clone(),
+            work_dir: self.work_dir.clone(),
+            specs: self.specs.iter().cloned().collect(),
         }
     }
 }
