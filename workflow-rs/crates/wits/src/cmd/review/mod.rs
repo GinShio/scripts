@@ -173,6 +173,14 @@ pub struct CheckoutArgs {
     /// Where to put the worktree (default: a sibling `<repo>.review/mr-<id>`).
     #[arg(long, value_name = "DIR", conflicts_with = "in_place")]
     pub worktree: Option<PathBuf>,
+    /// After the checkout, initialise its submodules for this snapshot,
+    /// **borrowing objects** from your primary checkout, so even large
+    /// submodules cost no re-download. Only submodules present in the (possibly
+    /// sparse) checkout are touched, and only this repo's direct submodules.
+    /// Idempotent: run it as a cheap second pass over a checkout you first made
+    /// lightweight.
+    #[arg(long)]
+    pub submodules: bool,
 }
 
 #[derive(Debug, Args)]
