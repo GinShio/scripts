@@ -83,6 +83,35 @@ impl Repository {
         self.query(&["rev-parse", "--short", "HEAD"])
     }
 
+    /// The submodule gitlinks a commit pins, as `(full_sha, path)` pairs read
+    /// straight from that commit's **tree object**.
+    ///
+    /// Because `ls-tree` reads objects, not the index or working tree, this
+    /// answers for *any* `rev` (a branch you are not on) **without a checkout or
+    /// a branch switch** — exactly what enumerating a branch's pinned submodules
+    /// needs. `-r` walks into subdirectories, so a gitlink nested under a path
+    /// (e.g. `vendor/sub`) is found; git does not descend across the submodule
+    /// boundary, so these are the *direct* submodules only (recursion is the
+    /// caller's job, repo by repo). Paths are relative to this repo's root.
+    /// Empty when the rev pins no submodules or its objects aren't present.
+    pub fn gitlinks(&self, rev: &str) -> Vec<(String, String)> {
+        let Some(out) = self.query(&["ls-tree", "-r", rev]) else {
+            return Vec::new();
+        };
+        out.lines()
+            .filter_map(|line| {
+                // `<mode> SP <type> SP <object> TAB <path>`; a gitlink is the
+                // mode-160000 / `commit` entry.
+                let (meta, path) = line.split_once('\t')?;
+                let mut fields = meta.split_whitespace();
+                let mode = fields.next()?;
+                let _type = fields.next()?;
+                let object = fields.next()?;
+                (mode == "160000").then(|| (object.to_owned(), path.to_owned()))
+            })
+            .collect()
+    }
+
     /// Whether the working tree has uncommitted changes (tracked or untracked),
     /// **ignoring submodules**. This is the "would a branch switch or checkout
     /// disturb my work?" question — and a superproject `switch`/`checkout` never
@@ -413,6 +442,52 @@ mod tests {
         assert_eq!(commits[0].body, "first body line");
         assert_eq!(commits[1].subject, "second subject");
         assert_eq!(commits[1].body, "");
+    }
+
+    #[test]
+    fn gitlinks_reads_pinned_submodules_from_the_tree() {
+        let _guard = crate::log::test_flag_guard();
+        let sub = init_repo(); // the submodule's source repo
+        let sup = init_repo(); // the superproject
+        let run_in = |dir: &std::path::Path, args: &[&str]| {
+            Command::new("git")
+                .args(args.iter().copied())
+                .current_dir(dir)
+                .force_run()
+                .exec()
+                .unwrap();
+        };
+        // Adding a submodule from a local path needs the file protocol, which
+        // modern git disables by default (CVE-2022-39253).
+        run_in(
+            sup.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                sub.path().to_str().unwrap(),
+                "vendor/sub",
+            ],
+        );
+        run_in(sup.path(), &["commit", "-m", "add sub"]);
+
+        let repo = Repository::new(sup.path());
+        // Read from a ref while HEAD stays put — no checkout, no switch.
+        let links = repo.gitlinks("HEAD");
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].1, "vendor/sub",
+            "path is relative to the super root"
+        );
+        assert_eq!(
+            links[0].0,
+            Repository::new(sub.path()).rev_parse("HEAD").unwrap(),
+            "the pinned sha is the submodule's own HEAD"
+        );
+
+        // A commit with no submodules yields nothing (not an error).
+        assert!(repo.gitlinks("HEAD~1").is_empty());
     }
 
     #[test]

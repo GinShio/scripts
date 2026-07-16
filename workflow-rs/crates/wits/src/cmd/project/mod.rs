@@ -11,7 +11,7 @@
 pub mod context;
 
 use anyhow::{bail, Result};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 use anyhow::Context;
 
@@ -54,6 +54,9 @@ pub enum ProjectSub {
     SourceDir(TargetArgs),
     /// Print the branch's checkout root (`work.dir`) — the path templates anchor on.
     WorkDir(TargetArgs),
+    /// Print a repo's commit hash for a branch, optionally with its submodules'
+    /// pinned hashes — read from the tree, so no checkout or branch switch.
+    Hash(HashArgs),
 }
 
 /// A target anchored by name or path (default: the current dir). The branch and
@@ -64,6 +67,48 @@ pub struct TargetArgs {
     /// Project name, or a path inside a checkout (default: the current dir).
     #[arg(value_name = "NAME|PATH")]
     pub target: Option<String>,
+}
+
+/// `hash`: a target (like every query) plus how far to descend into submodules.
+/// The branch and focus arrive via the global [`ProfileArgs`]; `--submodules` is
+/// `hash`-only, so it stays local rather than polluting every subcommand.
+#[derive(Debug, Args)]
+pub struct HashArgs {
+    /// Project name, or a path inside a checkout (default: the current dir).
+    #[arg(value_name = "NAME|PATH")]
+    pub target: Option<String>,
+    /// How far to descend into submodules, reading each level's pinned commit
+    /// from the tree (never a checkout or branch switch).
+    #[arg(long, default_value = "none")]
+    pub submodules: SubmoduleScope,
+}
+
+/// How far `hash` walks the submodule tree. This is really one axis — *depth* —
+/// so it is stored as one (`levels`): `none` = 0, `direct` = 1, `recursive` =
+/// unbounded. Modelling it as a depth means a future `--depth N` (should a real
+/// need for an exact intermediate depth appear) slots in without a redesign;
+/// until then only the three named modes are exposed, per "do less" (§1.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum SubmoduleScope {
+    /// This repo only.
+    #[default]
+    None,
+    /// This repo plus its direct submodules.
+    Direct,
+    /// This repo and its submodules, recursively as far as their objects are
+    /// present (an un-fetched submodule bounds the walk — never a checkout).
+    Recursive,
+}
+
+impl SubmoduleScope {
+    /// Levels of submodules to print *below* the repo itself. `None` = unbounded.
+    fn levels(self) -> Option<usize> {
+        match self {
+            SubmoduleScope::None => Some(0),
+            SubmoduleScope::Direct => Some(1),
+            SubmoduleScope::Recursive => None,
+        }
+    }
 }
 
 /// The profile axes shared by `project` (all subcommands, via global flags) and
@@ -153,6 +198,7 @@ pub fn run(args: &ProjectArgs) -> Result<()> {
         Some(ProjectSub::InstallDir(a)) => install_dir(&ws, a, profile),
         Some(ProjectSub::SourceDir(a)) => source_dir(&ws, a, profile),
         Some(ProjectSub::WorkDir(a)) => work_dir(&ws, a, profile),
+        Some(ProjectSub::Hash(a)) => hash(&ws, a, profile),
         None => info(&ws, &args.info, profile),
     }
 }
@@ -281,6 +327,80 @@ path_query!(install_dir, install_dir, optional: "has no install_dir configured")
 path_query!(source_dir, source_dir);
 // `work-dir`: the branch's checkout root, the anchor every path template uses.
 path_query!(work_dir, work_dir);
+
+/// `hash`: the commit a branch points at in the anchored repo, and — per
+/// `--submodules` — the commits it pins in its submodules. Everything is read
+/// from tree objects (`rev-parse`/`ls-tree`), so it answers for any `--branch`
+/// without touching the working tree. Output: the repo's own line is its full
+/// sha and its **absolute path**; each submodule line is its sha and a path
+/// **relative to that repo**, one `<sha>\t<path>` per line for scripts.
+/// Submodules that aren't checked out (sparse-omitted or uninitialised) are
+/// skipped — see [`walk_submodules`].
+fn hash(ws: &Workspace, args: &HashArgs, profile: &ProfileArgs) -> Result<()> {
+    let (project, repo) = resolve_repo(ws, args.target.as_deref(), profile.focus.as_deref())?;
+    // Hash the identity repo: a subtree has no own git and borrows its anchor's.
+    let identity = resolve::identity_repo(project, &repo).with_context(|| {
+        format!(
+            "repo '{repo}' of project '{}' has no own git to hash",
+            project.key()
+        )
+    })?;
+    let branch = branch_or_current(project, &repo, profile.branch.as_deref())?;
+    let path = project
+        .repo_abs_path(&identity)
+        .with_context(|| format!("cannot resolve path of repo '{identity}'"))?;
+    let git = git::Repository::new(&path);
+    let sha = git
+        .rev_parse(&branch)
+        .with_context(|| format!("branch '{branch}' does not exist in repo '{identity}'"))?;
+
+    if args.submodules == SubmoduleScope::None {
+        println!("{sha}");
+        return Ok(());
+    }
+    // The repo identifies itself by its absolute path; submodules hang off it by
+    // relative path.
+    println!("{sha}\t{}", path.display());
+    walk_submodules(&git, &sha, "", args.submodules.levels());
+    Ok(())
+}
+
+/// Print a repo's submodule gitlinks at `rev`, then descend into each while
+/// `levels` allows (`Some(0)` stops; `None` is unbounded). `prefix` accumulates
+/// the path relative to the top repo, so a nested submodule reads as
+/// `outer/inner`.
+///
+/// Only submodules that are actually **checked out** are reported: a sparse
+/// checkout omits everything outside its cone, and a fresh clone leaves
+/// submodules uninitialised, and in both cases the working tree isn't there.
+/// `hash` describes the checkout that exists, not the full manifest the tree
+/// records — so an un-checked-out submodule is skipped even though we could read
+/// its pinned sha. A checked-out submodule has a `.git` (a gitlink file, or a
+/// dir on older git); its absence is the reliable "not materialised" signal, and
+/// it also bounds the recursion (there is nothing to descend into).
+fn walk_submodules(repo: &git::Repository, rev: &str, prefix: &str, levels: Option<usize>) {
+    if levels == Some(0) {
+        return;
+    }
+    for (sub_sha, sub_path) in repo.gitlinks(rev) {
+        let work = repo.path().join(&sub_path);
+        if !work.join(".git").exists() {
+            continue;
+        }
+        let rel = if prefix.is_empty() {
+            sub_path.clone()
+        } else {
+            format!("{prefix}/{sub_path}")
+        };
+        println!("{sub_sha}\t{rel}");
+        walk_submodules(
+            &git::Repository::new(work),
+            &sub_sha,
+            &rel,
+            levels.map(|n| n - 1),
+        );
+    }
+}
 
 fn run_context(ws: &Workspace, args: &ContextArgs, profile: &ProfileArgs) -> Result<()> {
     let item = match &args.action {
