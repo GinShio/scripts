@@ -19,10 +19,12 @@ pub fn run(repo: &Repository, args: &PruneArgs) -> Result<()> {
     let current = ctx.store.current();
 
     // A named MR is dropped whatever its state — the "I'm done with this one,
-    // reclaim its worktree and store even though it hasn't merged" path.
+    // reclaim its store even though it hasn't merged" path.
     if let Some(handle) = &args.mr {
         let id = parse_mr_handle(handle)?;
-        return prune_one(&ctx, &id, "requested", &current);
+        prune_one(&ctx, &id, "requested", &current)?;
+        reclaim_worktree_if_empty(&ctx);
+        return Ok(());
     }
 
     // Otherwise sweep: terminal MRs always, plus dormant ones under a cutoff.
@@ -50,15 +52,18 @@ pub fn run(repo: &Repository, args: &PruneArgs) -> Result<()> {
         log::info!("nothing to prune");
     } else {
         log::info!("pruned {pruned} MR(s)");
+        reclaim_worktree_if_empty(&ctx);
     }
     Ok(())
 }
 
-/// Drop one MR's whole local footprint: its review worktree (if the default one
-/// is present), its snapshot pins (so git can GC the objects), and its store
-/// directory — clearing the current-checkout pointer when it named this MR.
+/// Drop one MR's local footprint: its snapshot pins (so git can GC the objects)
+/// and its store directory — clearing the current-checkout pointer when it named
+/// this MR. It does **not** touch the review worktree: there is a single one,
+/// shared across a stack, so a merged member merging out must not disturb the
+/// review of its still-open siblings. The worktree is reclaimed once the store
+/// empties (see [`reclaim_worktree_if_empty`]).
 fn prune_one(ctx: &ReviewCtx, id: &str, why: &str, current: &Option<String>) -> Result<()> {
-    remove_review_worktree(ctx, id);
     for (name, _) in ctx.repo.refs_under(&refs::mr_prefix(id)) {
         if let Err(e) = ctx.repo.delete_ref(&name) {
             log::warn!("MR {id}: could not delete {name}: {e}");
@@ -66,7 +71,9 @@ fn prune_one(ctx: &ReviewCtx, id: &str, why: &str, current: &Option<String>) -> 
     }
     ctx.store.delete_mr(id)?;
     // If we just pruned the checked-out MR, drop the dangling pointer so a
-    // later `--next`/`--prev` doesn't navigate from a store that's gone.
+    // later `--next`/`--prev` doesn't navigate from a store that's gone. The
+    // worktree stays put (still showing that snapshot until the next checkout,
+    // which is a cheap HEAD switch away).
     if current.as_deref() == Some(id) {
         ctx.store.clear_current()?;
     }
@@ -74,21 +81,24 @@ fn prune_one(ctx: &ReviewCtx, id: &str, why: &str, current: &Option<String>) -> 
     Ok(())
 }
 
-/// Remove the MR's default review worktree if present — best-effort. A
-/// `--worktree <custom>` checkout isn't tracked, so only the default sibling of
-/// the main worktree (`../<main-worktree-name>.review/mr-<id>`) is reclaimed
-/// automatically.
-fn remove_review_worktree(ctx: &ReviewCtx, id: &str) {
+/// Reclaim the single review worktree once the store has no MRs left — it has
+/// nothing more to show. Best-effort and forced (untracked build output is the
+/// reviewer's, but an empty store means the review session is over). It is a
+/// no-op while any MR remains, since a stack shares this one worktree.
+fn reclaim_worktree_if_empty(ctx: &ReviewCtx) {
+    if !ctx.store.list_infos().is_empty() {
+        return;
+    }
     let Some(main) = ctx.repo.main_worktree().or_else(|| ctx.repo.toplevel()) else {
         return;
     };
-    let dir = default_worktree_dir(&main, id);
+    let dir = default_worktree_dir(&main);
     if !dir.exists() {
         return;
     }
     match ctx.repo.worktree_remove(&dir, true) {
-        Ok(()) => log::info!("removed worktree {}", dir.display()),
-        Err(e) => log::warn!("MR {id}: could not remove worktree {}: {e}", dir.display()),
+        Ok(()) => log::info!("removed review worktree {}", dir.display()),
+        Err(e) => log::warn!("could not remove review worktree {}: {e}", dir.display()),
     }
 }
 

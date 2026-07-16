@@ -1,17 +1,18 @@
 //! `wits review checkout` — put an MR's code somewhere runnable.
 //!
 //! Materialization is what lets a reviewer build, run, and fuzz an MR locally.
-//! It supports both a worktree (the default — leaves your tree untouched, lets
-//! you review several MRs at once) and an in-place checkout (moves HEAD, one at
-//! a time, and hard-guards a dirty tree so reviewing someone else's work never
-//! buries yours). `--next`/`--prev` walk the stack from the last checkout.
+//! There is **one** review worktree (a sibling `../<main>.review`), reused for
+//! every MR: `checkout <mr>` and `--next`/`--prev` just switch its HEAD to the
+//! target snapshot. A stack therefore costs one worktree, not one per member,
+//! and pruning a merged member never disturbs it. `--in-place` instead moves
+//! HEAD in the current working tree (one at a time, hard-guarding a dirty tree
+//! so reviewing someone else's work never buries yours).
 //!
-//! The checkout is **reusable**: making it is idempotent (an existing worktree
-//! is reused, not re-created), so a first, lightweight pass — just the code —
-//! can be followed by `--submodules` to materialise submodules on the same
-//! checkout when you actually need to build. Submodule init borrows objects
-//! from your primary checkout and fetches shallow, so it stays cheap even for
-//! the large submodules of a monorepo.
+//! `--submodules` materialises the checkout's submodules. The **first** time it
+//! borrows objects from your primary checkout (so even large submodules cost no
+//! re-download); on a later HEAD switch it just **updates** the already-present
+//! submodules to the new snapshot's pins — the borrow is a one-time
+//! materialisation concern, not something to redo on every switch.
 
 use std::path::{Path, PathBuf};
 
@@ -53,10 +54,9 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
         log::info!("checked out MR {id} at {} (detached HEAD)", short(&head));
         current
     } else {
-        // The default location is anchored to the *main* worktree, so an MR
-        // lands in the same `../<main>.review/mr-<id>` no matter which worktree
-        // we run from — the store is shared, so reviewing from a review worktree
-        // must not spawn a nested one beside itself.
+        // One review worktree, re-pointed at each MR. The default location is
+        // anchored to the *main* worktree, so it resolves to the same
+        // `../<main>.review` no matter which worktree we run from.
         let dir = match &args.worktree {
             Some(dir) => dir.clone(),
             None => {
@@ -65,11 +65,29 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
                     .main_worktree()
                     .or_else(|| ctx.repo.toplevel())
                     .unwrap_or_else(|| PathBuf::from("."));
-                super::default_worktree_dir(&main, &id)
+                super::default_worktree_dir(&main)
             }
         };
         if dir.exists() {
-            log::info!("MR {id}: reusing worktree {}", dir.display());
+            // Re-point the existing review worktree at this MR by switching HEAD.
+            // Guard tracked changes (untracked build output is preserved by the
+            // checkout); a stack switch that only moves submodule pins is not
+            // "dirty" — `is_dirty` ignores submodules.
+            let wt = Repository::new(&dir);
+            if wt.is_dirty() {
+                bail!(
+                    "review worktree {} has uncommitted changes; commit or stash them \
+                     before switching it to another MR",
+                    dir.display()
+                );
+            }
+            wt.checkout(&head)
+                .with_context(|| format!("switching review worktree to MR {id}"))?;
+            log::info!(
+                "MR {id}: switched review worktree {} to {}",
+                dir.display(),
+                short(&head)
+            );
         } else {
             if let Some(parent) = dir.parent() {
                 std::fs::create_dir_all(parent)
@@ -86,51 +104,56 @@ pub fn run(repo: &Repository, args: &CheckoutArgs) -> Result<()> {
     };
 
     if args.submodules {
-        init_submodules(&checkout, &id)?;
+        sync_submodules(&checkout, &id)?;
     }
 
     ctx.store.set_current(&id)?;
     Ok(())
 }
 
-/// Materialise the checkout's submodules for this snapshot, **borrowing
-/// objects** from the primary checkout so nothing is re-downloaded — the whole
-/// nested tree, at every level.
+/// Bring the checkout's submodules in line with this snapshot's pins.
 ///
-/// A linked worktree does not share the primary's submodule object store (it
-/// would re-clone in full). We iterate this repo's **direct** submodules — only
-/// those **present** in the (possibly sparse) checkout — and hand each its
-/// primary store, `<git-common-dir>/modules/<path>`, as a `--reference`. The
-/// loop is per direct submodule because `--reference` is a single real
-/// repository; the levels *beneath* each are then borrowed by the chaining
-/// inside [`Repository::submodule_init_borrow`] (`alternateLocation=superproject`),
-/// so a deep tree costs no re-download anywhere.
-fn init_submodules(checkout: &Path, id: &str) -> Result<()> {
+/// Two paths, because with one reusable worktree most switches are between
+/// snapshots of a stack that share the same submodules:
+///
+/// - a submodule **not yet materialised** (no `<sub>/.git`) is a *first*
+///   materialisation — init it **borrowing objects** from the primary store
+///   (`<git-common-dir>/modules/<path>`) so even a large submodule costs no
+///   re-download; the nested levels chain the borrow via
+///   [`Repository::submodule_init_borrow`];
+/// - a submodule **already materialised** only needs its working tree moved to
+///   the new pin — a plain `git submodule update`, no `--init`, no
+///   `--reference`. The borrow was a one-time concern; re-passing it on every
+///   HEAD switch would be pure waste.
+fn sync_submodules(checkout: &Path, id: &str) -> Result<()> {
     let wt = Repository::new(checkout);
     let subs = wt.materialised_submodules();
     if subs.is_empty() {
-        log::info!("MR {id}: no submodules present to initialise");
+        log::info!("MR {id}: no submodules present");
         return Ok(());
     }
-    // The primary's object store for a submodule at `<p>` is
-    // `<git-common-dir>/modules/<p>` (the usual name==path layout). When it is
-    // absent (the primary never initialised it, or its name differs from its
-    // path) we simply don't borrow and let the shallow fetch stand — correct,
-    // just not free.
     let modules = wt.git_common_dir().map(|c| c.join("modules"));
     for sub in &subs {
-        // Borrow only from a *real* object store. `modules/<name>` for a nested
-        // submodule path can be a bare intermediate directory (the parent of the
-        // actual store), and handing that to `--reference` makes git abort with
-        // "not a repository"; an `is_dir()` guard alone can't tell the two apart.
-        let reference = modules
-            .as_ref()
-            .map(|m| m.join(sub))
-            .filter(|r| is_object_store(r));
-        wt.submodule_init_borrow(sub, reference.as_deref())
-            .with_context(|| format!("initialising submodule '{sub}' for MR {id}"))?;
+        if checkout.join(sub).join(".git").exists() {
+            // Already materialised: just follow the pin (objects already local
+            // or borrowed from the first pass).
+            wt.submodule_update(std::slice::from_ref(sub), false)
+                .with_context(|| format!("updating submodule '{sub}' for MR {id}"))?;
+        } else {
+            // First materialisation: borrow only from a *real* object store.
+            // `modules/<name>` for a nested submodule path can be a bare
+            // intermediate directory (the parent of the actual store); handing
+            // that to `--reference` makes git abort with "not a repository", and
+            // an `is_dir()` guard alone can't tell the two apart.
+            let reference = modules
+                .as_ref()
+                .map(|m| m.join(sub))
+                .filter(|r| is_object_store(r));
+            wt.submodule_init_borrow(sub, reference.as_deref())
+                .with_context(|| format!("initialising submodule '{sub}' for MR {id}"))?;
+        }
     }
-    log::info!("MR {id}: initialised {} submodule(s)", subs.len());
+    log::info!("MR {id}: synced {} submodule(s)", subs.len());
     Ok(())
 }
 

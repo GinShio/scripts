@@ -286,23 +286,21 @@ where
     out
 }
 
-/// A review worktree's default location: a sibling of the **main** worktree,
-/// `../<main-worktree-name>.review/mr-<id>`. Anchored to the *main* worktree
-/// (not whichever linked worktree the command was invoked from) so the location
-/// is stable — the store is shared across worktrees, so you may review from
-/// either, and both must resolve the checkout to the same place — and named
-/// after it so the review worktrees sit clearly beside the checkout they mirror.
-/// `checkout` creates it here (unless `--worktree` overrides) and `prune`
-/// reclaims it here.
-pub(crate) fn default_worktree_dir(main_worktree: &std::path::Path, id: &str) -> PathBuf {
+/// The **single** review worktree's location: a sibling of the main worktree,
+/// `../<main-worktree-name>.review`. There is one review worktree, not one per
+/// MR — `checkout` re-points it at each MR by switching HEAD, so a whole stack
+/// costs one worktree and one submodule tree. Anchored to the *main* worktree
+/// (not whichever linked worktree the command was invoked from) so it resolves
+/// to the same place from anywhere, and named after it so it sits clearly beside
+/// the checkout it mirrors. `checkout` creates it (unless `--worktree`
+/// overrides); `prune` reclaims it once the store is empty.
+pub(crate) fn default_worktree_dir(main_worktree: &std::path::Path) -> PathBuf {
     let parent = main_worktree.parent().unwrap_or(main_worktree);
     let name = main_worktree
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".to_owned());
-    parent
-        .join(format!("{name}.review"))
-        .join(format!("mr-{id}"))
+    parent.join(format!("{name}.review"))
 }
 
 /// The current Unix time in whole seconds — the one clock the review store uses

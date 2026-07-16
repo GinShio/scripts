@@ -689,20 +689,33 @@ without clobbering your current work. `checkout` reuses the unified git module's
 worktree/checkout operations (`wits_util::git::Repository`) and supports both modes,
 chosen per invocation so neither is forced on the user:
 
-- **Worktree mode (default):** add a worktree for the MR at a sibling of the
-  **main** worktree, `../<main-worktree-name>.review/mr-<id>`, leaving your main
-  tree untouched — this is what lets you review several MRs at once. The location
-  is anchored to the main worktree, not whichever worktree the command runs from,
-  so the store (shared across worktrees) and the checkout resolve to the same
-  place whether you invoke it from the main clone or another review worktree.
-  `--worktree DIR` overrides the location.
-- **In-place mode (`--in-place`):** check the snapshot out in the single working
+- **Worktree mode (default):** a **single** review worktree, a sibling of the
+  **main** worktree at `../<main-worktree-name>.review`, reused for every MR —
+  `checkout <mr>` and `--next`/`--prev` just switch its HEAD to the target
+  snapshot. This is the load-bearing simplification: a stack of N MRs is
+  inherently reviewed in sequence, so it costs **one** worktree and **one**
+  submodule tree, not N — decisive for a repo with heavy submodules. The
+  location is anchored to the main worktree (not whichever worktree the command
+  runs from), so it resolves to the same place from the main clone or any linked
+  worktree. Switching HEAD hard-guards a dirty tree (tracked changes; untracked
+  build output is preserved), and the worktree is **not owned by any one MR** —
+  so pruning a merged member never disturbs the review of its open siblings; the
+  worktree is reclaimed only once the store is empty (§15). `--worktree DIR`
+  overrides the location for a one-off separate slot.
+- **In-place mode (`--in-place`):** check the snapshot out in the current working
   tree. *Supported on purpose* (not everyone uses worktrees), but it moves HEAD
   and hosts one review at a time, so it **hard-guards a dirty tree** — reviewing
   someone else's MR must never silently bury your work.
 
+Submodules follow the same one-worktree logic: `--submodules` **borrows** objects
+from the primary store on a submodule's first materialization (so even large
+submodules cost no re-download), and on a later HEAD switch merely **updates** the
+already-present submodules to the new snapshot's pins — the borrow is a one-time
+concern, not redone per switch.
+
 A small per-repo `current` pointer records the last checkout so `--next/--prev`
-has an origin (§13).
+has an origin (§13). Pruning the checked-out MR clears it (the worktree stays,
+still showing that snapshot until the next checkout — a cheap HEAD switch away).
 
 ## 15. Lifecycle and `prune`
 
