@@ -142,6 +142,9 @@ pub struct DraftArgs {
     /// Emit machine-readable JSON (on show).
     #[arg(long)]
     pub json: bool,
+    /// Compact the append-only draft in place before showing it.
+    #[arg(long)]
+    pub dedup: bool,
 }
 
 #[derive(Debug, Args)]

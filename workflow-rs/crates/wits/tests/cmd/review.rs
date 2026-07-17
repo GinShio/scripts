@@ -193,8 +193,12 @@ fn a_hand_written_draft_merges_into_the_view() {
     let s = fx.run(&["review", "show", "1", "--json"]);
     assert!(s.success, "stderr: {}", s.stderr);
     assert!(
-        s.stdout.contains("\"local:0\""),
+        s.stdout.contains("\"origin\": \"local\""),
         "new comment becomes a local thread"
+    );
+    assert!(
+        !s.stdout.contains("local:"),
+        "local pending ids use action ids, not local:N"
     );
     assert!(s.stdout.contains("looks off"));
     assert!(
@@ -250,6 +254,32 @@ fn draft_ingest_appends_and_shows() {
         d.stdout.contains("first") && d.stdout.contains("second"),
         "both batches present"
     );
+    assert!(
+        d.stdout.contains("\"id\""),
+        "ingested actions are assigned stable ids"
+    );
+}
+
+#[test]
+fn draft_dedup_compacts_by_id_and_drop() {
+    let fx = Fixture::new();
+    fx.seed("1", "head111");
+    fx.write_local(
+        "1",
+        r#"{ "schema": 1,
+             "actions": [
+               { "action": "comment", "id": "c1", "file": "src/x.c", "line": 7, "body": "old" },
+               { "action": "comment", "id": "c1", "file": "src/x.c", "line": 8, "body": "new" },
+               { "action": "summary", "id": "s1", "body": "summary" },
+               { "action": "drop", "id": "s1" }
+             ] }"#,
+    );
+
+    let out = fx.run(&["review", "draft", "1", "--dedup", "--json"]);
+    assert!(out.success, "stderr: {}", out.stderr);
+    assert!(out.stdout.contains("new"));
+    assert!(!out.stdout.contains("old"));
+    assert!(!out.stdout.contains("summary"));
 }
 
 #[test]
@@ -259,16 +289,36 @@ fn submit_dry_run_plans_without_touching_the_network() {
     fx.write_local(
         "1",
         r#"{ "schema": 1, "verdict": "request-changes",
-             "actions": [ { "action": "comment", "file": "src/x.c", "line": 50, "body": "please fix" } ] }"#,
+             "actions": [
+               { "action": "summary", "body": "overall blocker" },
+               { "action": "comment", "file": "src/x.c", "line": 50, "body": "please fix" }
+             ] }"#,
     );
 
-    let out = fx.run(&["review", "submit", "1", "-n"]);
+    let out = fx.run(&["-n", "review", "submit", "1"]);
     assert!(out.success, "stderr: {}", out.stderr);
     assert!(out.stdout.contains("[DRY-RUN]"), "stdout: {}", out.stdout);
     assert!(out.stdout.contains("request-changes"));
+    assert!(out.stdout.contains("summary"));
     assert!(out.stdout.contains("src/x.c:50"));
     // A dry run leaves the draft untouched.
     assert!(fx.local_exists("1"));
+}
+
+#[test]
+fn submit_drop_only_draft_does_not_require_a_fetched_snapshot() {
+    let fx = Fixture::new();
+    fx.write_local(
+        "1",
+        r#"{ "schema": 1, "actions": [ { "action": "drop", "id": "gone" } ] }"#,
+    );
+
+    let out = fx.run(&["review", "submit", "1"]);
+    assert!(out.success, "stderr: {}", out.stderr);
+    assert!(
+        !fx.local_exists("1"),
+        "local-only tombstones normalize away before snapshot lookup"
+    );
 }
 
 #[test]

@@ -79,7 +79,7 @@ wits review submit [mr | --stack | --all]   # merge + flush the local.json draft
 # Reading — from the local files, no network; each supports --json.
 wits review show  [mr] [--outdated|--resolved|--unread|--file P]   # inbox, or one MR (merged)
 wits review diff  <mr> [--range S | --snapshot SHA] [--patch|--json]   # diff coordinates
-wits review draft <mr> [FILE|-]                                    # show, or append a batch to, local.json
+wits review draft <mr> [FILE|-] [--dedup]                          # show, append, or compact local.json
 
 # Materialize / housekeep.
 wits review checkout <mr> [--next|--prev] [--in-place|--worktree DIR]
@@ -95,9 +95,9 @@ Notes on shape, each with its reason:
 - **Authoring by editing `local.json`, not commands.** The draft is a public,
   versioned file (§5.4, `docs/review/json.md`). The tool owns the write: a
   front-end pipes a batch of actions to `draft <mr> -` (no need to know the store
-  path), which appends and validates them; a human can edit the file directly.
-  This one file is the write contract — the store's *read* layout is otherwise
-  private.
+  path), which appends, fills in missing action ids, and validates them; a human
+  can edit the file directly. This one file is the write contract — the store's
+  *read* layout is otherwise private.
 - **`fetch` subsumes "pull" and "sync"** — one idempotent verb like `git fetch`.
   Bare `fetch` refreshes every configured feed (the RSS "refresh all"); `--feed`
   one feed; a number/URL one MR in full. Any of them **completes stacks** (§13):
@@ -270,31 +270,36 @@ a forge reality, not a preference:
   note with no position). This is "just leave a remark on the MR."
 
 A line/file comment can only land on a file the MR changed; anything else is an
-`mr` comment. In the read view, ids are origin-prefixed — `remote:9987` for a
-forge thread, `local:<n>` (by position) for a pending one — so the editor can
-render both; you address a remote thread by its id when you write a reply or
-resolve into the draft.
+`mr` comment. In the read view, forge-owned ids are prefixed (`remote:9987`);
+pending local items use their action id directly, so the editor can replace or
+drop them without cross-referencing another payload. You address a remote thread
+by its id when you write a reply or resolve into the draft.
 
 ### 5.4 `Local` — the editable draft file
 
 ```
 Local {                          // local.json — hand/editor-edited
     verdict: Option<Approve | RequestChanges | Comment>,
-    summary: Option<Body>,       // the review body; rides with the verdict, no extra notification
-    actions: [ Comment | Reply | Resolve ],   // append-style
+    actions: [ Summary | Comment | Reply | Resolve | Drop ],   // append-style, id-addressed
 }
-// Comment { file?, line?, side?, start_line?, start_side?, body, commit? }
+// Summary { id, body }
+// Comment { id, file?, line?, side?, start_line?, start_side?, body, commit? }
+// Reply { id, thread, body }
+// Resolve { id, thread, resolved }
+// Drop { id }   // local-only removal of the live action with this id
 //   side, start_side: New (default) or Old; start_side defaults to side
 //   commit: the snapshot head SHA this comment's line anchors were written against
 ```
 
 The draft is the **only** thing you write, and you write it *as a file*, not
-through commands (§2). Each `Comment` action is flat and infers its placement
-from the fields present (`file`+`line` → line, `file` → file, neither → mr), so
-it is pleasant to hand-edit; `Reply` and `Resolve` name a remote thread. One
+through commands (§2). Every stored action has an `id`: clients may supply one,
+or `draft <mr> -` generates a `wits:<uuid>` id before appending. Later actions
+with the same id replace earlier ones, and `Drop` removes the current live action
+with that id. `Summary` is the review body; `Comment` infers its placement from
+the fields present (`file`+`line` → line, `file` → file, neither → mr), so the
+file stays pleasant to hand-edit; `Reply` and `Resolve` name a remote thread. One
 draft per MR (reviewing a stack means several); the verdict is one per MR. At
-`submit` the actions are merged and de-duplicated (exact repeats dropped, a
-thread's repeated resolutions collapsed to the last), posted, and cleared —
+`submit` the append-only stream is compacted by id, posted, and cleared —
 failures stay in the file to retry. Editing or deleting an *already-published*
 comment is out of v1 scope (§17); the draft is only your unsubmitted intent.
 
@@ -391,9 +396,8 @@ All three are JSON because they are API-shaped data; only the *config* layer
 **Submit clears `local.json`.** Once flushed, everything in it is public on the
 forge, so it has nothing left to hold — landed actions are removed, and once the
 file empties we re-`fetch` so the just-posted comments return as ordinary remote
-threads. This is the `prr` model — author a batch, submit, done — and it is why
-there is **no identity-stitching** between a pending comment and the remote thread
-it became: after submit there is no pending comment to stitch.
+threads. Local action ids are for editing the pending append-only draft; they are
+not stitched to the remote thread ids after submit.
 
 The store root follows the env → XDG_STATE → common-git-dir ladder, with **state**
 kept distinct from **config** (§8):
@@ -570,10 +574,11 @@ right:
   scoped threads (up to 8 at a time, matching `stack`'s `map_parallel`) with no
   ordering constraint.
 - **Reconciliation is per action, by key.** `build_batch` turns the normalized
-  draft into a `ReviewBatch`, tagging each action with an `ActionKey` (its index
-  in the draft). `forge.submit` returns `BatchOutcome.landed[key]`; `submit` then
-  keeps exactly the actions whose key did *not* land, and clears `summary`/
-  `verdict` per their own flags. This replaced the earlier positional walk (line/
+  draft into a `ReviewBatch`, tagging each action with its persistent local
+  action id. `forge.submit` returns `BatchOutcome.landed[key]`; `submit` then
+  keeps exactly the actions whose key did *not* land, clears summary actions when
+  `summary_ok` is true, and clears `verdict` when its flag lands. This replaced
+  the earlier positional walk (line/
   file comments matched to a `Vec<bool>` by order, everything else by side calls),
   which was correct-but-fragile. An `Err` from `submit` means nothing landed — the
   whole (normalized) draft stays.
@@ -747,10 +752,10 @@ dormant ones) and lets git GC the objects.
 - **A mutable, in-place JSON blob per MR.** Rejected in favour of the
   cache/draft split (§7): conflating the disposable remote view with the precious
   local intent is how the store rots.
-- **An append-only event log for the local draft.** Considered and dropped once
-  "submit clears the draft" (§7) removed the need for durable history or
-  identity-stitching. The draft is small, short-lived, and single-writer; a plain
-  document is simpler and loses nothing.
+- **Semantic duplicate detection for the local draft.** Rejected in favour of
+  explicit action ids: clients that know they are modifying or removing an
+  earlier pending action say so by reusing its id or appending `drop`. The tool
+  should not infer intent from similar bodies or nearby anchors.
 - **Auto-re-anchoring outdated comments onto the new line.** Rejected as a default
   (§6): it can pin a comment to the wrong code. Honesty (anchor to the reviewed
   SHA) is the default; re-anchoring is an explicit opt-in.

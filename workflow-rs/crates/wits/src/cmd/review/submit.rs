@@ -114,6 +114,15 @@ fn submit_draft(ctx: &Online, id: &str, mut local: Local, stale: Vec<String>) ->
     let store = &ctx.local.store;
     let forge = ctx.forge.as_ref();
 
+    // A draft can contain only local tombstones. Compact those before requiring a
+    // fetched snapshot, since there may be nothing left to anchor or submit.
+    local.normalize("");
+    if local.is_empty() && stale.is_empty() {
+        save_empty_after_dedup(store, id, &local)?;
+        log::info!("MR {id}: nothing to submit after dedup");
+        return Ok(());
+    }
+
     let info = store
         .load_info(id)
         .with_context(|| format!("MR {id} isn't fetched — run `wits review fetch {id}` first"))?;
@@ -127,9 +136,13 @@ fn submit_draft(ctx: &Online, id: &str, mut local: Local, stale: Vec<String>) ->
             )
         })?;
 
-    // Normalize: de-duplicate, collapse resolves, and stamp unstamped comments
-    // with the current snapshot head so hand-edited drafts get anchored.
+    // Stamp unstamped comments now that the current snapshot head is known.
     local.normalize(&version.head_sha);
+    if local.is_empty() && stale.is_empty() {
+        save_empty_after_dedup(store, id, &local)?;
+        log::info!("MR {id}: nothing to submit after dedup");
+        return Ok(());
+    }
 
     if wits_log::is_dry_run() {
         preview(id, &local, forge.noun());
@@ -149,37 +162,17 @@ fn submit_draft(ctx: &Online, id: &str, mut local: Local, stale: Vec<String>) ->
         }
     };
 
-    // Reconcile per action by key — the key is the action's index in the
-    // normalized draft, which `build_batch` and this walk share. Landed actions
-    // are dropped; failed ones stay.
-    let posted = local.actions.len()
-        - local
-            .actions
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !outcome.landed(*i))
-            .count();
-    let survivors: Vec<Action> = local
-        .actions
-        .drain(..)
-        .enumerate()
-        .filter_map(|(i, a)| (!outcome.landed(i)).then_some(a))
-        .collect();
-    let kept = survivors.len();
-    local.actions = survivors;
-    if outcome.summary_ok {
-        local.summary = None;
-    }
-    if outcome.verdict_ok == Some(true) {
-        local.verdict = None;
-    }
+    let reconciled = reconcile_local(&mut local, &outcome);
     store.save_local(id, &local)?;
     // Persist any forge-side objects this attempt left unpublished, so the next
     // submit's pre-flight cleans them (empty ⇒ the file is removed).
     store.save_inflight(id, &outcome.inflight)?;
 
-    if kept > 0 {
-        log::warn!("MR {id}: {kept} action(s) did not submit; they remain in the draft");
+    if reconciled.kept > 0 {
+        log::warn!(
+            "MR {id}: {} action(s) did not submit; they remain in the draft",
+            reconciled.kept
+        );
     }
 
     if local.is_empty() {
@@ -187,7 +180,8 @@ fn submit_draft(ctx: &Online, id: &str, mut local: Local, stale: Vec<String>) ->
             log::warn!("MR {id}: submitted, but refreshing the cache failed: {e}");
         }
         log::info!(
-            "MR {id}: submitted ({posted} action(s), {} notification(s))",
+            "MR {id}: submitted ({} action(s), {} notification(s))",
+            reconciled.posted,
             outcome.notifications
         );
         Ok(())
@@ -196,9 +190,58 @@ fn submit_draft(ctx: &Online, id: &str, mut local: Local, stale: Vec<String>) ->
     }
 }
 
-/// Build the forge-neutral [`ReviewBatch`] from the normalized draft. Every
-/// action becomes a [`BatchAction`] carrying its `ActionKey` (its index in the
-/// draft), so the forge can report each one's landing independently. A comment's
+fn save_empty_after_dedup(store: &super::store::Store, id: &str, local: &Local) -> Result<()> {
+    if wits_log::is_dry_run() {
+        wits_log::dry_run(&format!("submit MR {id}: compact local draft to empty"));
+        Ok(())
+    } else {
+        store.save_local(id, local)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReconcileStats {
+    posted: usize,
+    kept: usize,
+}
+
+/// Apply a forge outcome to a normalized local draft. Batch actions are keyed by
+/// their persistent action ids; summary is tracked separately by the forge outcome
+/// because it is submitted as the review body.
+fn reconcile_local(local: &mut Local, outcome: &wits_util::forge::BatchOutcome) -> ReconcileStats {
+    let posted = local
+        .actions
+        .iter()
+        .filter(|a| match a {
+            Action::Summary { .. } => outcome.summary_ok,
+            _ => outcome.landed(action_key(a)),
+        })
+        .count();
+    local.actions = local
+        .actions
+        .drain(..)
+        .filter_map(|a| match &a {
+            Action::Summary { .. } if outcome.summary_ok => None,
+            _ if outcome.landed(action_key(&a)) => None,
+            _ => Some(a),
+        })
+        .collect();
+    if outcome.verdict_ok == Some(true) {
+        local.verdict = None;
+    }
+    ReconcileStats {
+        posted,
+        kept: local.actions.len(),
+    }
+}
+
+fn action_key(action: &Action) -> &str {
+    action.id().expect("normalized submit actions have ids")
+}
+
+/// Build the forge-neutral [`ReviewBatch`] from the normalized draft. Every live
+/// action becomes a [`BatchAction`] carrying its persistent action id, so the
+/// forge can report each one's landing independently. A comment's
 /// body has its `[[…]]` references expanded to forge permalinks, and it is
 /// anchored to the [`DiffVersion`] of the snapshot it was written against —
 /// resolved from `snapshots` by the comment's own `commit` (the snapshot head
@@ -214,9 +257,9 @@ fn build_batch(
     let actions = local
         .actions
         .iter()
-        .enumerate()
-        .map(|(i, a)| match a {
+        .filter_map(|a| match a {
             Action::Comment {
+                id,
                 file,
                 line,
                 side,
@@ -235,30 +278,37 @@ fn build_batch(
                     *start_side,
                     old_path,
                 );
-                BatchAction::Comment {
-                    key: i,
+                Some(BatchAction::Comment {
+                    key: id.clone().expect("normalized comment action has an id"),
                     anchor,
                     body: expand_refs(body, forge, &cv.head_sha),
                     version: cv,
-                }
+                })
             }
-            Action::Reply { thread, body } => BatchAction::Reply {
-                key: i,
+            Action::Summary { .. } | Action::Drop { .. } => None,
+            Action::Reply {
+                id, thread, body, ..
+            } => Some(BatchAction::Reply {
+                key: id.clone().expect("normalized reply action has an id"),
                 thread: thread.as_str().to_owned(),
                 body: expand_refs(body, forge, &version.head_sha),
-            },
-            Action::Resolve { thread, resolved } => BatchAction::Resolve {
-                key: i,
+            }),
+            Action::Resolve {
+                id,
+                thread,
+                resolved,
+                ..
+            } => Some(BatchAction::Resolve {
+                key: id.clone().expect("normalized resolve action has an id"),
                 thread: thread.as_str().to_owned(),
                 resolved: *resolved,
-            },
+            }),
         })
         .collect();
     ReviewBatch {
         verdict: local.verdict,
         summary: local
-            .summary
-            .as_ref()
+            .summary()
             .map(|s| expand_refs(s, forge, &version.head_sha)),
         actions,
         version: version.clone(),
@@ -356,11 +406,15 @@ fn preview(id: &str, local: &Local, noun: &str) {
             } => format!("comment on {f}:{l}"),
             Action::Comment { file: Some(f), .. } => format!("comment on file {f}"),
             Action::Comment { .. } => "conversation comment".to_owned(),
+            Action::Summary { .. } => "summary".to_owned(),
             Action::Reply { thread, .. } => format!("reply to {thread}"),
-            Action::Resolve { thread, resolved } => {
+            Action::Resolve {
+                thread, resolved, ..
+            } => {
                 let verb = if *resolved { "resolve" } else { "unresolve" };
                 format!("{verb} {thread}")
             }
+            Action::Drop { id } => format!("drop {id}"),
         };
         wits_log::dry_run(&format!("submit {noun} {id}: {line}"));
     }
@@ -384,6 +438,82 @@ mod tests {
             "t".into(),
             None,
         )
+    }
+
+    fn comment(id: &str) -> Action {
+        Action::Comment {
+            id: Some(id.into()),
+            file: Some("a.c".into()),
+            line: Some(1),
+            side: None,
+            start_line: None,
+            start_side: None,
+            body: id.into(),
+            commit: Some("head".into()),
+        }
+    }
+
+    fn summary(id: &str) -> Action {
+        Action::Summary {
+            id: Some(id.into()),
+            body: id.into(),
+        }
+    }
+
+    fn outcome(
+        landed: &[(&str, bool)],
+        summary_ok: bool,
+        verdict_ok: Option<bool>,
+    ) -> wits_util::forge::BatchOutcome {
+        wits_util::forge::BatchOutcome {
+            landed: landed
+                .iter()
+                .map(|(key, ok)| ((*key).to_owned(), *ok))
+                .collect(),
+            summary_ok,
+            verdict_ok,
+            notifications: 1,
+            inflight: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn reconcile_clears_fully_landed_draft() {
+        let mut local = Local {
+            schema: super::super::model::SCHEMA,
+            verdict: Some(wits_util::forge::Verdict::Approve),
+            actions: vec![summary("s"), comment("c")],
+        };
+
+        let stats = reconcile_local(&mut local, &outcome(&[("c", true)], true, Some(true)));
+
+        assert_eq!(stats, ReconcileStats { posted: 2, kept: 0 });
+        assert!(local.is_empty());
+    }
+
+    #[test]
+    fn reconcile_keeps_failed_actions_summary_and_verdict() {
+        let mut local = Local {
+            schema: super::super::model::SCHEMA,
+            verdict: Some(wits_util::forge::Verdict::RequestChanges),
+            actions: vec![summary("s"), comment("ok"), comment("fail")],
+        };
+
+        let stats = reconcile_local(
+            &mut local,
+            &outcome(&[("ok", true), ("fail", false)], false, Some(false)),
+        );
+
+        assert_eq!(stats, ReconcileStats { posted: 1, kept: 2 });
+        assert_eq!(
+            local.verdict,
+            Some(wits_util::forge::Verdict::RequestChanges)
+        );
+        assert!(matches!(local.actions[0], Action::Summary { .. }));
+        assert!(matches!(
+            &local.actions[1],
+            Action::Comment { id: Some(id), .. } if id == "fail"
+        ));
     }
 
     #[test]

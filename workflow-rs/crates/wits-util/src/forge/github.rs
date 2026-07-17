@@ -768,21 +768,21 @@ impl Forge for GitHub {
                             t["startLine"] = json!(s.line);
                             t["startSide"] = json!(gh_side(s.side));
                         }
-                        line_threads.push((*key, t));
+                        line_threads.push((key.clone(), t));
                     }
                     Some(Anchor::File { path }) => {
-                        file_comments.push((*key, path.clone(), body.clone()))
+                        file_comments.push((key.clone(), path.clone(), body.clone()))
                     }
-                    None => mr_comments.push((*key, body.clone())),
+                    None => mr_comments.push((key.clone(), body.clone())),
                 },
                 BatchAction::Reply { key, thread, body } => {
-                    replies.push((*key, thread.clone(), body.clone()))
+                    replies.push((key.clone(), thread.clone(), body.clone()))
                 }
                 BatchAction::Resolve {
                     key,
                     thread,
                     resolved,
-                } => resolves.push((*key, thread.clone(), *resolved)),
+                } => resolves.push((key.clone(), thread.clone(), *resolved)),
             }
         }
 
@@ -816,11 +816,11 @@ impl Forge for GitHub {
                 );
             }
         }
-        let line_keys = || line_threads.iter().map(|(k, _)| *k);
+        let line_keys = || line_threads.iter().map(|(k, _)| k.clone());
         let review_keys = || {
             line_keys()
-                .chain(file_comments.iter().map(|(k, ..)| *k))
-                .chain(replies.iter().map(|(k, ..)| *k))
+                .chain(file_comments.iter().map(|(k, ..)| k.clone()))
+                .chain(replies.iter().map(|(k, ..)| k.clone()))
         };
         if has_review {
             let threads_json: Vec<Value> = line_threads.iter().map(|(_, t)| t.clone()).collect();
@@ -872,7 +872,7 @@ impl Forge for GitHub {
                             let ok = self
                                 .graphql(gql::ADD_THREAD, json!({ "input": fin }))
                                 .is_ok();
-                            landed.insert(*k, ok);
+                            landed.insert(k.clone(), ok);
                         }
                         for (k, thread, body) in &replies {
                             let rin = json!({
@@ -883,7 +883,7 @@ impl Forge for GitHub {
                             let ok = self
                                 .graphql(gql::ADD_REPLY, json!({ "input": rin }))
                                 .is_ok();
-                            landed.insert(*k, ok);
+                            landed.insert(k.clone(), ok);
                         }
                         match self.graphql(
                             gql::SUBMIT_REVIEW,
@@ -937,7 +937,7 @@ impl Forge for GitHub {
             } else {
                 log::warn!("MR {id}: conversation comment failed");
             }
-            landed.insert(*k, ok);
+            landed.insert(k.clone(), ok);
         }
         // --- Resolves / unresolves. ---
         for (k, thread, resolved) in &resolves {
@@ -950,7 +950,7 @@ impl Forge for GitHub {
             if !ok {
                 log::warn!("MR {id}: resolve of {thread} failed");
             }
-            landed.insert(*k, ok);
+            landed.insert(k.clone(), ok);
         }
 
         // A failed stale delete and a re-discovered orphan can be the same id;

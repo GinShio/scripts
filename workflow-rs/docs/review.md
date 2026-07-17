@@ -33,7 +33,7 @@ Each MR is described by three local files (details in [store.md](review/store.md
 |---|---|---|
 | `info.json` | the MR's metadata and diff state (the inbox row) | `fetch` |
 | `comments.json` | the forge's discussion (a refetchable cache) | `fetch` |
-| `local.json` | **your** unsubmitted verdict + comments | **you** (edit it) |
+| `local.json` | **your** unsubmitted verdict + append-only review actions | **you** (edit it) |
 
 ```
 fetch  ─────────►  info.json + comments.json        ◄── you edit ──  local.json
@@ -81,7 +81,7 @@ Seven verbs; only `fetch` and `submit` touch the network.
 | `fetch [mr] [--stack MODE] [--feed name]` | read | Pull an MR and its stack (full), a feed and its stacks (light), or every feed (bare). |
 | `show [mr] [filters] [--json]` | — | The inbox, or one MR's merged review view. |
 | `diff <mr> [--range r\|--snapshot sha] [--patch\|--json]` | — | A diff's commits/files/coordinates. |
-| `draft <mr> [FILE\|-] [--json]` | — | Show the pending draft, or append a batch of actions to it. |
+| `draft <mr> [FILE\|-] [--json] [--dedup]` | — | Show the pending draft, append a batch of actions to it, or compact it. |
 | `submit [mr] [--stack\|--all]` | write | Flush the draft(s) as batched reviews. |
 | `checkout [mr] [--next\|--prev] [--in-place\|--worktree DIR]` | — | Materialize the code to build/test. |
 | `prune [mr] [--older-than DAYS\|DATE]` | — | Drop one MR, or sweep terminal/dormant ones. |
@@ -220,26 +220,30 @@ into `local.json`. Two equivalent ways:
   ```sh
   wits review draft 123 -   # read a JSON batch of actions from stdin; a file path also works
   ```
-  This appends the batch's actions to the draft (setting the verdict/summary if
-  the batch carries them), and validates as it writes.
+  This appends the batch's actions to the draft (setting the verdict if the batch
+  carries one), fills in missing action ids, and validates as it writes.
 - **Edit `local.json` directly** (the plain-text path for a human). It is the
   same file; both are equivalent.
 
-To edit or remove a *queued* action, edit `local.json`. Its full schema is in
+To edit a queued action, append another action with the same `id`. To remove one,
+append a `drop` action naming that id. `wits review draft <mr> --dedup` writes the
+compacted form back before submit; `submit` applies the same compaction
+automatically. Its full schema is in
 [json.md](review/json.md#localjson---the-write-contract); the shape:
 
 ```json
 {
   "schema": 1,
   "verdict": "request-changes",
-  "summary": "A few blockers below.",
   "actions": [
-    { "action": "comment", "file": "src/x.c", "line": 42, "body": "Off-by-one.", "commit": "a1b2c3d4" },
-    { "action": "comment", "file": "src/x.c", "line": 40, "start_line": 38, "side": "old", "start_side": "old", "body": "Was this intended?", "commit": "a1b2c3d4" },
-    { "action": "comment", "file": "src/x.c", "body": "This file wants a header.", "commit": "a1b2c3d4" },
-    { "action": "comment", "body": "Overall close." },
-    { "action": "reply", "thread": "9987", "body": "Done." },
-    { "action": "resolve", "thread": "9987", "resolved": true }
+    { "action": "summary", "id": "wits:550e8400-e29b-41d4-a716-446655440000", "body": "A few blockers below." },
+    { "action": "comment", "id": "wits:550e8400-e29b-41d4-a716-446655440001", "file": "src/x.c", "line": 42, "body": "Off-by-one.", "commit": "a1b2c3d4" },
+    { "action": "comment", "id": "wits:550e8400-e29b-41d4-a716-446655440002", "file": "src/x.c", "line": 40, "start_line": 38, "side": "old", "start_side": "old", "body": "Was this intended?", "commit": "a1b2c3d4" },
+    { "action": "comment", "id": "wits:550e8400-e29b-41d4-a716-446655440003", "file": "src/x.c", "body": "This file wants a header.", "commit": "a1b2c3d4" },
+    { "action": "comment", "id": "wits:550e8400-e29b-41d4-a716-446655440004", "body": "Overall close." },
+    { "action": "reply", "id": "wits:550e8400-e29b-41d4-a716-446655440005", "thread": "9987", "body": "Done." },
+    { "action": "resolve", "id": "wits:550e8400-e29b-41d4-a716-446655440006", "thread": "9987", "resolved": true },
+    { "action": "drop", "id": "wits:550e8400-e29b-41d4-a716-446655440004" }
   ]
 }
 ```
@@ -247,7 +251,13 @@ To edit or remove a *queued* action, edit `local.json`. Its full schema is in
 Rules, all inferred so the file is pleasant to hand-write:
 
 - **`verdict`** (optional): `approve`, `request-changes`, or `comment`.
-- **`summary`** (optional): the review's overall body.
+- **`id`** on every action once stored: the action's logical identity. If a
+  client omits it while piping a batch to `draft <mr> -`, the tool generates a
+  `wits:<uuid>` id before appending. Reuse an id to overwrite that action in the
+  append-only stream.
+- **`summary`** action: the review's overall body. If multiple summary actions
+  survive compaction, the last one is submitted as the review summary.
+- **`drop`** action: local-only removal of the live action with that id.
 - **`commit`** on a comment (optional): the snapshot head SHA the comment's line
   anchors were written against. `draft <mr> -` stamps it automatically at ingest;
   a hand-editor may set it. `submit` resolves it to the snapshot's full version
@@ -270,6 +280,7 @@ Preview what's recorded any time, without touching the forge:
 ```sh
 wits review draft 123           # human
 wits review draft 123 --json    # machine (echoes local.json)
+wits review draft 123 --dedup   # compact append-only edits in local.json
 ```
 
 ### Referencing another line or file
@@ -301,10 +312,10 @@ wits review submit 123 --stack  # every drafted MR in 123's stack
 wits review submit --all        # every MR that has a pending draft
 ```
 
-On submit, the draft is **merged and de-duplicated** (an accidentally repeated
-comment is dropped; repeated resolutions of one thread collapse to the last),
-then handed to the forge as one review. Each platform folds as much as its native
-batch allows into **one notification**:
+On submit, the draft is compacted by action id (`drop` removes local actions;
+later actions with the same id replace earlier ones), then handed to the forge as
+one review. Each platform folds as much as its native batch allows into **one
+notification**:
 
 - **GitLab** — comments (line/file/conversation), replies, and the summary (as a
   position-less draft note) all ride a single bodyless `bulk_publish`. The verdict

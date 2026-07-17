@@ -1240,6 +1240,7 @@ dependencies = [
  "anyhow",
  "clap",
  "log",
+ "rand",
  "serde",
  "serde_json",
  "tempfile",

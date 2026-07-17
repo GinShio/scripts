@@ -15,10 +15,11 @@ schema it doesn't know should refuse rather than guess.
 
 | Concept | Values | Meaning |
 |---|---|---|
-| Id prefix | `remote:<forge-id>` / `local:<n>` | Whether the forge owns the object, or it's a pending draft item. |
+| Remote id prefix | `remote:<forge-id>` | A forge-owned thread/comment id in the read view. |
 | `side` | `new` / `old` | Post-image (added/context) / pre-image (deleted line). |
 | `state` (MR) | `open` / `merged` / `closed` | The MR's lifecycle. Draft-ness is the separate `draft` bool, not folded in. |
 | `verdict` | `approve` / `request-changes` / `comment` | The reviewer's disposition. |
+| Action id | `wits:<uuid>` or a client-owned string | The logical identity of one pending action. Later actions with the same id replace earlier ones. |
 | `origin` (comment) | `remote` / `local` | On the forge / pending in your draft. |
 | `state` (comment) | `published` / `pending` | On the forge / not yet submitted. |
 
@@ -58,7 +59,7 @@ The detail view, with the pending draft folded into the remote discussion.
 | `commits` | array | Commits in `base..head`, oldest first: `{ sha, subject }`. |
 | `files` | array | Files the MR touched: `{ path, old_path?, status }`. `status` is git's letter (`A`/`M`/`D`/`R`/`C`); `old_path` present on a rename/copy. |
 | `threads` | array | Every discussion, remote + pending, merged (table below). |
-| `draft` | object | The pending review: `verdict?`, `summary?`, and `pending` — a count of pending actions (plus one if a verdict/summary is set). |
+| `draft` | object | The pending review after append-only compaction: `verdict?`, effective `summary?`, and `pending` — a count of live actions plus one if a verdict is set. |
 
 ### `mr` object
 
@@ -89,7 +90,7 @@ The detail view, with the pending draft folded into the remote discussion.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | string | `remote:<id>` for a forge thread, `local:<n>` for a pending one. |
+| `id` | string | `remote:<id>` for a forge thread, or the action id for a pending local thread. |
 | `origin` | string | `remote` / `local`. |
 | `resolved` | bool | Resolved on the forge (reflects a pending resolve too). |
 | `outdated` | bool | The anchored line has left the current diff. |
@@ -139,7 +140,7 @@ level, plus a `review` block.
 | Field | Type | Meaning |
 |---|---|---|
 | (mr fields) | — | Same as the `mr` object above, flattened. |
-| `review.pending` | int | Count of unsubmitted actions in this MR's draft (plus one for a set verdict/summary). |
+| `review.pending` | int | Count of live unsubmitted actions in this MR's draft (plus one for a set verdict). |
 
 Items are sorted by `updated_at`, newest first.
 
@@ -181,22 +182,23 @@ versioned contract.
 
 **Writing it.** A front-end doesn't need the store path: it pipes a batch of the
 same shape to `wits review draft <mr> -` (or a file), and the tool **appends** the
-batch's actions (setting `verdict`/`summary` if present) and validates as it
-writes. A human can edit the file directly instead — equivalent. To edit or
-remove a queued action, edit the file.
+batch's actions (setting `verdict` if present) and validates as it writes. Any
+incoming action without an `id` is assigned one before it is stored. A human can
+edit the file directly instead — equivalent.
 
 ```json
 {
   "schema": 1,
   "verdict": "request-changes",
-  "summary": "A few blockers below.",
   "actions": [
-    { "action": "comment", "file": "src/x.c", "line": 42, "body": "Off-by-one.", "commit": "a1b2c3d4" },
-    { "action": "comment", "file": "src/x.c", "line": 42, "start_line": 40, "side": "old", "start_side": "old", "body": "…", "commit": "a1b2c3d4" },
-    { "action": "comment", "file": "src/x.c", "body": "File-level note.", "commit": "a1b2c3d4" },
-    { "action": "comment", "body": "MR-level conversation note." },
-    { "action": "reply", "thread": "9987", "body": "Done." },
-    { "action": "resolve", "thread": "9987", "resolved": true }
+    { "action": "summary", "id": "wits:550e8400-e29b-41d4-a716-446655440000", "body": "A few blockers below." },
+    { "action": "comment", "id": "wits:550e8400-e29b-41d4-a716-446655440001", "file": "src/x.c", "line": 42, "body": "Off-by-one.", "commit": "a1b2c3d4" },
+    { "action": "comment", "id": "wits:550e8400-e29b-41d4-a716-446655440002", "file": "src/x.c", "line": 42, "start_line": 40, "side": "old", "start_side": "old", "body": "…", "commit": "a1b2c3d4" },
+    { "action": "comment", "id": "wits:550e8400-e29b-41d4-a716-446655440003", "file": "src/x.c", "body": "File-level note.", "commit": "a1b2c3d4" },
+    { "action": "comment", "id": "wits:550e8400-e29b-41d4-a716-446655440004", "body": "MR-level conversation note." },
+    { "action": "reply", "id": "wits:550e8400-e29b-41d4-a716-446655440005", "thread": "9987", "body": "Done." },
+    { "action": "resolve", "id": "wits:550e8400-e29b-41d4-a716-446655440006", "thread": "9987", "resolved": true },
+    { "action": "drop", "id": "wits:550e8400-e29b-41d4-a716-446655440004" }
   ]
 }
 ```
@@ -207,10 +209,26 @@ remove a queued action, edit the file.
 |---|---|---|---|
 | `schema` | int | yes | Contract version (`1`). |
 | `verdict` | string | no | `approve` / `request-changes` / `comment`. Omit for comments-only. |
-| `summary` | string | no | The review's overall body. |
 | `actions` | array | no | The ordered list of things to post. |
 
 ### `actions[]` — tagged on `action`
+
+Every stored action has an `id`. A batch sent to `draft <mr> -` may omit it; the
+tool fills in a `wits:<uuid>` id before appending to `local.json`. Clients that
+want to modify an earlier action append a new action with the same `id`.
+
+The draft is append-only but compacts by id: reading for `show`, `draft --dedup`,
+and `submit` scans actions from top to bottom. A later non-`drop` action replaces
+the previous live action with the same `id`. A `drop` removes the current live
+action with that id and is not itself a live action. `drop` cannot delete another
+`drop`.
+
+**`summary`** — the review's overall body:
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | string | yes once stored | Logical action id. |
+| `body` | string | yes | The review summary body. If several summary actions survive compaction, the last one is submitted as the review summary. |
 
 **`comment`** — a new thread. Placement is inferred from which fields are present:
 
@@ -222,6 +240,7 @@ remove a queued action, edit the file.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
+| `id` | string | yes once stored | Logical action id. |
 | `file` | string | no | Path of a changed file. |
 | `line` | int | no | Line number on `side`. |
 | `side` | string | no | `new` (default) or `old`. |
@@ -234,6 +253,7 @@ remove a queued action, edit the file.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
+| `id` | string | yes once stored | Logical action id. |
 | `thread` | string | yes | The thread id (bare forge id, or the `remote:` form `show` prints). On GitLab this is the discussion id; on GitHub the GraphQL review-thread node id (`PRRT_…`). |
 | `body` | string | yes | The reply text. |
 
@@ -241,13 +261,22 @@ remove a queued action, edit the file.
 
 | Field | Type | Required | Meaning |
 |---|---|---|---|
+| `id` | string | yes once stored | Logical action id. |
 | `thread` | string | yes | The thread id. |
 | `resolved` | bool | yes | `true` to resolve, `false` to unresolve. |
 
+**`drop`** — remove a pending local action:
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `id` | string | yes | The id of the live action to remove. A drop is local-only and is never submitted to the forge. |
+
 ### How `submit` treats it
 
-- **Merge + de-duplicate:** exact-duplicate actions are dropped; repeated
-  `resolve` of one thread collapses to the last stated value.
+- **Compact + de-duplicate:** ids drive local compaction. Later actions with the
+  same id replace earlier ones, and `drop` removes a live local action. `draft
+  --dedup` writes this compacted form back to `local.json`; `submit` always
+  applies the same compaction before posting.
 - **Batching:** the whole review is handed to the forge as one batch, folded
   into as few notifications as the platform allows. On GitLab comments (line/
   file/conversation), replies, and the summary (a position-less draft note) ride
@@ -273,7 +302,7 @@ remove a queued action, edit the file.
   comment, i.e. its own `commit` when set). Examples: `[[src/y.c:20]]`,
   `[[src/y.c:20-30]]`, `[[src/y.c]]`, `[[src/y.c:20@main]]`. Unparseable tokens are
   left as written.
-- **Failure / retry:** reconciliation is per action — whatever landed is cleared,
+- **Failure / retry:** reconciliation is per submitted action — whatever landed is cleared,
   whatever failed stays in the draft. If an attempt creates forge-side state it
   can't publish (GitLab draft notes, a GitHub pending review), it records those
   ids and the *next* submit deletes them first (deferred, idempotent cleanup that

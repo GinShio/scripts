@@ -894,7 +894,7 @@ impl Forge for GitLab {
                 if !ok {
                     log::warn!("MR {id}: resolve of thread {thread} failed");
                 }
-                landed.insert(*key, ok);
+                landed.insert(key.clone(), ok);
             }
         }
 

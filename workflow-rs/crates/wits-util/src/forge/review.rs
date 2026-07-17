@@ -215,9 +215,9 @@ pub struct RemoteThread {
 
 /// A stable per-submission identifier for one action, so the orchestration layer
 /// reconciles by *identity*, not by position — regardless of how a backend
-/// reorders, splits, or batches the work. It is the action's index in the
-/// normalized draft.
-pub type ActionKey = usize;
+/// reorders, splits, or batches the work. For `wits review`, this is the
+/// persisted local action id.
+pub type ActionKey = String;
 
 /// One thing to do inside a review submission, forge-neutral. Every kind of
 /// action can travel in the same batch; each [`Forge`] folds as many as its
@@ -255,7 +255,7 @@ impl BatchAction {
         match self {
             BatchAction::Comment { key, .. }
             | BatchAction::Reply { key, .. }
-            | BatchAction::Resolve { key, .. } => *key,
+            | BatchAction::Resolve { key, .. } => key.clone(),
         }
     }
 }
@@ -318,8 +318,8 @@ pub struct BatchOutcome {
 
 impl BatchOutcome {
     /// Whether the action `key` landed on the forge.
-    pub fn landed(&self, key: ActionKey) -> bool {
-        self.landed.get(&key).copied().unwrap_or(false)
+    pub fn landed(&self, key: &str) -> bool {
+        self.landed.get(key).copied().unwrap_or(false)
     }
 
     /// A fully-successful outcome: every listed action key, the summary, and the

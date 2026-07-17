@@ -12,6 +12,7 @@
 //! There are no authoring commands: to review, you edit `local.json`, then
 //! `submit` merges, posts, and clears it. Everything is versioned by [`SCHEMA`].
 
+use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use wits_util::forge::{
@@ -89,6 +90,34 @@ use wits_util::git::Repository;
 /// The store/JSON schema version. (Personal tooling — shapes change freely
 /// without a bump; this stays `1`.)
 pub const SCHEMA: u32 = 1;
+
+/// Generate an opaque local action id. It is UUID-v4-shaped for interoperability,
+/// but namespaced so it never looks like a forge id.
+pub fn new_action_id() -> String {
+    let mut bytes = [0u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "wits:{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}
 
 /// The human/inbox state word, folding draft-ness into the lifecycle for a
 /// one-glance label. `--json` keeps `state` and `draft` as separate typed fields
@@ -314,6 +343,8 @@ impl Default for Comments {
 pub enum Action {
     Comment {
         #[serde(skip_serializing_if = "Option::is_none", default)]
+        id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         file: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         line: Option<u32>,
@@ -334,17 +365,57 @@ pub enum Action {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         commit: Option<String>,
     },
+    Summary {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        id: Option<String>,
+        body: String,
+    },
     Reply {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        id: Option<String>,
         thread: ThreadId,
         body: String,
     },
     Resolve {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        id: Option<String>,
         thread: ThreadId,
         resolved: bool,
+    },
+    Drop {
+        id: String,
     },
 }
 
 impl Action {
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Action::Comment { id, .. }
+            | Action::Summary { id, .. }
+            | Action::Reply { id, .. }
+            | Action::Resolve { id, .. } => id.as_deref(),
+            Action::Drop { id } => Some(id),
+        }
+    }
+
+    pub fn id_mut(&mut self) -> Option<&mut Option<String>> {
+        match self {
+            Action::Comment { id, .. }
+            | Action::Summary { id, .. }
+            | Action::Reply { id, .. }
+            | Action::Resolve { id, .. } => Some(id),
+            Action::Drop { .. } => None,
+        }
+    }
+
+    pub fn ensure_id(&mut self) {
+        if let Some(id) = self.id_mut() {
+            if id.is_none() {
+                *id = Some(new_action_id());
+            }
+        }
+    }
+
     /// The read-view anchor and the commit it was written against, for a comment
     /// action, via the shared [`comment_anchor`] inference. The commit is the
     /// action's own (per-comment snapshot), falling back to `head` for actions
@@ -377,8 +448,8 @@ impl Action {
     }
 }
 
-/// `local.json` — your unsubmitted review: an optional verdict and summary, and
-/// an append-style list of actions. Edited by hand or an editor; `submit` merges
+/// `local.json` — your unsubmitted review: an optional verdict and an append-only
+/// list of id-addressed actions. Edited by hand or an editor; `submit` compacts
 /// and flushes it. This shape is the public write contract.
 ///
 /// Each `Comment` action carries its own `commit` — the snapshot head SHA its
@@ -390,8 +461,6 @@ pub struct Local {
     pub schema: u32,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub verdict: Option<Verdict>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub summary: Option<String>,
     #[serde(default)]
     pub actions: Vec<Action>,
 }
@@ -406,7 +475,6 @@ impl Default for Local {
         Local {
             schema: SCHEMA,
             verdict: None,
-            summary: None,
             actions: Vec::new(),
         }
     }
@@ -414,21 +482,32 @@ impl Default for Local {
 
 impl Local {
     pub fn is_empty(&self) -> bool {
-        self.verdict.is_none() && self.summary.is_none() && self.actions.is_empty()
+        self.verdict.is_none() && self.actions.is_empty()
     }
 
-    /// Merge and de-duplicate the recorded actions, in place: drop exact repeats
-    /// (a comment written twice), and collapse repeated resolutions of one
-    /// thread to the last stated intent. Order is otherwise preserved.
+    pub fn summary(&self) -> Option<&str> {
+        self.actions.iter().rev().find_map(|a| match a {
+            Action::Summary { body, .. } => Some(body.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Compact the append-only draft into the actions that should be submitted.
     ///
-    /// Also stamps each `Comment` action's `commit` with `head` when it is not
-    /// already set, so hand-edited or pre-commit drafts get anchored to the
-    /// current snapshot. Thread ids are already canonical (bare) — [`ThreadId`]
-    /// strips any `remote:` prefix at deserialize time — so no separate
-    /// canonicalization pass is needed before dedup.
+    /// All live actions get an id, later actions with the same id replace earlier
+    /// ones, and `drop` removes the current live action with that id. Comments are
+    /// also stamped with the current snapshot head when they do not already carry
+    /// an explicit commit.
     pub fn normalize(&mut self, head: &str) {
+        self.ensure_action_ids();
         self.stamp_comments(head);
-        self.collapse();
+        self.compact();
+    }
+
+    pub fn ensure_action_ids(&mut self) {
+        for action in &mut self.actions {
+            action.ensure_id();
+        }
     }
 
     /// Anchor any unstamped comment to the current snapshot head, so hand-edited
@@ -446,35 +525,20 @@ impl Local {
         }
     }
 
-    /// Drop exact-duplicate actions and collapse repeated resolutions of one
-    /// thread to the last stated intent, preserving first-seen order. Thread ids
-    /// are canonical by construction ([`ThreadId`]), so they key directly.
-    fn collapse(&mut self) {
-        use std::collections::{HashMap, HashSet};
-        let last_resolve: HashMap<ThreadId, bool> = self
-            .actions
-            .iter()
-            .filter_map(|a| match a {
-                Action::Resolve { thread, resolved } => Some((thread.clone(), *resolved)),
-                _ => None,
-            })
-            .collect();
-
+    fn compact(&mut self) {
         let mut out: Vec<Action> = Vec::new();
-        let mut resolved_emitted: HashSet<ThreadId> = HashSet::new();
         for a in self.actions.drain(..) {
-            match &a {
-                Action::Resolve { thread, .. } => {
-                    if resolved_emitted.insert(thread.clone()) {
-                        let resolved = last_resolve[thread];
-                        out.push(Action::Resolve {
-                            thread: thread.clone(),
-                            resolved,
-                        });
-                    }
+            match a {
+                Action::Drop { id } => {
+                    out.retain(|existing| existing.id() != Some(id.as_str()));
                 }
-                _ if out.contains(&a) => {}
-                _ => out.push(a),
+                action => {
+                    if let Some(id) = action.id() {
+                        let id = id.to_owned();
+                        out.retain(|existing| existing.id() != Some(id.as_str()));
+                    }
+                    out.push(action);
+                }
             }
         }
         self.actions = out;
@@ -487,6 +551,7 @@ mod tests {
 
     fn comment(file: &str, line: u32, commit: Option<&str>) -> Action {
         Action::Comment {
+            id: None,
             file: Some(file.into()),
             line: Some(line),
             side: None,
@@ -502,7 +567,6 @@ mod tests {
         let mut local = Local {
             schema: SCHEMA,
             verdict: None,
-            summary: None,
             actions: vec![comment("a.c", 1, None)],
         };
         local.normalize("deadbeef");
@@ -517,14 +581,32 @@ mod tests {
         let mut local = Local {
             schema: SCHEMA,
             verdict: None,
-            summary: None,
             actions: vec![
-                comment("a.c", 1, Some("older")),
-                comment("a.c", 1, Some("older")),
+                Action::Comment {
+                    id: Some("same".into()),
+                    file: Some("a.c".into()),
+                    line: Some(1),
+                    side: None,
+                    start_line: None,
+                    start_side: None,
+                    body: "old".into(),
+                    commit: Some("older".into()),
+                },
+                Action::Comment {
+                    id: Some("same".into()),
+                    file: Some("a.c".into()),
+                    line: Some(1),
+                    side: None,
+                    start_line: None,
+                    start_side: None,
+                    body: "new".into(),
+                    commit: Some("older".into()),
+                },
             ],
         };
         local.normalize("deadbeef");
-        // Dedup drops the exact repeat, and the survivor keeps its own commit,
+        // The later action with the same id replaces the earlier one, and the
+        // survivor keeps its own commit,
         // not the current head.
         assert_eq!(local.actions.len(), 1);
         match &local.actions[0] {
@@ -540,7 +622,6 @@ mod tests {
         let mut local = Local {
             schema: SCHEMA,
             verdict: None,
-            summary: None,
             actions: vec![
                 comment("a.c", 1, Some("snapA")),
                 comment("a.c", 1, Some("snapB")),
@@ -555,17 +636,19 @@ mod tests {
         let mut local = Local {
             schema: SCHEMA,
             verdict: None,
-            summary: None,
             actions: vec![
                 Action::Resolve {
+                    id: Some("r".into()),
                     thread: "42".into(),
                     resolved: true,
                 },
                 Action::Resolve {
+                    id: Some("r".into()),
                     thread: "42".into(),
                     resolved: false,
                 },
                 Action::Resolve {
+                    id: Some("r".into()),
                     thread: "42".into(),
                     resolved: true,
                 },
@@ -574,7 +657,9 @@ mod tests {
         local.normalize("deadbeef");
         assert_eq!(local.actions.len(), 1);
         match &local.actions[0] {
-            Action::Resolve { thread, resolved } => {
+            Action::Resolve {
+                thread, resolved, ..
+            } => {
                 assert_eq!(thread.as_str(), "42");
                 assert!(*resolved, "last write wins");
             }
@@ -591,17 +676,19 @@ mod tests {
         let mut local = Local {
             schema: SCHEMA,
             verdict: None,
-            summary: None,
             actions: vec![
                 Action::Resolve {
+                    id: Some("r".into()),
                     thread: "remote:42".into(),
                     resolved: false,
                 },
                 Action::Resolve {
+                    id: Some("r".into()),
                     thread: "42".into(),
                     resolved: true,
                 },
                 Action::Reply {
+                    id: Some("reply".into()),
                     thread: "remote:42".into(),
                     body: "x".into(),
                 },
@@ -616,7 +703,9 @@ mod tests {
             .collect();
         assert_eq!(resolves.len(), 1);
         match &resolves[0] {
-            Action::Resolve { thread, resolved } => {
+            Action::Resolve {
+                thread, resolved, ..
+            } => {
                 assert_eq!(thread.as_str(), "42");
                 assert!(*resolved, "last write wins");
             }
@@ -632,6 +721,50 @@ mod tests {
             Action::Reply { thread, .. } => assert_eq!(thread.as_str(), "42"),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn normalize_drops_live_action_by_id() {
+        let mut local = Local {
+            schema: SCHEMA,
+            verdict: None,
+            actions: vec![
+                Action::Comment {
+                    id: Some("c".into()),
+                    file: Some("a.c".into()),
+                    line: Some(1),
+                    side: None,
+                    start_line: None,
+                    start_side: None,
+                    body: "x".into(),
+                    commit: None,
+                },
+                Action::Drop { id: "c".into() },
+            ],
+        };
+        local.normalize("deadbeef");
+        assert!(local.actions.is_empty());
+    }
+
+    #[test]
+    fn normalize_keeps_latest_summary_action() {
+        let mut local = Local {
+            schema: SCHEMA,
+            verdict: None,
+            actions: vec![
+                Action::Summary {
+                    id: Some("s".into()),
+                    body: "old".into(),
+                },
+                Action::Summary {
+                    id: Some("s".into()),
+                    body: "new".into(),
+                },
+            ],
+        };
+        local.normalize("deadbeef");
+        assert_eq!(local.summary(), Some("new"));
+        assert_eq!(local.actions.len(), 1);
     }
 
     #[test]
@@ -653,15 +786,34 @@ mod tests {
         let mut local = Local {
             schema: SCHEMA,
             verdict: None,
-            summary: None,
             actions: vec![
-                comment("a.c", 1, Some("snap")),
-                comment("a.c", 1, Some("snap")),
+                Action::Comment {
+                    id: Some("c".into()),
+                    file: Some("a.c".into()),
+                    line: Some(1),
+                    side: None,
+                    start_line: None,
+                    start_side: None,
+                    body: "x".into(),
+                    commit: Some("snap".into()),
+                },
+                Action::Comment {
+                    id: Some("c".into()),
+                    file: Some("a.c".into()),
+                    line: Some(1),
+                    side: None,
+                    start_line: None,
+                    start_side: None,
+                    body: "y".into(),
+                    commit: Some("snap".into()),
+                },
                 Action::Resolve {
+                    id: Some("r".into()),
                     thread: "42".into(),
                     resolved: true,
                 },
                 Action::Resolve {
+                    id: Some("r".into()),
                     thread: "42".into(),
                     resolved: false,
                 },

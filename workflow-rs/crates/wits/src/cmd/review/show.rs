@@ -102,7 +102,8 @@ fn build_detail_view(ctx: &super::ReviewCtx, id: &str, args: &ShowArgs) -> Resul
         format!("MR {id} isn't in the store yet — run `wits review fetch {id}` first")
     })?;
     let comments = ctx.store.load_comments(id);
-    let draft = ctx.store.load_local(id)?;
+    let mut draft = ctx.store.load_local(id)?;
+    draft.normalize(info.head().unwrap_or_default());
 
     let mut threads = merge_threads(comments.threads, &draft, info.head());
     recompute_outdated(&ctx.repo, &mut threads, info.head());
@@ -124,7 +125,7 @@ fn build_detail_view(ctx: &super::ReviewCtx, id: &str, args: &ShowArgs) -> Resul
         threads,
         draft: DraftView {
             verdict: draft.verdict,
-            summary: draft.summary.clone(),
+            summary: draft.summary().map(str::to_owned),
             pending: pending_count(&draft),
         },
         mr: info.mr,
@@ -145,33 +146,37 @@ fn neighbors(infos: &[Info], id: &str) -> Neighbors {
 
 /// Fold the draft into the remote threads: new comments become local threads,
 /// replies attach to their remote thread as pending comments, resolutions flip
-/// the flag. Pending items get a synthetic `local:<n>` id for display.
+/// the flag. Pending items use their action id, so clients can address them
+/// directly with a later replacement or `drop`.
 fn merge_threads(mut threads: Vec<Thread>, draft: &Local, head: Option<&str>) -> Vec<Thread> {
-    for (i, action) in draft.actions.iter().enumerate() {
-        let local_id = format!("local:{i}");
+    for action in &draft.actions {
+        let action_id = action
+            .id()
+            .expect("normalized local actions have ids")
+            .to_owned();
         match action {
             Action::Comment { body, .. } => {
                 let (anchor, commit) = action.read_anchor(head);
                 threads.push(Thread {
-                    id: local_id.clone(),
+                    id: action_id.clone(),
                     origin: "local".into(),
                     resolved: false,
                     outdated: false,
                     anchor,
                     commit,
-                    comments: vec![pending_comment(&local_id, body)],
+                    comments: vec![pending_comment(&action_id, body)],
                 });
             }
-            Action::Reply { thread, body } => {
+            Action::Reply { thread, body, .. } => {
                 let target = thread.remote_ref();
                 if let Some(t) = threads.iter_mut().find(|t| t.id == target) {
-                    t.comments.push(pending_comment(&local_id, body));
+                    t.comments.push(pending_comment(&action_id, body));
                 } else {
                     // Surface rather than silently drop: the target thread isn't
                     // in the local cache (never fetched, or already gone), so the
                     // reply can't attach. Show it so the editor/user notices.
                     threads.push(orphan_thread(
-                        &local_id,
+                        &action_id,
                         &format!(
                             "reply to unknown thread {thread} — run `wits review fetch` (was: {})",
                             first_line(body)
@@ -179,28 +184,31 @@ fn merge_threads(mut threads: Vec<Thread>, draft: &Local, head: Option<&str>) ->
                     ));
                 }
             }
-            Action::Resolve { thread, resolved } => {
+            Action::Resolve {
+                thread, resolved, ..
+            } => {
                 let target = thread.remote_ref();
                 if let Some(t) = threads.iter_mut().find(|t| t.id == target) {
                     t.resolved = *resolved;
                 } else {
                     let verb = if *resolved { "resolve" } else { "unresolve" };
                     threads.push(orphan_thread(
-                        &local_id,
+                        &action_id,
                         &format!(
                             "pending {verb} of unknown thread {thread} — run `wits review fetch`"
                         ),
                     ));
                 }
             }
+            Action::Summary { .. } | Action::Drop { .. } => {}
         }
     }
     threads
 }
 
-/// A synthetic local thread carrying a note about a draft action that couldn't
-/// attach to a remote thread (an orphaned reply/resolve), so it is surfaced in
-/// the view rather than silently dropped.
+/// A local thread carrying a note about a draft action that couldn't attach to a
+/// remote thread (an orphaned reply/resolve), so it is surfaced in the view
+/// rather than silently dropped.
 fn orphan_thread(id: &str, note: &str) -> Thread {
     Thread {
         id: id.to_owned(),
@@ -319,7 +327,7 @@ fn anchor_path(a: Option<&Anchor>) -> Option<&str> {
 }
 
 fn pending_count(draft: &Local) -> usize {
-    draft.actions.len() + usize::from(draft.verdict.is_some() || draft.summary.is_some())
+    draft.actions.len() + usize::from(draft.verdict.is_some())
 }
 
 fn show_inbox(ctx: &super::ReviewCtx, args: &ShowArgs) -> Result<()> {
@@ -332,7 +340,10 @@ fn show_inbox(ctx: &super::ReviewCtx, args: &ShowArgs) -> Result<()> {
             // One MR's corrupt draft shouldn't sink the rest of the inbox —
             // degrade to "no pending actions" with a per-MR warning.
             let pending = match ctx.store.load_local(&info.mr.id) {
-                Ok(draft) => pending_count(&draft),
+                Ok(mut draft) => {
+                    draft.normalize(info.head().unwrap_or_default());
+                    pending_count(&draft)
+                }
                 Err(e) => {
                     log::warn!("MR {}: skipping draft in inbox: {e}", info.mr.id);
                     0
@@ -457,11 +468,11 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
-/// Read a JSON batch (`{verdict?, summary?, actions:[…]}`) from a file or stdin
-/// and append its actions to the draft, setting the verdict/summary when the
-/// batch provides them. The tool owns the write; the editor only provides the
-/// content. Surgery on a queued action is done by editing `local.json`.
-fn ingest(ctx: &super::ReviewCtx, id: &str, input: &std::path::Path) -> Result<()> {
+/// Read a JSON batch (`{verdict?, actions:[…]}`) from a file or stdin and append
+/// its actions to the draft, setting the verdict when the batch provides one.
+/// The tool owns the write; the editor only provides the content. Surgery on a
+/// queued action is represented by appending another action with the same id.
+fn ingest(ctx: &super::ReviewCtx, id: &str, input: &std::path::Path, dedup: bool) -> Result<()> {
     use std::io::Read;
     let text = if input.as_os_str() == "-" {
         let mut buf = String::new();
@@ -506,8 +517,10 @@ fn ingest(ctx: &super::ReviewCtx, id: &str, input: &std::path::Path) -> Result<(
     if batch.verdict.is_some() {
         draft.verdict = batch.verdict;
     }
-    if batch.summary.is_some() {
-        draft.summary = batch.summary;
+    if dedup {
+        draft.normalize(head.as_deref().unwrap_or_default());
+    } else {
+        draft.ensure_action_ids();
     }
     ctx.store.save_local(id, &draft)?;
     log::info!("appended {added} action(s) to MR {id}'s draft");
@@ -521,10 +534,18 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
     // With an input (file or `-`), ingest a batch into the draft (the tool owns
     // the write); otherwise show the current draft.
     if let Some(input) = &args.input {
-        return ingest(&ctx, &id, input);
+        return ingest(&ctx, &id, input, args.dedup);
     }
 
-    let draft = ctx.store.load_local(&id)?;
+    let mut draft = ctx.store.load_local(&id)?;
+    if args.dedup {
+        let head = ctx
+            .store
+            .load_info(&id)
+            .and_then(|i| i.head().map(str::to_owned));
+        draft.normalize(head.as_deref().unwrap_or_default());
+        ctx.store.save_local(&id, &draft)?;
+    }
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&draft)?);
@@ -537,10 +558,8 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
     if let Some(v) = draft.verdict {
         println!("verdict: {}", v.display_str());
     }
-    if let Some(s) = &draft.summary {
-        println!("summary: {}", first_line(s));
-    }
-    for (i, action) in draft.actions.iter().enumerate() {
+    for action in &draft.actions {
+        let id = action.id().expect("stored local actions have ids");
         match action {
             Action::Comment { body, commit, .. } => {
                 let where_ = describe_anchor(action.read_anchor(None).0.as_ref());
@@ -548,19 +567,25 @@ pub fn run_draft(repo: &Repository, args: &super::DraftArgs) -> Result<()> {
                     .as_deref()
                     .map(|s| format!(" @{}", short(s)))
                     .unwrap_or_default();
-                println!("  local:{i}  comment {where_}{at}  {}", first_line(body));
+                println!("  {id}  comment {where_}{at}  {}", first_line(body));
             }
-            Action::Reply { thread, body } => {
+            Action::Reply { thread, body, .. } => {
                 println!(
-                    "  local:{i}  reply -> {}  {}",
+                    "  {id}  reply -> {}  {}",
                     thread.remote_ref(),
                     first_line(body)
                 )
             }
-            Action::Resolve { thread, resolved } => {
-                let verb = if *resolved { "resolve" } else { "unresolve" };
-                println!("  local:{i}  {verb} {}", thread.remote_ref())
+            Action::Summary { body, .. } => {
+                println!("  {id}  summary  {}", first_line(body));
             }
+            Action::Resolve {
+                thread, resolved, ..
+            } => {
+                let verb = if *resolved { "resolve" } else { "unresolve" };
+                println!("  {id}  {verb} {}", thread.remote_ref())
+            }
+            Action::Drop { id } => println!("  drop {id}"),
         }
     }
     Ok(())

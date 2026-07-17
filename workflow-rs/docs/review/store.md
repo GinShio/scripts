@@ -69,14 +69,19 @@ freely and refetch. Everyone else's comments live here.
 ### `local.json` — your unsubmitted review (the file you edit)
 
 The one file you write, defined in
-[json.md](json.md#localjson---the-write-contract): an optional `verdict` and
-`summary`, and an append-style `actions` list. It exists only while you have a
-draft — `submit` deletes it once flushed, and an empty draft is the same as no
-file. This is the state that would be *lost*, so it is what migration moves.
+[json.md](json.md#localjson---the-write-contract): an optional `verdict` and an
+append-style `actions` list. The review summary is a `summary` action, not a
+top-level field. Every stored action has an id; later actions with the same id
+replace earlier ones, and `drop` removes a live local action. It exists only while
+you have a draft — `submit` deletes it once flushed, and an empty draft is the
+same as no file. This is the state that would be *lost*, so it is what migration
+moves.
 
 You need not know this path to write it: `wits review draft <mr> -` (or a file)
-hands a batch of actions to the tool, which appends and validates them. Editing
-the file directly is equivalent; the tool reading it doesn't care who wrote it.
+hands a batch of actions to the tool, which appends, assigns missing ids, and
+validates them. Editing the file directly is equivalent; the tool reading it
+doesn't care who wrote it. `wits review draft <mr> --dedup` compacts the
+append-only stream in place.
 
 ## Git refs — pinning reviewed objects
 

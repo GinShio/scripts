@@ -268,6 +268,7 @@ mod tests {
         let (_g, store) = store();
         let mut local = Local::default();
         local.actions.push(Action::Comment {
+            id: None,
             file: Some("a.c".into()),
             line: Some(3),
             side: None,
