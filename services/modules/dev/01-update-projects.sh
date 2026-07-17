@@ -17,7 +17,7 @@ build_projects() {
 
     for proj in $_projects; do
         # Check if project exists in EXISTING_PROJECTS
-        if ! echo "$EXISTING_PROJECTS" | grep -Fqx "$proj" > /dev/null 2>&1; then
+        if ! echo "$EXISTING_PROJECTS" | awk -F '[/[:space:]]' -v proj="$proj" '$2 == proj {found=1} END {exit !found}'; then
             continue
         fi
 
